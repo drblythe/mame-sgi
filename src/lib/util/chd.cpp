@@ -844,6 +844,35 @@ std::error_condition chd_file::open(
 }
 
 /**
+ * @fn  std::error_condition chd_file::flush()
+ *
+ * @brief   Bug fix (task #72): -------------------------------------------------
+ *            flush - force any pending writes out to the
+ *            underlying storage, for callers that need a real
+ *            durability guarantee (e.g. a SCSI SYNCHRONIZE
+ *            CACHE command) rather than MAME's own process
+ *            lifetime as the only flush point. write_hunk()'s
+ *            append-then-map-entry sequence is otherwise two
+ *            unordered writes with no barrier between them -
+ *            an unclean kill mid-sequence can corrupt the CHD,
+ *            the actual mechanism behind this project's own
+ *            "fresh-CHD-per-boot-test" workaround. See
+ *            wiki/drc-bugfixes.md section A for the full chain
+ *            (chd_file::flush() -> hard_disk_file::flush() ->
+ *            harddisk_image_device::flush() ->
+ *            nscsi_harddisk_device's SC_SYNCHRONIZE_CACHE ->
+ *            posixfile.cpp's real fsync()).
+ *          -------------------------------------------------.
+ */
+
+std::error_condition chd_file::flush() noexcept
+{
+	if (UNEXPECTED(!m_file))
+		return std::error_condition(error::NOT_OPEN);
+	return m_file->flush();
+}
+
+/**
  * @fn  void chd_file::close()
  *
  * @brief   -------------------------------------------------

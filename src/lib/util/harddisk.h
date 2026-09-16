@@ -43,6 +43,7 @@ public:
 
 	bool read(uint32_t lbasector, void *buffer);
 	bool write(uint32_t lbasector, const void *buffer);
+	bool flush();  // Bug fix (task #72) - see chd.cpp's chd_file::flush()
 
 	std::error_condition get_inquiry_data(std::vector<uint8_t> &data) const;
 	std::error_condition get_cis_data(std::vector<uint8_t> &data) const;

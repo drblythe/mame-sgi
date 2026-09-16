@@ -333,6 +333,10 @@ public:
 	// file close
 	void close();
 
+	// Bug fix (task #72): flush any pending writes to the underlying
+	// storage - see chd.cpp's chd_file::flush() for the full chain.
+	std::error_condition flush() noexcept;
+
 	// read/write
 	std::error_condition codec_process_hunk(uint32_t hunknum);
 	std::error_condition read_hunk(uint32_t hunknum, void *buffer);

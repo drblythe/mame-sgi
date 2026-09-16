@@ -159,6 +159,37 @@ bool hard_disk_file::write(uint32_t lbasector, const void *buffer)
 
 
 /*-------------------------------------------------
+    flush - force any pending writes out to the
+    underlying storage
+-------------------------------------------------*/
+
+/**
+ * @fn  bool flush()
+ *
+ * @brief   Bug fix (task #72): hard disk flush - forces a real durability
+ *          barrier, for callers (e.g. a SCSI SYNCHRONIZE CACHE command)
+ *          that need more than "still running" as their guarantee. See
+ *          chd.cpp's chd_file::flush() for the full chain and rationale.
+ *
+ * @return  true on success, false on failure.
+ */
+
+bool hard_disk_file::flush()
+{
+	if (chd)
+	{
+		std::error_condition err = chd->flush();
+		return !err;
+	}
+	else
+	{
+		std::error_condition err = fhandle->flush();
+		return !err;
+	}
+}
+
+
+/*-------------------------------------------------
     set_block_size - sets the block size
     for a non-CHD-backed hard disk (a bare file).
 -------------------------------------------------*/

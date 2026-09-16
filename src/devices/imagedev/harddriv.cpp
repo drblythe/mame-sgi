@@ -363,6 +363,12 @@ bool harddisk_image_device::write(uint32_t lbasector, const void *buffer)
 	return m_hard_disk_handle->write(lbasector, buffer);
 }
 
+// Bug fix (task #72) - see chd.cpp's chd_file::flush() for the full chain.
+bool harddisk_image_device::flush()
+{
+	return m_hard_disk_handle->flush();
+}
+
 
 bool harddisk_image_device::set_block_size(uint32_t blocksize)
 {

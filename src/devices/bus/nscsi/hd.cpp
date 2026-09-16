@@ -541,6 +541,14 @@ void nscsi_harddisk_device::scsi_command()
 
 	case SC_SYNCHRONIZE_CACHE:
 		LOG("command SYNCHRONIZE CACHE (10)\n");
+		// Bug fix (task #72): this used to unconditionally report success
+		// with no actual flush at all. Real guests (including IRIX) issue
+		// this command specifically to get a durability guarantee before
+		// proceeding - an unclean kill between the old fake-success reply
+		// and the underlying host write actually landing could corrupt
+		// the image. See chd.cpp's chd_file::flush() for the full chain.
+		if(!image->flush())
+			LOG("HD FLUSH ERROR !\n");
 		scsi_status_complete(SS_GOOD);
 		break;
 
