@@ -44,6 +44,31 @@ void hal2_device::device_start()
 	save_item(NAME(m_bres_clock_modctrl));
 	save_item(NAME(m_bres_clock_freq));
 	save_item(NAME(m_curr_dac));
+
+	// MAME_SGI_HAL2_BRES_POSTLOAD_FIX (permanent, no #ifdef - companion to
+	// MAME_SGI_PBUS_DMA_DEGENERATE_RATE_REARM_FIX in hpc3.cpp, same task
+	// #67 HPC3 PBUS DMA livelock investigation): m_bres_clock_rate[] is
+	// derived from m_bres_clock_sel/_inc/_modctrl (all save_item()'d
+	// above) via update_clock_freq(), but is itself not saved and is only
+	// ever recomputed when the guest live-writes one of those source
+	// registers. A -state load restores the raw fields correctly but
+	// leaves this derived array at its default (attotime::zero, same as
+	// device_reset()) until/unless the guest happens to rewrite the
+	// Bresenham clock config again - which it has no reason to do if it
+	// already configured this before the state was saved. get_rate()
+	// reads m_bres_clock_rate[] directly, so any PBUS DMA start attempted
+	// after a resume silently never arms (hpc3.cpp's pbusdma_w() only
+	// starts the timer if get_rate() != attotime::zero) - confirmed live:
+	// identical guest-triggered DMA start sequence works on a continuous
+	// boot and hangs forever after a state reload, with this array being
+	// the one meaningful difference.
+	machine().save().register_postload(save_prepost_delegate(FUNC(hal2_device::postload), this));
+}
+
+void hal2_device::postload()
+{
+	for (int clock_gen = 0; clock_gen < 3; clock_gen++)
+		update_clock_freq(clock_gen);
 }
 
 void hal2_device::device_reset()

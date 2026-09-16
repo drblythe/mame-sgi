@@ -7,9 +7,21 @@
 **********************************************************************/
 
 #include "emu.h"
+
+// TEMPORARY diagnostic (2026-08-14): dumps all 8 m_pbus_dma[] channels plus
+// their HAL2 rate on every -state postload - see task #66's eret-race-onset
+// investigation and hpc3_device::func_pbus_dma_postload_diag's own comment.
+// Must be defined before "hpc3.h" is included, since it also gates that
+// function's declaration there.
+#define MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
+
 #include "hpc3.h"
 
 #include "endianness.h"
+
+#ifdef MAME_SGI_HW_FIXES
+#include "mc.h"
+#endif
 
 #include <algorithm>
 
@@ -45,6 +57,9 @@ hpc3_device::hpc3_device(const machine_config &mconfig, const char *tag, device_
 	, m_gio64_space(*this, finder_base::DUMMY_TAG, -1)
 	, m_hal2(*this, finder_base::DUMMY_TAG)
 	, m_enet(*this, finder_base::DUMMY_TAG)
+#ifdef MAME_SGI_HW_FIXES
+	, m_mem_ctrl(*this, finder_base::DUMMY_TAG)
+#endif
 	, m_enet_intr_out_cb(*this)
 	, m_hd_rd_cb(*this, 0)
 	, m_hd_wr_cb(*this)
@@ -153,7 +168,32 @@ void hpc3_device::device_start()
 	save_pointer(NAME(m_enet_fifo[ENET_XMIT]), 40);
 
 	m_enet_tx_timer = timer_alloc(FUNC(hpc3_device::enet_transmit), this);
+
+#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
+	machine().save().register_postload(save_prepost_delegate(FUNC(hpc3_device::func_pbus_dma_postload_diag), this));
+#endif
 }
+
+#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
+void hpc3_device::func_pbus_dma_postload_diag()
+{
+	// Uses osd_printf_verbose (not fprintf(stderr,...)) - confirmed live
+	// 2026-08-14 that raw fprintf(stderr,...) here loses/tears lines
+	// unpredictably (root cause not pinned down; possibly a concurrent
+	// writer on the same fd from another OSD thread), while
+	// osd_printf_verbose has been reliable throughout this whole
+	// investigation for every other postload diagnostic (mips3.cpp,
+	// pit8253.cpp).
+	for (uint32_t i = 0; i < 8; i++)
+	{
+		pbus_dma_t &dma = m_pbus_dma[i];
+		attotime rate = m_hal2->get_rate(i);
+		osd_printf_verbose("MAME_PBUS_DMA_DIAG: channel=%u active=%d cur_ptr=%08x desc_ptr=%08x desc_flags=%08x next_ptr=%08x bytes_left=%08x config=%08x control=%08x timer_enabled=%d timer_remaining=%s hal2_rate=%s\n",
+			i, dma.m_active, dma.m_cur_ptr, dma.m_desc_ptr, dma.m_desc_flags, dma.m_next_ptr, dma.m_bytes_left, dma.m_config, dma.m_control,
+			dma.m_timer->enabled(), dma.m_timer->remaining().as_string(18), rate.as_string(18));
+	}
+}
+#endif
 
 void hpc3_device::device_reset()
 {
@@ -202,7 +242,32 @@ void hpc3_device::map(address_map &map)
 	map(0x0005c000, 0x0005cfff).rw(FUNC(hpc3_device::dma_config_r), FUNC(hpc3_device::dma_config_w));
 	map(0x0005d000, 0x0005dfff).rw(FUNC(hpc3_device::pio_config_r), FUNC(hpc3_device::pio_config_w));
 	map(0x00060000, 0x0007ffff).rw(FUNC(hpc3_device::bbram_r), FUNC(hpc3_device::bbram_w));
+#ifdef MAME_SGI_HW_FIXES
+	// Gap between the EEPROM/intstat cluster (ends 0x3000f) and the HD
+	// registers (starts 0x40000); real hardware bus-errors here. Confirmed
+	// hit during Indy boot ("Start System") immediately before a kernel
+	// panic caused by the resulting false-success zero read - see
+	// unmapped_r/w below.
+	map(0x00030010, 0x0003ffff).rw(FUNC(hpc3_device::unmapped_r), FUNC(hpc3_device::unmapped_w));
+#endif
 }
+
+#ifdef MAME_SGI_HW_FIXES
+uint32_t hpc3_device::unmapped_r(offs_t offset, uint32_t mem_mask)
+{
+	LOGMASKED(LOG_UNKNOWN, "%s: unmapped HPC3 register read from %06x & %08x\n", machine().describe_context(), offset, mem_mask);
+	if (m_mem_ctrl)
+		m_mem_ctrl->set_cpu_buserr(0x1fb80000 + offset, mem_mask);
+	return 0;
+}
+
+void hpc3_device::unmapped_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	LOGMASKED(LOG_UNKNOWN, "%s: unmapped HPC3 register write to %06x = %08x & %08x\n", machine().describe_context(), offset, data, mem_mask);
+	if (m_mem_ctrl)
+		m_mem_ctrl->set_cpu_buserr(0x1fb80000 + offset, mem_mask);
+}
+#endif
 
 TIMER_CALLBACK_MEMBER(hpc3_device::do_pbus_dma)
 {
@@ -246,7 +311,45 @@ TIMER_CALLBACK_MEMBER(hpc3_device::do_pbus_dma)
 				return;
 			}
 		}
-		dma.m_timer->adjust(m_hal2->get_rate(channel), (int)channel);
+		// MAME_SGI_PBUS_DMA_DEGENERATE_RATE_REARM_FIX: pbusdma_w() only
+		// starts a channel when get_rate() != attotime::zero (its own
+		// m_codeca_clock/m_codecb_clock config defaults to 0, i.e. "not yet
+		// configured" - see hal2_device::get_rate()), but this rearm path
+		// re-queries the same rate on every sample without any guard at
+		// all. Confirmed live 2026-08-14: a -state reload can resume a
+		// channel mid-transfer at the exact instant PROM's HAL2
+		// bresenham-clock-generator config (m_bres_clock_inc/_modctrl/_freq,
+		// each written by a separate register write - see
+		// hal2_device::update_clock_freq()) is only partway through being
+		// written. A continuous boot never observes this - by the time the
+		// DMA timer's next callback actually needs the rate, PROM has
+		// already finished the whole sequence and get_rate() returns the
+		// real audio period (~22.7us/44.1kHz, confirmed via a fresh-boot
+		// comparison) - but a save taken squarely inside that multi-write
+		// window freezes the inconsistent intermediate combination, which
+		// can compute to an absurd near-zero (observed: 1 attosecond, the
+		// engine's minimum representable nonzero attotime - not exactly
+		// attotime::zero, so a `!= attotime::zero` guard alone doesn't
+		// catch it). adjust() at that rate reschedules on essentially every
+		// device_scheduler::timeslice() call, and since the transfer is a
+		// multi-descriptor ring that doesn't set the "last descriptor" flag
+		// (bit 31), it chains descriptor to descriptor without ever
+		// stopping - a genuine host-side livelock (100% CPU stuck in
+		// timeslice()/emu_timer::adjust(), MAME never returns to paint
+		// another frame). No real audio hardware runs anywhere near this
+		// fast, so treat anything below a generous floor (1 microsecond -
+		// still over an order of magnitude faster than the highest sample
+		// rate this hardware could plausibly run, ~192kHz/5.2us) as the
+		// same "not actually configured yet" case pbusdma_w() already
+		// guards against, and stop the channel instead of rearming.
+		attotime rate = m_hal2->get_rate(channel);
+		if (rate >= attotime::from_usec(1))
+			dma.m_timer->adjust(rate, (int)channel);
+		else
+		{
+			dma.m_active = false;
+			dma.m_timer->adjust(attotime::never);
+		}
 	}
 	else
 	{

@@ -14,6 +14,10 @@
 #include "hal2.h"
 #include "machine/edlc.h"
 
+#ifdef MAME_SGI_HW_FIXES
+class sgi_mc_device;
+#endif
+
 class hpc3_device : public device_t, public device_memory_interface
 {
 public:
@@ -43,6 +47,9 @@ public:
 	template <typename T> void set_gio64_space(T &&tag, int spacenum) { m_gio64_space.set_tag(std::forward<T>(tag), spacenum); }
 	template <typename T> void set_hal2_tag(T &&tag) { m_hal2.set_tag(std::forward<T>(tag)); }
 	template <typename T> void set_enet(T &&tag) { m_enet.set_tag(std::forward<T>(tag)); }
+#ifdef MAME_SGI_HW_FIXES
+	template <typename T> void set_mem_ctrl_tag(T &&tag) { m_mem_ctrl.set_tag(std::forward<T>(tag)); }
+#endif
 
 	auto enet_intr_out_cb() { return m_enet_intr_out_cb.bind(); }
 	template <int N> auto hd_rd_cb() { return m_hd_rd_cb[N].bind(); }
@@ -61,6 +68,17 @@ public:
 
 	void map(address_map &map) ATTR_COLD;
 
+#ifdef MAME_SGI_HW_FIXES
+	// Real hardware reports a bus error for accesses to gaps in HPC3's own
+	// register decode (confirmed via the boot code's own bus-error-status
+	// probe sequence just before the panic this was added to fix); MAME's
+	// default unmapped-access fallback silently returns 0 instead, which
+	// the SGI PROM/kernel doesn't expect. This routes those gaps through
+	// the memory controller's existing (but underused) bus-error path.
+	uint32_t unmapped_r(offs_t offset, uint32_t mem_mask = ~0);
+	void unmapped_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+#endif
+
 	void enet_rxrdy_w(int state);
 	void enet_intr_in_w(int state);
 
@@ -70,6 +88,19 @@ public:
 protected:
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
+#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
+	// TEMPORARY (2026-08-14): dumps all 4 m_pbus_dma[] channels plus their
+	// HAL2 get_rate() immediately after a -state reload - see task #66's
+	// eret-race-onset investigation. A binary diff of healthy vs stuck save
+	// endpoints (2,749,877 vs 2,829,794 cycles) showed PBUS DMA channels 1
+	// and 2 transitioning from fully inactive (attotime::never) to actively
+	// armed in exactly this window - almost certainly the Indy boot chime
+	// starting up. This checks whether either channel is captured in a
+	// similarly inconsistent mid-configuration state as the channel-2
+	// zero-rate-rearm bug already found and fixed (task #67), just via
+	// different fields this time.
+	void func_pbus_dma_postload_diag();
+#endif
 
 	virtual space_config_vector memory_space_config() const override;
 
@@ -179,6 +210,9 @@ protected:
 	address_space *m_pio_space[10]{};
 	required_device<hal2_device> m_hal2;
 	required_device<seeq80c03_device> m_enet;
+#ifdef MAME_SGI_HW_FIXES
+	optional_device<sgi_mc_device> m_mem_ctrl;
+#endif
 
 	devcb_write_line m_enet_intr_out_cb;
 	devcb_read8::array<2> m_hd_rd_cb;
