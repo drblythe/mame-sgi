@@ -182,6 +182,7 @@ void null_modem_device::rcv_complete()
 	receive_register_extract();
 
 	uint8_t const data = get_received_char();
+
 	if (m_flow->read() != 4)
 		m_stream->output(data);
 	else
