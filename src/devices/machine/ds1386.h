@@ -88,6 +88,21 @@ public:
 	void data_w(offs_t offset, uint8_t data);
 	uint8_t data_r(offs_t offset);
 
+	// Bug fix (task #98) accessor - see indy_indigo2.cpp's machine_reset()
+	// for the actual SGI-specific use and full rationale (the eventmond/
+	// "kernel modification time in the future" mechanism, wiki/README.md).
+	// Opt-in direct override for the live year register, bypassing
+	// device_rtc_interface::set_time()'s generic "last two digits of the
+	// real year" assumption (year % 100) - wrong for callers whose actual
+	// chip encoding uses a different epoch base (e.g. SGI's DALLAS_YRREF
+	// = 1940 convention). Takes the already-BCD-encoded byte directly and
+	// updates both the live register and its backing store, so it isn't
+	// silently overwritten by the next periodic register/RAM sync. Not
+	// used by this device's own generic RTC seeding path - callers must
+	// invoke it themselves, late enough (e.g. driver machine_reset()) to
+	// run after running_machine::set_rtc_datetime()'s initial seed.
+	void set_year_bcd_direct(uint8_t bcd_year);
+
 	void ce_w(int state);
 	void oe_w(int state);
 	void we_w(int state);

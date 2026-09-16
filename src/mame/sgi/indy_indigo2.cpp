@@ -129,6 +129,19 @@ protected:
 	void pio5_map(address_map &map) ATTR_COLD;
 	void pio6_map(address_map &map) ATTR_COLD;
 
+#ifdef MAME_SGI_HW_FIXES
+	// Guinness IOC2's real register block is 64 registers (0x1fbd9800-
+	// 0x1fbd98fc); MAME's compact addressing here divides that by 4, so
+	// anything at or past offset 0x40 is off the end of the chip entirely
+	// (confirmed against the real IOC2 datasheet, section 4 and 6 -
+	// 0x1fbd9900 is documented as a Full House-only "Aux Register", not
+	// present on Guinness/Indy at all). Real hardware bus-errors here; the
+	// SGI boot code relies on that fault as part of its own hardware-probe
+	// sequence, so MAME's default silent-zero fallback misleads it.
+	uint8_t pio6_unmapped_r(offs_t offset);
+	void pio6_unmapped_w(offs_t offset, uint8_t data);
+#endif
+
 	static void scsi_devices(device_slot_interface &device);
 
 	required_device<mips3_device> m_maincpu;
@@ -246,9 +259,27 @@ void ip24_state::pio2_map(address_map &map)
 	map(0x00, 0x01).rw(FUNC(ip24_state::volume_r), FUNC(ip24_state::volume_w)).umask16(0x00ff);
 }
 
+#ifdef MAME_SGI_HW_FIXES
+uint8_t ip24_state::pio6_unmapped_r(offs_t offset)
+{
+	logerror("%s: unmapped Guinness IOC2 register read from %02x (past end of real 64-register block)\n", machine().describe_context(), offset);
+	m_mem_ctrl->set_cpu_buserr(0x1fbd9800 + (offset << 2), 0xff);
+	return 0;
+}
+
+void ip24_state::pio6_unmapped_w(offs_t offset, uint8_t data)
+{
+	logerror("%s: unmapped Guinness IOC2 register write to %02x = %02x (past end of real 64-register block)\n", machine().describe_context(), offset, data);
+	m_mem_ctrl->set_cpu_buserr(0x1fbd9800 + (offset << 2), 0xff);
+}
+#endif
+
 void ip24_state::pio6_map(address_map &map)
 {
 	map(0x00, 0x2f).m("ioc2", FUNC(ioc2_guinness_device::map)).umask16(0x00ff);
+#ifdef MAME_SGI_HW_FIXES
+	map(0x30, 0xff).rw(FUNC(ip24_state::pio6_unmapped_r), FUNC(ip24_state::pio6_unmapped_w));
+#endif
 }
 
 void ip22_state::ip22_map(address_map &map)
@@ -275,7 +306,79 @@ void ip24_state::machine_start()
 
 void ip24_state::machine_reset()
 {
+	// MIPS3DRC_DISABLE_INTRABLOCK and MIPS3DRC_STRICT_VERIFY were each
+	// tested here as controlled experiments for a DRC memory-corruption
+	// bug (rmap_del panic / stuck LL-SC spin) - both ruled out (same hang,
+	// no change either way). The actual fixes for that investigation
+	// landed in mips3drc.cpp's COP0 register accessors
+	// (generate_get_cop0_reg/generate_set_cop0_reg) and interrupt-check
+	// codegen, unrelated to either of these options.
 	//m_maincpu->mips3drc_set_options(MIPS3DRC_COMPATIBLE_OPTIONS | MIPS3DRC_CHECK_OVERFLOWS);
+
+	// TEMPORARY diagnostic (2026-08-17, task #69/#71): MIPS3DRC_STRICT_COP1
+	// forces check_cop1_access() to actually raise a BADCOP exception when
+	// SR.CU1 is clear, instead of being a no-op (mips3drc.cpp:6951-6957) -
+	// the interpreter has no equivalent check at all (grepped mips3.cpp for
+	// SR_CU1/cop1_unusable, zero hits). Testing whether real IRIX's lazy
+	// FPU context-switch convention (kernel clears SR.CU1 on a context
+	// switch instead of immediately saving FP registers, expecting a
+	// COP1-unusable trap to trigger the real restore on next FP use) is
+	// silently broken under this emulation with the trap unenforced -
+	// xwsh's mainLoop loads $f20=1000.0 correctly (confirmed via live gdb,
+	// source constant and the load's native codegen both verified correct)
+	// but reads back 0.0 after a sighold() syscall sits in between, exactly
+	// the kind of point a real kernel context switch could occur.
+	// Task #84 bisection (2026-09-02): both MIPS3DRC_STRICT_VERIFY
+	// (26/100 vs 29/100 baseline) and MIPS3DRC_DISABLE_INTRABLOCK
+	// (20/100) made no measurable difference, each tested alone - both
+	// within this project's own established run-to-run noise band.
+	// Reverted to the normal STRICT_COP1-only state (a real, needed fix -
+	// see the comment above); bisection continues in mips3drc.cpp against
+	// the three local dispatch/validation patches instead. See
+	// wiki/console.md task #84 section for results as each step lands.
+	m_maincpu->mips3drc_set_options(MIPS3DRC_STRICT_COP1);
+
+	// TEMPORARY diagnostic (2026-07-28): enable MAME's own built-in profiler
+	// (normally only toggled via the in-emulator IPT_UI_SHOW_PROFILER hotkey,
+	// rendered on-screen) from process start, so the accumulated per-category
+	// breakdown (PROFILER_DRC_COMPILE, PROFILER_VIDEO, PROFILER_MEMREAD, etc.)
+	// can be captured as real text at clean exit (see video_manager::exit()'s
+	// matching addition) instead of guessed at via source-reading alone -
+	// part of the "DRC still nowhere near 10x faster than -nodrc" investigation.
+	g_profiler.enable(true);
+
+	// Bug fix (task #98): correct the RTC's year register (2026-08-15).
+	// Likely resolves wiki/README.md's still-open eventmond/"kernel
+	// modification time in the future" item - not yet directly
+	// reconfirmed live against that specific symptom. running_machine::start()
+	// unconditionally seeds every battery-backed RTC from real host time via
+	// set_rtc_datetime() (machine.cpp), which runs before this hook - so by
+	// the time machine_reset() fires (during soft_reset(), on every launch
+	// including the path into a -state resume), the ds1386's year register
+	// already holds device_rtc_interface::set_time()'s generic year % 100
+	// value (the standard "last two digits of the real year" RTC
+	// convention). That's wrong for this specific chip on IP22/IP24: real
+	// IRIX kernel source (irix/kern/ml/IP22.c's rtodc(), irix/kern/sys/
+	// i8254clock.h's DALLAS_YRREF=1940) shows the actual on-hardware
+	// encoding is years-since-1940, not years-since-2000/1900. Feeding
+	// year % 100 (e.g. 26 for 2026) isn't just the wrong number, it's also
+	// small enough (< 45) to trip a real one-time-migration heuristic in
+	// that same kernel function - intended to auto-upgrade genuinely old
+	// pre-1940-epoch NVRAM content - silently "correcting" it to display as
+	// 1996 instead. The right raw value is (real_year - 1940), e.g. 86 for
+	// 2026: safely past that migration threshold, and directly correct once
+	// IRIX adds DALLAS_YRREF back on its own read path. Uses
+	// machine().base_datetime() rather than current_datetime() specifically
+	// to match set_rtc_datetime()'s own reference time exactly (both derive
+	// from the same m_base_time), not a live-ticking value.
+	system_time base_time;
+	machine().base_datetime(base_time);
+	int const rtc_year = base_time.utc_time.year - 1940;
+	if (rtc_year >= 0 && rtc_year <= 99)
+	{
+		uint8_t const bcd_year = uint8_t(((rtc_year / 10) % 10) << 4) | uint8_t(rtc_year % 10);
+		m_rtc->set_year_bcd_direct(bcd_year);
+	}
 }
 
 static INPUT_PORTS_START( ip24 )
@@ -294,6 +397,19 @@ DEVICE_INPUT_DEFAULTS_END
 
 static DEVICE_INPUT_DEFAULTS_START(ip24_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x03)
+	// FIXED (2026-07-29): the earlier mask here, 0xffff, doesn't match any
+	// real ioport field - "SIMMS" is four separate PORT_CONFNAME fields
+	// packed into one port (bank A at mask 0x000f, B at 0x00f0, C at
+	// 0x0f00, D at 0xf000; see mc.cpp), and DEVICE_INPUT_DEFAULTS has to
+	// match one field's mask exactly. That's exactly why MAME's own
+	// validator logged "Default value specified for field with mask
+	// 0xffff... but no corresponding field found" on every driver load -
+	// the override was silently discarded, never actually applied. Confirmed
+	// directly via `hinv` on a booted guest: reported 16MB regardless of
+	// whether this override was present or reverted in source, all night.
+	// Targeting bank A's real mask (0x000f) instead - value 0x000e decodes
+	// to "4x32M" (128MB) per mc.cpp's own CONFSETTING table.
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e)
 DEVICE_INPUT_DEFAULTS_END
 
 void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
@@ -328,6 +444,9 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 
 	SGI_HPC3(config, m_hpc3, m_hal2);
 	m_hpc3->set_gio64_space(m_maincpu, AS_PROGRAM);
+#ifdef MAME_SGI_HW_FIXES
+	m_hpc3->set_mem_ctrl_tag(m_mem_ctrl);
+#endif
 	m_hpc3->set_addrmap(hpc3_device::AS_PIO0, &ip24_state::pio0_map);
 	m_hpc3->set_addrmap(hpc3_device::AS_PIO1, &ip24_state::pio1_map);
 	m_hpc3->set_addrmap(hpc3_device::AS_PIO2, &ip24_state::pio2_map);
@@ -376,6 +495,18 @@ void ip24_state::ip24(machine_config &config, uint32_t system_clock)
 	m_vino->interrupt_cb().set(m_ioc2, FUNC(ioc2_device::video_int_w));
 
 	DS1386_8K(config, m_rtc, 32768);
+	// Real SGI hardware's battery-backed RTC stores UTC/GMT, not local
+	// time - confirmed via real IRIX kernel source (irix/kern/ml/IP22.c's
+	// rtodc(), explicitly commented "returns seconds from 1970 00:00:00
+	// GMT"); IRIX applies the local timezone offset separately (TZ) only
+	// when displaying/using the time, never bakes it into the hardware
+	// register itself. device_rtc_interface defaults to local time
+	// (m_use_utc = false, dirtc.cpp) unless a driver opts in - SGI never
+	// did, so every field (hour/day/month, not just the separately-fixed
+	// year encoding) was being seeded from host local time instead of
+	// UTC, producing a double timezone-shifted result once IRIX's own TZ
+	// conversion was applied on top.
+	m_rtc->set_use_utc(true);
 }
 
 void ip24_state::indy_5015(machine_config &config)

@@ -92,6 +92,16 @@ void ds1386_device::device_start()
 
 	m_ram = std::make_unique<uint8_t[]>(m_ram_size);
 	save_pointer(NAME(m_ram), m_ram_size);
+
+	// Bug fix (task #98): m_ram[] round-trips correctly through
+	// save_pointer() above, but the live typed registers (m_years,
+	// m_seconds, etc.) derived from it via copy_ram_to_registers() do not
+	// - nothing re-syncs them from the just-restored bytes after a
+	// -state load, so they'd keep whatever device_start()-time default
+	// they had instead of the resumed value until the next unrelated
+	// write happened to trigger a resync. Same class of gap as HAL2's
+	// (task #67) - see wiki/drc-bugfixes.md section A.
+	machine().save().register_postload(save_prepost_delegate(FUNC(ds1386_device::copy_ram_to_registers), this));
 }
 
 
@@ -110,10 +120,16 @@ void ds1386_device::rtc_clock_updated(int year, int month, int day, int day_of_w
 	else
 		m_hours = time_helper::make_bcd(hour);
 	m_days = time_helper::make_bcd(day_of_week);
-	m_date = time_helper::make_bcd(second);
+	m_date = time_helper::make_bcd(day);  // Bug fix (task #98): was make_bcd(second) - copy-paste bug, day-of-month register was getting seconds
 	m_months_enables = (time_helper::make_bcd(month) & 0x1f) | (m_months_enables & 0xc0);
 	m_years = time_helper::make_bcd(year);
 
+	copy_registers_to_ram();
+}
+
+void ds1386_device::set_year_bcd_direct(uint8_t bcd_year)
+{
+	m_years = bcd_year;
 	copy_registers_to_ram();
 }
 
