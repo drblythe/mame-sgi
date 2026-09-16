@@ -527,13 +527,26 @@ u64 emu_file::size()
 
 u32 emu_file::read(void *buffer, u32 length)
 {
-	// FIXME: need better interface to report errors
+	std::error_condition err;
+	return read(buffer, length, err);
+}
+
+
+//-------------------------------------------------
+//  read - read from a file, also reporting the
+//  error_condition (e.g. to distinguish "no data
+//  available yet" from a genuine EOF/disconnect on
+//  a socket - both otherwise look like actual == 0)
+//-------------------------------------------------
+
+u32 emu_file::read(void *buffer, u32 length, std::error_condition &err)
+{
 	// load the ZIP file now if we haven't yet
-	if (compressed_file_ready())
+	err = compressed_file_ready();
+	if (err)
 		return 0;
 
 	// read the data if we can
-	std::error_condition err;
 	size_t actual = 0;
 	if (m_file)
 		std::tie(err, actual) = util::read(*m_file, buffer, length);

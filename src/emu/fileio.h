@@ -174,6 +174,7 @@ public:
 
 	// reading
 	u32 read(void *buffer, u32 length);
+	u32 read(void *buffer, u32 length, std::error_condition &err);
 	int getc();
 	int ungetc(int c);
 	char *gets(char *s, int n);

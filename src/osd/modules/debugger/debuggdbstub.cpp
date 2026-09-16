@@ -654,6 +654,8 @@ static const std::map<std::string, const gdb_register_map &> gdb_register_maps =
 	{ "i486",       gdb_register_map_i486 },
 	{ "arm7_le",    gdb_register_map_arm7 },
 	{ "r4600",      gdb_register_map_r4600 },
+	{ "r4600be",    gdb_register_map_r4600 },
+	{ "r4600le",    gdb_register_map_r4600 },
 	{ "ppc601",     gdb_register_map_ppc601 },
 	{ "m68030",     gdb_register_map_m68030 },
 	{ "m68020pmmu", gdb_register_map_m68020pmmu },
@@ -702,6 +704,7 @@ public:
 		m_socket(OPEN_FLAG_WRITE | OPEN_FLAG_CREATE),
 		m_is_be(false),
 		m_initialized(false),
+		m_awaiting_accept(false),
 		m_dettached(false),
 		m_extended_mode(false),
 		m_send_stop_packet(false),
@@ -780,6 +783,7 @@ public:
 	void generate_target_xml();
 
 	int readchar();
+	void reconnect();
 
 	void send_reply(std::string_view str);
 	void send_stop_packet();
@@ -797,6 +801,7 @@ private:
 	emu_file m_socket;
 	bool m_is_be;
 	bool m_initialized;
+	bool m_awaiting_accept;
 	bool m_dettached;
 	bool m_extended_mode;
 	bool m_send_stop_packet;
@@ -863,12 +868,73 @@ int debug_gdbstub::readchar()
 	if ( m_readbuf_offset == m_readbuf_len )
 	{
 		m_readbuf_offset = 0;
-		m_readbuf_len = m_socket.read(m_readbuf, sizeof(m_readbuf));
+		std::error_condition err;
+		m_readbuf_len = m_socket.read(m_readbuf, sizeof(m_readbuf), err);
 		if ( m_readbuf_len == 0 )
+		{
+			// FIX (2026-09-12, task #90): "no data yet, still waiting" (a
+			// non-blocking poll with nothing ready) reports actual == 0
+			// WITH an operation_would_block error - err is set, ignore it
+			// below exactly as before this fix, just retry. A genuinely
+			// bare success (err clear) with actual == 0 is different: it
+			// means either the client disconnected (real EOF - previously
+			// indistinguishable from the would-block case, which is why a
+			// dropped connection spun here forever: the underlying socket
+			// had already consumed its one-shot listen/accept transition,
+			// see posix_osd_socket::read() in osd/modules/file/
+			// posixsocket.cpp, so nothing could connect again short of
+			// relaunching MAME) OR the accept() of a brand-new client that
+			// hasn't sent anything yet - that SAME success+actual==0
+			// report also covers "just accepted, no data read yet" on the
+			// very first read after opening a listening socket. Caught the
+			// hard way: a first attempt at this fix treated every err-clear
+			// zero-read as a disconnect and reset brand-new clients right
+			// after they connected. m_awaiting_accept (set immediately
+			// after every m_socket.open(), consumed by exactly the next
+			// err-clear zero-read - would-block reads in between don't
+			// touch it) disambiguates the two identical-looking cases using
+			// context debug_gdbstub already has, without needing further
+			// lower-level changes.
+			if ( !err )
+			{
+				if ( m_awaiting_accept )
+					m_awaiting_accept = false;
+				else
+					reconnect();
+			}
 			return -1;
+		}
 	}
 
 	return (int) m_readbuf[m_readbuf_offset++];
+}
+
+//-------------------------------------------------------------------------
+// Re-open the listening socket after the connected client goes away, so a
+// new gdb session can attach without relaunching MAME. See readchar()'s
+// own comment for how a real disconnect is distinguished from ordinary
+// "no data yet" polling.
+void debug_gdbstub::reconnect()
+{
+	m_socket.close();
+
+	// a fresh client hasn't sent anything yet - don't inherit protocol
+	// state (extended-mode opt-in, mid-packet parse position) from
+	// whoever was previously connected.
+	m_extended_mode = false;
+	m_readbuf_state = PACKET_START;
+	m_readbuf_len = 0;
+	m_readbuf_offset = 0;
+
+	std::string socket_name = string_format("socket.%s:%d", m_debugger_host, m_debugger_port);
+	std::error_condition const filerr = m_socket.open(socket_name);
+	if ( filerr )
+	{
+		osd_printf_info("gdbstub: client disconnected; failed to re-listen on address %s port %d\n", m_debugger_host, m_debugger_port);
+		return;
+	}
+	m_awaiting_accept = true;
+	osd_printf_info("gdbstub: client disconnected; listening again on address %s port %d\n", m_debugger_host, m_debugger_port);
 }
 
 //-------------------------------------------------------------------------
@@ -926,8 +992,13 @@ void debug_gdbstub::wait_for_debugger(device_t &device, bool firststop)
 
 	if ( firststop && !m_initialized )
 	{
-		// find the "main" CPU, which is the first CPU (gdbstub doesn't have any notion of switching CPUs)
-		m_maincpu = device_interface_enumerator<cpu_device>(m_machine->root_device()).first();
+		// find the "main" CPU (gdbstub doesn't have any notion of switching CPUs) - prefer the
+		// device conventionally tagged "maincpu" over enumeration order, since enumeration order
+		// can land on an unrelated peripheral CPU (e.g. a keyboard controller's embedded MCU) on
+		// systems with more than one CPU device
+		m_maincpu = m_machine->root_device().subdevice<cpu_device>("maincpu");
+		if (!m_maincpu)
+			m_maincpu = device_interface_enumerator<cpu_device>(m_machine->root_device()).first();
 		if (!m_maincpu)
 			fatalerror("gdbstub: cannot find any CPUs\n");
 
@@ -944,6 +1015,37 @@ void debug_gdbstub::wait_for_debugger(device_t &device, bool firststop)
 		m_debugger_console = &m_machine->debugger().console();
 
 		m_is_be = m_address_space->endianness() == ENDIANNESS_BIG;
+
+		// FIX (2026-09-02): the register-read path above already resolves and
+		// caches the right CPU as m_maincpu (see the comment at its assignment,
+		// a few lines up) - but every execution-control handler (handle_c,
+		// handle_D, handle_k, handle_s, handle_Z, handle_z, and this function's
+		// own watchpoint/breakpoint-triggered branch below) used to call
+		// m_debugger_console->get_visible_cpu()->debug() instead of m_maincpu,
+		// a *different* CPU-selection mechanism entirely: debugcpu.cpp's
+		// wait_for_debugger(device_t &device) calls set_visible_cpu(&device)
+		// for whichever device just stopped, for ANY device in the machine
+		// that participates in the debugger stop/go state machine - not just
+		// this driver's MIPS3 maincpu. On systems with more than one CPU
+		// device (e.g. this driver's i8042 keyboard-controller sub-CPU - the
+		// same peripheral CPU the fix above already had to route around), if
+		// that OTHER device ever independently hits a debugger stop condition
+		// (its own reset halt is enough), get_visible_cpu() silently starts
+		// pointing at it instead, and every subsequent gdbstub command from an
+		// external client - continue, single-step, set/clear a breakpoint -
+		// would silently operate on the wrong CPU from then on: a Z0 breakpoint
+		// still gets registered and replies "OK" (breakpoint_set() itself
+		// doesn't know or care it's on the wrong device), but the guest CPU
+		// that's actually running MIPS3 code never has that PC checked against
+		// it, so the breakpoint can never fire. Confirmed live: a breakpoint
+		// set at the CPU's own current PC (and separately, at $ra) via
+		// tools/gdb_session.py's new --hookrun mode never fired even after 30s
+		// of a guest process definitely executing through that address -
+		// working as intended once every get_visible_cpu() call site in this
+		// file was changed to use m_maincpu instead, matching the register-read
+		// side's existing fix. This project's gdbstub usage only ever debugs
+		// one CPU (this driver's MIPS3 main CPU) and has no use for gdbstub's
+		// generic multi-CPU "visible cpu" concept at all.
 
 #if 0
 		for ( const auto &entry: m_state->state_entries() )
@@ -1003,10 +1105,11 @@ void debug_gdbstub::wait_for_debugger(device_t &device, bool firststop)
 		osd_printf_info("gdbstub: listening on address %s port %d\n", m_debugger_host, m_debugger_port);
 
 		m_initialized = true;
+		m_awaiting_accept = true;
 	}
 	else
 	{
-		device_debug *debug = m_debugger_console->get_visible_cpu()->debug();
+		device_debug *debug = m_maincpu->debug();
 		m_triggered_watchpoint = debug->triggered_watchpoint();
 		m_triggered_breakpoint = debug->triggered_breakpoint();
 		if ( m_send_stop_packet )
@@ -1091,7 +1194,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_c(const char *buf)
 	if ( *buf != '\0' )
 		return REPLY_UNSUPPORTED;
 
-	m_debugger_console->get_visible_cpu()->debug()->go();
+	m_maincpu->debug()->go();
 	m_send_stop_packet = true;
 	return REPLY_NONE;
 }
@@ -1104,7 +1207,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_D(const char *buf)
 	if ( *buf != '\0' )
 		return REPLY_UNSUPPORTED;
 
-	m_debugger_console->get_visible_cpu()->debug()->go();
+	m_maincpu->debug()->go();
 	m_dettached = true;
 
 	return REPLY_OK;
@@ -1160,7 +1263,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_H(const char *buf)
 debug_gdbstub::cmd_reply debug_gdbstub::handle_k(const char *buf)
 {
 	m_machine->schedule_exit();
-	m_debugger_console->get_visible_cpu()->debug()->go();
+	m_maincpu->debug()->go();
 	m_dettached = true;
 	m_socket.close();
 	return REPLY_NONE;
@@ -1175,11 +1278,6 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_m(const char *buf)
 	if ( sscanf(buf, "%" PRIx64 ",%" PRIx64, &address, &length) != 2 )
 		return REPLY_ENN;
 
-	offs_t offset = address;
-	address_space *tspace;
-	if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_READ, offset, tspace) )
-		return REPLY_ENN;
-
 	// Disable side effects while reading memory.
 	auto dis = m_machine->disable_side_effects();
 
@@ -1187,7 +1285,27 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_m(const char *buf)
 	reply.reserve(length * 2);
 	for ( int i = 0; i < length; i++ )
 	{
-		uint8_t value = tspace->read_byte(offset + i);
+		// FIX (2026-09-02): translate() must be called separately for every
+		// byte, not once for the request's start address with the result
+		// blindly incremented across the whole range. A guest virtual range
+		// spanning more than one page has no guarantee its pages are
+		// physically contiguous - the old code would silently keep reading
+		// forward from wherever the FIRST page's translation landed once i
+		// walked past that page's end, returning unrelated host memory
+		// content for every byte past the first page boundary instead of
+		// the guest's real second page. Confirmed live: a 96-byte read
+		// starting 8 bytes before a page boundary returned 8 correct bytes
+		// then deterministic garbage for the rest, every single time (not
+		// intermittent - this bug fires unconditionally whenever a request
+		// crosses a page boundary), while the same guest address read via
+		// gdb attached natively inside the guest (unaffected by this code
+		// at all) came back correct - see tools/gdb_session.py's --hookrun
+		// mode and task #84's investigation for how this was found.
+		offs_t offset = address + i;
+		address_space *tspace;
+		if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_READ, offset, tspace) )
+			return REPLY_ENN;
+		uint8_t value = tspace->read_byte(offset);
 		reply += string_format("%02x", value);
 	}
 	send_reply(reply);
@@ -1221,17 +1339,21 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_M(const char *buf)
 	if ( sscanf(buf, "%" PRIx64 ",%" PRIx64 ":%n", &address, &length, &buf_offset) != 2 )
 		return REPLY_ENN;
 
-	offs_t offset = address;
-	address_space *tspace;
-	if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_READ, offset, tspace) )
-		return REPLY_ENN;
-
 	std::vector<uint8_t> data;
 	if ( !hex_decode(&data, buf + buf_offset, length) )
 		return REPLY_ENN;
 
+	// FIX (2026-09-02): same bug as handle_m (see its own comment) - a
+	// multi-page write must re-translate per byte, not reuse one
+	// start-of-request translation incremented across the whole range.
 	for ( int i = 0; i < length; i++ )
-		tspace->write_byte(offset + i, data[i]);
+	{
+		offs_t offset = address + i;
+		address_space *tspace;
+		if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_WRITE, offset, tspace) )
+			return REPLY_ENN;
+		tspace->write_byte(offset, data[i]);
+	}
 
 	return REPLY_OK;
 }
@@ -1379,7 +1501,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_s(const char *buf)
 	if ( *buf != '\0' )
 		return REPLY_UNSUPPORTED;
 
-	m_debugger_console->get_visible_cpu()->debug()->single_step();
+	m_maincpu->debug()->single_step();
 	m_send_stop_packet = true;
 	return REPLY_NONE;
 }
@@ -1443,7 +1565,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_z(const char *buf)
 		m_address_map.erase(offset);
 	}
 
-	device_debug *debug = m_debugger_console->get_visible_cpu()->debug();
+	device_debug *debug = m_maincpu->debug();
 	switch ( type )
 	{
 		// Note: software and hardware breakpoints are treated both the
@@ -1485,7 +1607,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_Z(const char *buf)
 		m_address_map[offset] = address;
 	}
 
-	device_debug *debug = m_debugger_console->get_visible_cpu()->debug();
+	device_debug *debug = m_maincpu->debug();
 	switch ( type )
 	{
 		// Note: software and hardware breakpoints are treated both the
