@@ -39,6 +39,24 @@
 
 #define LOG_THROTTLE                (0)
 
+// TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
+// machine().osd().update()'s cost (pushing the finished frame to the real
+// host window) in isolation, to compare against the separate CPU-side
+// framebuffer compositing cost measured by the newport.cpp diagnostic -
+// splitting screen_device::vblank_begin's overall idle-time-dominant cost
+// (schedule.cpp diagnostic, 66-75% of all timer-callback time at idle)
+// into its two real components. Core file, shared across every MAME
+// subtarget - same self-defined-macro convention as every other diagnostic
+// this project has added to shared code, disabled by default.
+// #define MAME_SGI_OSD_BLIT_TIMING_DIAG
+#ifdef MAME_SGI_OSD_BLIT_TIMING_DIAG
+namespace {
+	uint64_t s_mame_sgi_blit_calls = 0;
+	osd_ticks_t s_mame_sgi_blit_ticks = 0;
+	osd_ticks_t s_mame_sgi_blit_next_dump = 0;
+}
+#endif
+
 
 
 //**************************************************************************
@@ -242,7 +260,25 @@ void video_manager::frame_update(bool from_debugger)
 	// ask the OSD to update
 	{
 		auto profile = g_profiler.start(PROFILER_BLIT);
+#ifdef MAME_SGI_OSD_BLIT_TIMING_DIAG
+		osd_ticks_t mame_sgi_blit_t0 = osd_ticks();
+#endif
 		machine().osd().update(!from_debugger && skipped_it);
+#ifdef MAME_SGI_OSD_BLIT_TIMING_DIAG
+		osd_ticks_t mame_sgi_blit_t1 = osd_ticks();
+		s_mame_sgi_blit_calls++;
+		s_mame_sgi_blit_ticks += (mame_sgi_blit_t1 - mame_sgi_blit_t0);
+		if (mame_sgi_blit_t1 >= s_mame_sgi_blit_next_dump)
+		{
+			osd_printf_info("MAME_SGI_OSD_BLIT_TIMING_DIAG: calls=%12llu ticks=%12llu avg_ticks=%llu\n",
+				(unsigned long long)s_mame_sgi_blit_calls,
+				(unsigned long long)s_mame_sgi_blit_ticks,
+				s_mame_sgi_blit_calls ? (unsigned long long)(s_mame_sgi_blit_ticks / s_mame_sgi_blit_calls) : 0ULL);
+			s_mame_sgi_blit_calls = 0;
+			s_mame_sgi_blit_ticks = 0;
+			s_mame_sgi_blit_next_dump = mame_sgi_blit_t1 + osd_ticks_per_second() * 5;
+		}
+#endif
 	}
 
 	// we synchronize after rendering instead of before, if low latency mode is enabled
@@ -510,6 +546,17 @@ void video_manager::exit()
 		double final_real_time = (double)m_overall_real_seconds + (double)m_overall_real_ticks / (double)tps;
 		double final_emu_time = m_overall_emutime.as_double();
 		osd_printf_info("Average speed: %.2f%% (%d seconds)\n", 100 * final_emu_time / final_real_time, (m_overall_emutime + attotime(0, ATTOSECONDS_PER_SECOND / 2)).seconds());
+
+		// TEMPORARY diagnostic (2026-07-28): dump MAME's own built-in
+		// profiler breakdown (see the matching g_profiler.enable(true) added
+		// to the SGI Indy driver's machine_reset()) alongside the speed
+		// figure at clean exit, rather than only via the on-screen overlay -
+		// part of the "DRC still nowhere near 10x faster than -nodrc"
+		// investigation, to see where real time is actually going instead
+		// of guessing from source alone.
+		if (g_profiler.enabled())
+			osd_printf_info("Profiler breakdown:\n%s\n", g_profiler.text(machine()));
+
 	}
 }
 
@@ -986,7 +1033,12 @@ void video_manager::recompute_speed(const attotime &emutime)
 	}
 
 	// if we're past the "time-to-execute" requested, signal an exit
-	if (m_seconds_to_run != 0 && emutime.seconds() >= m_seconds_to_run)
+	// MAME_SGI_STARTUP_SCREENS_NEGATIVE_STR_FIX (permanent, no #ifdef,
+	// task #62, companion half - see ui.cpp's display_startup_screens()):
+	// a negative -str is used to skip the startup nag screens with no
+	// runtime cap at all, so only a strictly positive value should ever
+	// trigger this auto-exit
+	if (m_seconds_to_run > 0 && emutime.seconds() >= m_seconds_to_run)
 	{
 		// create a final screenshot
 		if (m_snap_native)
