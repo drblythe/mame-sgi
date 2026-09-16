@@ -11,6 +11,98 @@
 #include "emu.h"
 #include "debugger.h"
 
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
+
+// TEMPORARY diagnostic (2026-08-24, reworked same day) - bisecting the
+// scheduler's own major phases (CPU execution vs timer/device callback
+// processing) to find which one clobbers the host MXCSR. The original
+// version of this check only logged whenever RC happened to read
+// round-toward-zero, on the assumption that a correctly-behaving system
+// would never observe RTZ "leaking" past the few-instruction window where
+// a guest MIPS3 CPU's own _mixed_dtoa()/_get_int_digits() legitimately
+// holds it there - that's backwards for the actual bug being chased
+// (MXCSR failing to reach RTZ when it should, not RTZ persisting when it
+// shouldn't), so it could never have caught this failure mode regardless
+// of how many checkpoints were added. Reworked to record the real MXCSR
+// right after the CPU's own exec->run() finishes a timeslice (trusted as
+// correct, since it's freshly left by the CPU/DRC's own op_setfmod
+// machinery) and compare it at every subsequent scheduler boundary -
+// execute_timers() as a whole and each individual named timer callback -
+// until the next exec->run(). A mismatch at a specific boundary pinpoints
+// the clobberer by name; if nothing outside exec->run() ever shows one,
+// the corruption is happening inside exec->run() itself but outside
+// ordinary sequential instruction execution (DRC cache flush, on-the-fly
+// recompile, exception handling). Bits 0-5 (sticky FP exception flags,
+// which legitimately change as a side effect of ordinary guest FP
+// computation and aren't managed by op_setfmod at all) are masked out of
+// the comparison; bits 6-15 (rounding control, DAZ/FTZ, exception masks)
+// are exactly what MAME's sse_control[] table manages and are the only
+// bits expected to stay pinned to the CPU's last-recorded value. See
+// wiki/performance.md and journal.md for the MXCSR-desync investigation
+// this belongs to.
+// DISABLED (2026-09-01) - investigation concluded. This check was correct
+// (record-and-compare against own baseline) but structurally could only
+// ever detect an UNEXPECTED write - the real bug (drcbex64.cpp's DRC entry
+// point never resyncing m_state.fmod, fixed via MAME_SGI_FMOD_ENTRY_RESYNC_FIX)
+// is a MISSING write, invisible to this technique regardless of checkpoint
+// density. See wiki/drc-bugfixes.md section D for the full writeup.
+// #define MAME_SGI_SCHEDULER_MXCSR_DIAG
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+#include <xmmintrin.h>
+#include <cstdio>
+#include <atomic>
+// Extern linkage (not an anonymous namespace) - mips3.cpp shares this same
+// baseline via its own MAME_SGI_MXCSR_DESYNC_DIAG checks inside
+// execute_run()'s DRC loop (m_drcuml->execute/code_compile_block/
+// code_flush_cache), so the two files form one continuous timeline rather
+// than two independently-baselined trackers that could each read "clean"
+// while missing a drift that happens to straddle the boundary between
+// them. schedule.cpp and mips3.cpp link into different static libraries
+// (libemu.a vs liboptional.a) but both resolve into the final mamesgi
+// binary at link time, same as g_mame_sgi_lwc1_target_block's precedent
+// in drcbex64.cpp/mips3drc.cpp.
+constexpr unsigned int MAME_SGI_MXCSR_COMPARE_MASK = ~0x3fu; // exclude sticky exception flags (bits 0-5)
+std::atomic<unsigned int> g_mame_sgi_mxcsr_last_known{0xffffffffu}; // sentinel: not yet recorded
+std::atomic<unsigned long> g_mame_sgi_mxcsr_diag_count{0};
+constexpr unsigned long MAME_SGI_MXCSR_DIAG_CAP = 200;
+
+// Trusts whatever just finished (CPU execution, a recompile, a cache
+// flush) as ground truth going forward.
+void mame_sgi_mxcsr_diag_record()
+{
+	g_mame_sgi_mxcsr_last_known.store(_mm_getcsr(), std::memory_order_relaxed);
+}
+
+// Flags any drift from the last-recorded value at this checkpoint, naming
+// it directly. Updates the baseline to the new value so a single clobber
+// is reported once, not re-flagged at every later checkpoint too.
+void mame_sgi_mxcsr_diag_check(const char *checkpoint)
+{
+	unsigned int last = g_mame_sgi_mxcsr_last_known.load(std::memory_order_relaxed);
+	if (last == 0xffffffffu)
+		return; // not yet recorded - first exec->run() hasn't happened yet
+	unsigned int now = _mm_getcsr();
+	if ((now & MAME_SGI_MXCSR_COMPARE_MASK) != (last & MAME_SGI_MXCSR_COMPARE_MASK))
+	{
+		unsigned long n = ++g_mame_sgi_mxcsr_diag_count;
+		if (n <= MAME_SGI_MXCSR_DIAG_CAP)
+		{
+			fprintf(stderr, "SCHED_MXCSR_DIAG n=%lu checkpoint=%s last=0x%04x now=0x%04x\n", n, checkpoint, last, now);
+			fflush(stderr);
+			if (n == MAME_SGI_MXCSR_DIAG_CAP)
+				fprintf(stderr, "SCHED_MXCSR_DIAG cap reached, further hits suppressed\n");
+		}
+		g_mame_sgi_mxcsr_last_known.store(now, std::memory_order_relaxed);
+	}
+}
+namespace {
+inline void sched_mxcsr_diag_record() { mame_sgi_mxcsr_diag_record(); }
+inline void sched_mxcsr_diag_check(const char *checkpoint) { mame_sgi_mxcsr_diag_check(checkpoint); }
+}
+#endif
+
 //**************************************************************************
 //  DEBUGGING
 //**************************************************************************
@@ -18,7 +110,52 @@
 #define VERBOSE 0
 
 #define LOG(...)  do { if (VERBOSE) machine().logerror(__VA_ARGS__); } while (0)
+
 #define PRECISION
+
+// TEMPORARY DIAGNOSTIC (2026-07-30), disabled by default. Periodically
+// snapshots-and-resets per-callback timer call count/host time from inside
+// execute_timers(), to compare which timer callback actually dominates at
+// different points in a boot (disk-I/O-heavy phases vs. idle post-login
+// GUI) rather than inferring it from a single boot-focused -bench window.
+// Learned directly from a prior mistake (2026-07-29): this kind of
+// accumulator must never run unguarded on this hot path - an earlier,
+// #ifdef-less version of essentially this same instrumentation sat
+// directly in execute_timers() and cost a std::string-keyed hash lookup on
+// every one of wd33c9x's ~165M/60s update_step calls, quietly dominating a
+// whole night's boot-timing measurements before being traced and removed.
+// Kept fully disabled by default; only enable for a deliberate, throwaway
+// measurement, never left on across a commit.
+// #define MAME_SGI_TIMER_CALLBACK_STATS_DIAG
+#ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
+namespace {
+	struct mame_sgi_timer_callback_stat { uint64_t count = 0; osd_ticks_t ticks = 0; };
+	std::unordered_map<std::string, mame_sgi_timer_callback_stat> s_mame_sgi_timer_callback_stats;
+	osd_ticks_t s_mame_sgi_timer_callback_stats_next_dump = 0;
+
+	void mame_sgi_dump_and_reset_timer_callback_stats()
+	{
+		std::vector<std::pair<std::string, mame_sgi_timer_callback_stat>> sorted(
+			s_mame_sgi_timer_callback_stats.begin(), s_mame_sgi_timer_callback_stats.end());
+		std::sort(sorted.begin(), sorted.end(),
+			[](auto const &a, auto const &b) { return a.second.ticks > b.second.ticks; });
+		osd_ticks_t total_ticks = 0;
+		for (auto const &entry : sorted)
+			total_ticks += entry.second.ticks;
+		osd_printf_info("MAME_SGI_TIMER_CALLBACK_STATS_DIAG: --- snapshot (%d distinct callbacks) ---\n", int(sorted.size()));
+		for (size_t i = 0; i < sorted.size() && i < 10; i++)
+		{
+			double pct = total_ticks ? (100.0 * double(sorted[i].second.ticks) / double(total_ticks)) : 0.0;
+			osd_printf_info("MAME_SGI_TIMER_CALLBACK_STATS_DIAG: %-40s calls=%12llu ticks=%12llu (%.2f%%)\n",
+				sorted[i].first.c_str(),
+				(unsigned long long)sorted[i].second.count,
+				(unsigned long long)sorted[i].second.ticks,
+				pct);
+		}
+		s_mame_sgi_timer_callback_stats.clear();
+	}
+}
+#endif
 
 
 
@@ -453,6 +590,9 @@ void device_scheduler::timeslice()
 						exec->m_cycles_stolen = 0;
 						m_executing_device = exec;
 						*exec->m_icountptr = exec->m_cycles_running;
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+						sched_mxcsr_diag_check("before_exec_run");
+#endif
 						if (!call_debugger)
 							exec->run();
 						else
@@ -461,6 +601,10 @@ void device_scheduler::timeslice()
 							exec->run();
 							exec->debugger_stop_cpu_hook();
 						}
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+						sched_mxcsr_diag_check("after_exec_run");
+						sched_mxcsr_diag_record();
+#endif
 
 						// adjust for any cycles we took back
 						assert(ran >= *exec->m_icountptr);
@@ -502,7 +646,13 @@ void device_scheduler::timeslice()
 	}
 
 	// execute timers
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+	sched_mxcsr_diag_check("before_execute_timers");
+#endif
 	execute_timers();
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+	sched_mxcsr_diag_check("after_execute_timers");
+#endif
 }
 
 
@@ -956,7 +1106,40 @@ inline void device_scheduler::execute_timers()
 			if (!timer.m_callback.isnull())
 			{
 				LOG("execute_timers: timer callback %s\n", timer.m_callback.name());
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+				{
+					char const *mame_sgi_diag_cbname = timer.m_callback.name();
+					char mame_sgi_diag_before[128];
+					snprintf(mame_sgi_diag_before, sizeof(mame_sgi_diag_before), "before_cb:%s",
+						mame_sgi_diag_cbname ? mame_sgi_diag_cbname : "<unnamed>");
+					sched_mxcsr_diag_check(mame_sgi_diag_before);
+				}
+#endif
+#ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
+				osd_ticks_t mame_sgi_t0 = osd_ticks();
+#endif
 				timer.m_callback(timer.m_param);
+#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
+				{
+					char const *mame_sgi_diag_cbname = timer.m_callback.name();
+					char mame_sgi_diag_after[128];
+					snprintf(mame_sgi_diag_after, sizeof(mame_sgi_diag_after), "after_cb:%s",
+						mame_sgi_diag_cbname ? mame_sgi_diag_cbname : "<unnamed>");
+					sched_mxcsr_diag_check(mame_sgi_diag_after);
+				}
+#endif
+#ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
+				osd_ticks_t mame_sgi_t1 = osd_ticks();
+				char const *mame_sgi_cb_name = timer.m_callback.name();
+				auto &mame_sgi_stat = s_mame_sgi_timer_callback_stats[mame_sgi_cb_name ? mame_sgi_cb_name : "<unnamed>"];
+				mame_sgi_stat.count++;
+				mame_sgi_stat.ticks += (mame_sgi_t1 - mame_sgi_t0);
+				if (mame_sgi_t1 >= s_mame_sgi_timer_callback_stats_next_dump)
+				{
+					mame_sgi_dump_and_reset_timer_callback_stats();
+					s_mame_sgi_timer_callback_stats_next_dump = mame_sgi_t1 + osd_ticks_per_second() * 5;
+				}
+#endif
 			}
 		}
 
