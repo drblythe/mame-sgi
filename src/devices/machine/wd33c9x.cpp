@@ -18,6 +18,55 @@
 #include "emu.h"
 #include "wd33c9x.h"
 
+// TEMPORARY EXPERIMENT (2026-07-28, resumed 2026-07-30), NOT a real fix -
+// purely to gauge the performance ceiling. Profiling found
+// wd33c9x_base_device::update_step alone accounting for 62% of all
+// timer-callback time (165M calls in 59 emulated seconds) via delay(1)
+// re-arming itself every single chip clock cycle throughout selection/
+// arbitration/transfer states. This is NOT correctness-preserving - it
+// will almost certainly break real SCSI transfer timing/handshaking - do
+// not keep this defined for anything other than a throwaway measurement.
+// First pass (2026-07-28) widened delay(1) to MAME_SGI_SCSI_DELAY_SCALE=50
+// cycles instead of disabling it outright; reverted that night because
+// overall boot was running too slow stacked with other in-flight changes
+// (RAM bump, unrelated diagnostics) that have since been backed out or
+// resolved on their own.
+// Resumed 2026-07-30, first tried the more aggressive MAME_SGI_SCSI_DELAY_SCALE=0
+// (skip rescheduling entirely) on the theory that update_step's self-poll is
+// layered on top of (not instead of) genuine event-driven progress via
+// scsi_ctrl_changed(). Confirmed wrong within minutes: the PROM's own
+// power-on diagnostics immediately reported a SCSI device failure and looped
+// resetting the bus - at least one state (ARB_TIMEOUT_BUSY's "Should be the
+// select timeout..." site) genuinely depends on delay(1) as a real timeout,
+// not a redundant poll.
+// Then tried MAME_SGI_SCSI_DELAY_SCALE=50 applied uniformly via delay()
+// itself - measurably slower than expected specifically during disk-I/O-heavy
+// phases (e.g. "Automatically reconfiguring the operating system"). Root
+// cause: delay(1) isn't only used for arbitration/selection self-polling -
+// send_byte() (SEND_WAIT_SETTLE) and the RECV_WAIT_REQ_1->RECV_WAIT_SETTLE
+// transition both call delay(1) too, and those ARE the real per-byte
+// REQ/ACK settle timing on the transfer hot path. Scaling delay() uniformly
+// throttled actual SCSI throughput by the same factor as the arbitration
+// polling it was meant to target.
+// Surgical split: delay() itself is back to a plain passthrough, unscaled.
+// A separate delay_arb_poll() carries the MAME_SGI_SCSI_DELAY_SCALE widening
+// and is called only from the ARB_* (arbitration/selection) states below,
+// which happen once per SCSI command dispatched, never per transferred byte.
+// Every delay(1) site in the transfer/settle path (send_byte(),
+// RECV_WAIT_REQ_1, and the INIT_XFR DRQ-backpressure waits) is untouched.
+// SCALE=50 measured at 330s login time, statistically flat against the
+// ~348s known-good baseline - i.e. no detectable further win from the
+// arbitration group alone at that setting. Bumping to 500 (10x) to check
+// whether ARB polling was ever a meaningfully large share of the original
+// 165M-call/62% figure, or whether that number was actually dominated by
+// real per-byte transfer settle delays (left untouched by this experiment
+// either way) - a boot-time-flat result here would point squarely at the
+// transfer path as the real cost center, not arbitration.
+#define MAME_SGI_SCSI_DELAY_EXPERIMENT
+#ifdef MAME_SGI_SCSI_DELAY_EXPERIMENT
+static constexpr uint32_t MAME_SGI_SCSI_DELAY_SCALE = 500;
+#endif
+
 #define LOG_READS       (1U << 1)
 #define LOG_WRITES      (1U << 2)
 #define LOG_COMMANDS    (1U << 3)
@@ -31,6 +80,28 @@
 
 #define VERBOSE         (0)
 #include "logmacro.h"
+
+// TEMPORARY DIAGNOSTIC (2026-07-31), disabled by default. Times
+// update_step()'s own per-call dispatch cost in isolation - the actual
+// 165M-call/59s hot site originally identified by the schedule.cpp
+// timer-callback-stats diagnostic - to look for a correctness-preserving
+// win the same way the vblank_begin/screen_update split found one: the
+// arbitration-phase fix already established that the *emulated* per-cycle
+// timing here can't be widened without breaking either the ARB_TIMEOUT_BUSY
+// timeout logic (SCALE=0 test) or real transfer throughput (SCALE=50
+// applied to the transfer path). This measures whether there's a separate,
+// unrelated *host-side* dispatch cost per call - independent of the
+// interval represented - worth reducing without touching guest-visible
+// timing at all. Same periodic snapshot-and-reset pattern, same
+// disabled-by-default discipline as every other diagnostic tonight.
+// #define MAME_SGI_UPDATE_STEP_TIMING_DIAG
+#ifdef MAME_SGI_UPDATE_STEP_TIMING_DIAG
+namespace {
+	uint64_t s_mame_sgi_update_step_calls = 0;
+	osd_ticks_t s_mame_sgi_update_step_ticks = 0;
+	osd_ticks_t s_mame_sgi_update_step_next_dump = 0;
+}
+#endif
 
 enum register_addresses_e : uint8_t {
 	OWN_ID               = 0x00, // Own ID Register                /CDB Size
@@ -446,7 +517,25 @@ void wd33c9x_base_device::device_reset()
 
 TIMER_CALLBACK_MEMBER(wd33c9x_base_device::update_step)
 {
+#ifdef MAME_SGI_UPDATE_STEP_TIMING_DIAG
+	osd_ticks_t mame_sgi_update_step_t0 = osd_ticks();
+#endif
 	step(true);
+#ifdef MAME_SGI_UPDATE_STEP_TIMING_DIAG
+	osd_ticks_t mame_sgi_update_step_t1 = osd_ticks();
+	s_mame_sgi_update_step_calls++;
+	s_mame_sgi_update_step_ticks += (mame_sgi_update_step_t1 - mame_sgi_update_step_t0);
+	if (mame_sgi_update_step_t1 >= s_mame_sgi_update_step_next_dump)
+	{
+		osd_printf_info("MAME_SGI_UPDATE_STEP_TIMING_DIAG: calls=%12llu ticks=%12llu avg_ticks=%llu\n",
+			(unsigned long long)s_mame_sgi_update_step_calls,
+			(unsigned long long)s_mame_sgi_update_step_ticks,
+			s_mame_sgi_update_step_calls ? (unsigned long long)(s_mame_sgi_update_step_ticks / s_mame_sgi_update_step_calls) : 0ULL);
+		s_mame_sgi_update_step_calls = 0;
+		s_mame_sgi_update_step_ticks = 0;
+		s_mame_sgi_update_step_next_dump = mame_sgi_update_step_t1 + osd_ticks_per_second() * 5;
+	}
+#endif
 }
 
 
@@ -974,7 +1063,7 @@ void wd33c9x_base_device::step(bool timeout)
 	case ARB_WAIT_BUS_FREE << SUB_SHIFT:
 		if (!(ctrl & (S_BSY | S_SEL))) {
 			set_scsi_state_sub(ARB_CHECK_FREE);
-			delay(1);
+			delay_arb_poll();
 		}
 		break;
 
@@ -987,7 +1076,7 @@ void wd33c9x_base_device::step(bool timeout)
 			m_scsi_bus->data_w(m_scsi_refid, 1 << m_scsi_id);
 			m_scsi_bus->ctrl_w(m_scsi_refid, S_BSY, S_BSY);
 			set_scsi_state_sub(ARB_EXAMINE_BUS);
-			delay(1);
+			delay_arb_poll();
 		}
 		break;
 
@@ -1003,7 +1092,7 @@ void wd33c9x_base_device::step(bool timeout)
 				if (win == m_scsi_id) {
 					m_scsi_bus->ctrl_w(m_scsi_refid, S_SEL, S_SEL);
 					set_scsi_state_sub(ARB_ASSERT_SEL);
-					delay(1);
+					delay_arb_poll();
 				} else {
 					m_scsi_bus->data_w(m_scsi_refid, 0);
 					m_scsi_bus->ctrl_w(m_scsi_refid, 0, S_ALL);
@@ -1017,7 +1106,7 @@ void wd33c9x_base_device::step(bool timeout)
 		if (timeout) {
 			m_scsi_bus->data_w(m_scsi_refid, (1 << m_scsi_id) | (1 << (m_regs[DESTINATION_ID] & DESTINATION_ID_DI)));
 			set_scsi_state_sub(ARB_SET_DEST);
-			delay(1);
+			delay_arb_poll();
 		}
 		break;
 
@@ -1025,7 +1114,7 @@ void wd33c9x_base_device::step(bool timeout)
 		if (timeout) {
 			m_scsi_bus->ctrl_w(m_scsi_refid, (cc == COMMAND_CC_SELECT_ATN || cc == COMMAND_CC_SELECT_ATN_TRANSFER) ? S_ATN : 0, S_ATN | S_BSY);
 			set_scsi_state_sub(ARB_RELEASE_BUSY);
-			delay(1);
+			delay_arb_poll();
 		}
 		break;
 
@@ -1036,10 +1125,10 @@ void wd33c9x_base_device::step(bool timeout)
 				if (cc == COMMAND_CC_RESELECT) {
 					m_scsi_bus->ctrl_w(m_scsi_refid, S_BSY, S_BSY);
 				}
-				delay(1);
+				delay_arb_poll();
 			} else {
 				set_scsi_state_sub(ARB_TIMEOUT_BUSY);
-				delay(1); // Should be the select timeout...
+				delay_arb_poll(); // Should be the select timeout...
 			}
 		}
 		break;
@@ -1064,7 +1153,7 @@ void wd33c9x_base_device::step(bool timeout)
 			if (cc == COMMAND_CC_RESELECT) {
 				m_scsi_bus->ctrl_w(m_scsi_refid, S_BSY, S_BSY);
 			}
-			delay(1);
+			delay_arb_poll();
 		}
 		break;
 
@@ -1075,7 +1164,7 @@ void wd33c9x_base_device::step(bool timeout)
 				if (cc == COMMAND_CC_RESELECT) {
 					m_scsi_bus->ctrl_w(m_scsi_refid, S_BSY, S_BSY);
 				}
-				delay(1);
+				delay_arb_poll();
 			} else {
 				m_scsi_bus->ctrl_w(m_scsi_refid, 0, S_ALL);
 				m_scsi_bus->ctrl_wait(m_scsi_refid, S_SEL|S_BSY|S_RST, S_ALL);
@@ -1709,6 +1798,22 @@ void wd33c9x_base_device::clear_drq()
 void wd33c9x_base_device::delay(uint32_t cycles)
 {
 	// FIXME - This should take Own ID Frequency Scale into account.
+	delay_cycles(cycles);
+}
+
+
+//-------------------------------------------------
+//  delay_arb_poll - like delay(1), but only ever called from the
+//  arbitration/selection self-poll and timeout sites (never the
+//  transfer/settle hot path) - see the experiment note above.
+//-------------------------------------------------
+
+void wd33c9x_base_device::delay_arb_poll()
+{
+	uint32_t cycles = 1;
+#ifdef MAME_SGI_SCSI_DELAY_EXPERIMENT
+	cycles = MAME_SGI_SCSI_DELAY_SCALE;
+#endif
 	delay_cycles(cycles);
 }
 

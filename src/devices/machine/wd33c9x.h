@@ -104,6 +104,7 @@ private:
 	bool m_drq_state;
 
 	void delay(uint32_t cycles);
+	void delay_arb_poll();
 	void delay_cycles(uint32_t cycles);
 	emu_timer *m_timer;
 
