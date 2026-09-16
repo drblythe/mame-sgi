@@ -90,6 +90,18 @@
 #include "emu.h"
 #include "at_keybc.h"
 
+// Investigating a sustained ~100k/sec interrupt storm on the aux (mouse)
+// port that hangs SGI Indy boot: hle_mouse.cpp's own serial protocol is
+// rate-limited to ~10kHz (ruled out as the direct source by that timing
+// alone), so the storm must be happening at the host-read/MCU-firmware
+// boundary here. This counts data_r() calls against p2_w() calls that
+// re-request the aux IRQ, to see whether the embedded i8042 firmware is
+// genuinely re-asserting the request every cycle (vs. some other cause).
+// DISABLED (2026-07-31): investigation resolved, see ioc2.cpp's
+// kbd_int_w/aux_int_w and wiki/assets.md. Left in place, gated, in case
+// future work needs it again.
+// #define MAME_SGI_KBDC_STORM_DIAG
+
 #define LOG_COMMAND (1U << 1)
 #define LOG_STATUS  (1U << 2)
 
@@ -419,8 +431,32 @@ void at_keyboard_controller_device::p2_w(uint8_t data)
 //  PS/2 KEYBOARD/MOUSE CONTROLLER DEVICE
 //**************************************************************************
 
+#ifdef MAME_SGI_KBDC_STORM_DIAG
+namespace {
+	uint64_t s_kbdc_data_r_calls = 0;
+	uint64_t s_kbdc_p2w_calls = 0;
+	uint64_t s_kbdc_p2w_aux_assert_calls = 0;
+	uint64_t s_kbdc_p2w_kbd_assert_calls = 0;
+	osd_ticks_t s_kbdc_next_dump = 0;
+}
+#endif
+
 uint8_t ps2_keyboard_controller_device::data_r()
 {
+#ifdef MAME_SGI_KBDC_STORM_DIAG
+	s_kbdc_data_r_calls++;
+	osd_ticks_t const now = osd_ticks();
+	if (s_kbdc_next_dump == 0)
+		s_kbdc_next_dump = now + osd_ticks_per_second() * 2;
+	if (now >= s_kbdc_next_dump)
+	{
+		osd_printf_info("MAME_SGI_KBDC_STORM_DIAG: data_r=%llu p2w=%llu p2w_aux_assert=%llu p2w_kbd_assert=%llu m_aux_irq=%u m_p2_data=0x%02x\n",
+			(unsigned long long)s_kbdc_data_r_calls, (unsigned long long)s_kbdc_p2w_calls,
+			(unsigned long long)s_kbdc_p2w_aux_assert_calls, (unsigned long long)s_kbdc_p2w_kbd_assert_calls,
+			(unsigned)m_aux_irq, (unsigned)m_p2_data);
+		s_kbdc_next_dump = now + osd_ticks_per_second() * 2;
+	}
+#endif
 	set_kbd_irq(0U);
 	set_aux_irq(0U);
 	u8 const data = m_mcu->upi41_master_r(0U);
@@ -550,6 +586,14 @@ void ps2_keyboard_controller_device::p2_w(uint8_t data)
 	set_aux_clk_out(BIT(~data, 3));
 	set_kbd_clk_out(BIT(~data, 6));
 	set_kbd_data_out(BIT(~data, 7));
+
+#ifdef MAME_SGI_KBDC_STORM_DIAG
+	s_kbdc_p2w_calls++;
+	if (BIT(data & ~m_p2_data, 4))
+		s_kbdc_p2w_kbd_assert_calls++;
+	if (BIT(data & ~m_p2_data, 5))
+		s_kbdc_p2w_aux_assert_calls++;
+#endif
 
 	if (BIT(data & ~m_p2_data, 4))
 		set_kbd_irq(1U);
