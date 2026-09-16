@@ -83,6 +83,8 @@ protected:
 	void pit_clock2_out(int state);
 	void kbdc_int_w(int state);
 	void duart_int_w(int state);
+	void kbd_int_w(int state);
+	void aux_int_w(int state);
 
 	void check_mappable_interrupt(int channel);
 
@@ -174,6 +176,12 @@ protected:
 	uint8_t m_int3_map_mask_reg[2];
 	uint8_t m_int3_map_pol_reg;
 	uint8_t m_int3_err_status_reg;
+
+	// State for kbd_int_w/aux_int_w's synchronous OR of kbdc's two IRQ
+	// lines - deliberately not an input_merger_device, see the comment
+	// at their wiring in device_add_mconfig (ioc2.cpp).
+	uint8_t m_kbd_int_state;
+	uint8_t m_aux_int_state;
 
 	uint32_t    m_par_read_cnt;
 	uint32_t    m_par_cntl;
