@@ -54,6 +54,7 @@ public:
 	// getters
 	drccodeptr near() const { return m_near; }
 	drccodeptr top() const { return m_top; }
+	uint32_t flush_count() const { return m_flush_count; }  // task #8 standing feature - see mips3drc.cpp's code_compile_block() for the full rationale
 
 	// pointer checking
 	bool contains_pointer(const void *ptr) const { return ((drccodeptr)ptr >= m_near && (drccodeptr)ptr < m_near + m_size); }
@@ -62,6 +63,29 @@ public:
 
 	// cache memory allocation
 	void flush() noexcept;
+
+	// statistics - same output the destructor prints at teardown, exposed
+	// so callers can check cache health (flush count, permanent cache
+	// utilization) periodically during a run, not only when the process
+	// exits cleanly. A plain kill -9 (this project's usual way of ending
+	// a test run) skips the destructor entirely, so without this a real
+	// cache-thrashing regression (a full permanent cache and hundreds of
+	// flushes reached within seconds of boot, say) can run for an entire
+	// session without ever being visible - see mame-sgi's journal.md
+	// 2026-08-07 for the ~5x regression this print would have caught
+	// immediately instead of after an extended, unrelated investigation.
+	void print_statistics() noexcept;
+
+	// resets the running counters (flush count, max transient high-water
+	// mark, and the MAME_DEBUG-only allocation counters) back to zero,
+	// without touching the cache contents itself - lets a caller mark
+	// "start measuring from here" (e.g. after boot settles, before a
+	// specific scripted action) rather than always reporting totals
+	// since process start. Building this alongside print_statistics()
+	// for a future on-screen perf-overlay stats display (DRC cache
+	// health, ASID switch count, etc, with a reset control) - not wired
+	// up to anything yet, just the data-side foundation for it.
+	void reset_statistics() noexcept;
 	void *alloc(std::size_t bytes, std::align_val_t align) noexcept;
 	void *alloc_near(std::size_t bytes, std::align_val_t align) noexcept;
 	void *alloc_invariant(std::size_t bytes, std::align_val_t align) noexcept;

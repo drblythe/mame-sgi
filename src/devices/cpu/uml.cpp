@@ -144,6 +144,7 @@ opcode_info const instruction::s_opcode_info_table[OP_MAX] =
 	OPINFO0(BREAK,   "break",    4,   false, NONE, NONE, ALL) // (for debugging) Issues a breakpoint exception to allow for debugging the generated assembly
 	OPINFO1(EXIT,    "exit",     4,   true,  NONE, NONE, ALL,  PINFO(IN, OP, IANY))
 	OPINFO3(HASHJMP, "hashjmp",  4,   false, NONE, NONE, ALL,  PINFO(IN, OP, IANY), PINFO(IN, OP, IANY), PINFO(IN, OP, HANDLE))
+	OPINFO1(DIRECTJMP, "directjmp", 4, false, NONE, NONE, ALL, PINFO(IN, OP, PTR)) // PROTOTYPE (2026-08-08, SGI driver) - see uml.h's comment on OP_DIRECTJMP
 	OPINFO1(JMP,     "jmp",      4,   true,  NONE, NONE, NONE, PINFO(IN, OP, LABEL))
 	OPINFO2(EXH,     "exh",      4,   true,  NONE, NONE, ALL,  PINFO(IN, OP, HANDLE), PINFO(IN, OP, IANY)) // Call exception handler
 	OPINFO1(CALLH,   "callh",    4,   true,  NONE, NONE, ALL,  PINFO(IN, OP, HANDLE)) // Call handle

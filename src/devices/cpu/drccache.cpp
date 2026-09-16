@@ -126,36 +126,74 @@ drc_cache::~drc_cache()
 	{
 		try
 		{
-			m_max_temporary = std::max<std::size_t>(m_max_temporary, m_top - m_invartop);
-			osd_printf_verbose(
-					"drc_cache: Statistics:\nFlush count %u, near cache use %u, permanent cache use %u/%u, invariant cache use %u, maximum transient cache use %u\n",
-					m_flush_count,
-					m_neartop - m_near,
-					m_size - (m_end - m_near),
-					m_size - (m_limit - m_near),
-					m_invartop - m_base,
-					m_max_temporary);
-#if defined(MAME_DEBUG)
-			osd_printf_verbose(
-					"Near cache allocated %u (%u oversize, %u alignment padding), freed %u, reused %u\n"
-					"Permanent cache allocated %u (%u oversize, %u alignment padding), freed %u, reused %u\n",
-					m_near_allocated,
-					m_near_oversize,
-					m_near_padding,
-					m_near_freed,
-					m_near_reused,
-					m_cache_allocated,
-					m_cache_oversize,
-					m_cache_padding,
-					m_cache_freed,
-					m_cache_reused);
-#endif
+			print_statistics();
 		}
 		catch (...)
 		{
 			// ignore exceptions dumping statistics
 		}
 	}
+}
+
+
+//-------------------------------------------------
+//  print_statistics - report cache health (flush
+//  count, permanent/near/invariant/transient use)
+//  on demand, not only at teardown - see the
+//  declaration's comment in drccache.h for why
+//-------------------------------------------------
+
+void drc_cache::print_statistics() noexcept
+{
+	m_max_temporary = std::max<std::size_t>(m_max_temporary, m_top - m_invartop);
+	osd_printf_verbose(
+			"drc_cache: Statistics:\nFlush count %u, near cache use %u, permanent cache use %u/%u, invariant cache use %u, maximum transient cache use %u\n",
+			m_flush_count,
+			m_neartop - m_near,
+			m_size - (m_end - m_near),
+			m_size - (m_limit - m_near),
+			m_invartop - m_base,
+			m_max_temporary);
+#if defined(MAME_DEBUG)
+	osd_printf_verbose(
+			"Near cache allocated %u (%u oversize, %u alignment padding), freed %u, reused %u\n"
+			"Permanent cache allocated %u (%u oversize, %u alignment padding), freed %u, reused %u\n",
+			m_near_allocated,
+			m_near_oversize,
+			m_near_padding,
+			m_near_freed,
+			m_near_reused,
+			m_cache_allocated,
+			m_cache_oversize,
+			m_cache_padding,
+			m_cache_freed,
+			m_cache_reused);
+#endif
+}
+
+
+//-------------------------------------------------
+//  reset_statistics - zero the running counters
+//  (not the cache contents) - see the declaration's
+//  comment in drccache.h
+//-------------------------------------------------
+
+void drc_cache::reset_statistics() noexcept
+{
+	m_flush_count = 0;
+	m_max_temporary = 0;
+#if defined(MAME_DEBUG)
+	m_near_allocated = 0;
+	m_near_padding = 0;
+	m_near_oversize = 0;
+	m_near_freed = 0;
+	m_near_reused = 0;
+	m_cache_allocated = 0;
+	m_cache_padding = 0;
+	m_cache_oversize = 0;
+	m_cache_freed = 0;
+	m_cache_reused = 0;
+#endif
 }
 
 
