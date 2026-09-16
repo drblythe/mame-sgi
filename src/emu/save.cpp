@@ -39,6 +39,16 @@
 
 #define VERBOSE 0
 
+// DISABLED (2026-08-14, same day): already served its purpose (built the
+// offset map used to identify the HPC3 PBUS DMA channel 1/2 arm-timing
+// finding - see task #66/journal.md). Left the implementation in place
+// (dump_registry() below) in case another offset-map needs to be pulled
+// later, but re-enable deliberately - firing unconditionally on every boot
+// interleaves with other stderr-writing diagnostics (confirmed live: torn/
+// garbled lines in a run that also had the HPC3 postload diag active) and
+// adds ~3100 lines of output to every single run.
+// #define MAME_SGI_SAVE_REGISTRY_DUMP
+
 #define LOG(x) do { if (VERBOSE) machine().logerror x; } while (0)
 
 
@@ -530,6 +540,25 @@ void save_manager::dump_registry() const
 {
 	for (auto &entry : m_entry_list)
 		LOG(("%s: %u x %u x %u (%u)\n", entry->m_name.c_str(), entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride));
+#ifdef MAME_SGI_SAVE_REGISTRY_DUMP
+	// TEMPORARY (2026-08-14): direct-to-stderr dump, bypassing logerror's own
+	// routing (error.log requires -log; the LOG() macro above also depends
+	// on VERBOSE being nonzero) - printed in save-stream order, so a running
+	// cumulative sum of typesize*typecount*blockcount gives the exact byte
+	// offset of each entry, for correlating a raw binary diff of two .sta
+	// files against real device/field names. See task #66.
+	uint64_t cum = 0;
+	for (auto &entry : m_entry_list)
+	{
+		uint64_t sz = (uint64_t)entry->m_typesize * entry->m_typecount * entry->m_blockcount;
+		fprintf(stderr, "[MAME_SAVE_REGDUMP] off=%llu size=%llu name=%s (%u x %u x %u, stride=%u)\n",
+			(unsigned long long)cum, (unsigned long long)sz, entry->m_name.c_str(),
+			entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride);
+		cum += sz;
+	}
+	fprintf(stderr, "[MAME_SAVE_REGDUMP] TOTAL=%llu\n", (unsigned long long)cum);
+	fflush(stderr);
+#endif
 }
 
 

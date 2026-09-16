@@ -118,6 +118,77 @@ void sgi_mc_device::device_start()
 	save_item(NAME(m_dma_run));
 	save_item(NAME(m_eeprom_ctrl));
 	save_item(NAME(m_semaphore));
+
+	// MAME_SGI_RAM_SAVESTATE_FIX: allocate installed memory here (once, for
+	// the device's whole lifetime) rather than in device_reset() - moved so
+	// save_pointer() below can register it. Confirmed live 2026-08-14
+	// (task #66/journal.md) that main system RAM was NEVER part of the
+	// save-state schema at all: device_reset() re-allocated m_ram[] fresh
+	// (make_unique value-initializes to zero) every device_reset() -
+	// including the implicit one every -state LOAD performs on a brand-new
+	// process - with no save_pointer() registration anywhere, so a -state
+	// reload resumed CPU/COP0/device register state exactly as saved while
+	// guest RAM silently reset to all-zero. Traced via a real repro: a
+	// return address correctly saved on the stack in a continuous boot read
+	// back as exactly 0x00000000 after a -state reload at the identical
+	// program point (same $sp, same PC) - the CPU/register side of the save
+	// was perfect; the RAM byte simply was never written at load time.
+	//
+	// Can't size these from the real SIMMS config here: ioport_port::read()
+	// throws ("Input ports cannot be read at init time!", ioport.cpp) until
+	// ioport_manager::m_safe_to_read goes true, which happens well after
+	// device_start() - confirmed live the hard way, this device_start()
+	// call itself crashed the first version of this fix. save_pointer()
+	// must run before device_start() finishes (registration closes
+	// immediately after - running_machine::start(), machine.cpp), so there
+	// is no ordering that lets both a real ioport-sized allocation and
+	// save-state registration happen together. Instead, always allocate
+	// each bank at its true maximum (the size field read by memcfg_w() is
+	// 3 bits - BIT(simms, bank*4, 3) - so 1U << (7+21) = 256MB is the
+	// largest any bank can ever be asked to be, well above the largest
+	// INPUT_PORTS_START(mc) CONFSETTING actually offered, "4x32M"/128MB,
+	// so this covers the real option table with headroom for the field's
+	// own theoretical range). device_reset() below is unchanged apart from
+	// no longer (re)allocating - it still reads the real SIMMS config and
+	// still only install_ram()-maps the configured subset of each now-
+	// always-present buffer; unused bytes just sit there unmapped and
+	// harmless, like any oversized host allocation.
+	for (unsigned bank = 0; bank < 4; bank++)
+	{
+		m_ram[bank] = std::make_unique<u8[]>(1U << (7 + 21));
+		save_pointer(NAME(m_ram[bank]), 1U << (7 + 21), bank);
+	}
+
+	// MAME_SGI_RAM_SAVESTATE_FIX (part 2): save_item(NAME(m_memcfg)) above
+	// correctly round-trips the raw m_memcfg[] values through a -state
+	// save/load, but memcfg_w() (below)'s install_ram() mapping is a
+	// SEPARATE, derived side effect on the address_space's handler tables -
+	// it isn't recomputed just because the m_memcfg[] variables changed
+	// during deserialization. device_reset() only ever calls memcfg_w()
+	// with a literal 0 ("assume memory configuration is invalidated by
+	// reset" - the driver's own comment); the real config only gets
+	// (re)applied via memcfg_w() when the GUEST'S OWN code later writes it
+	// through MMIO, which a continuous boot's PROM naturally does early in
+	// POST, but a -state LOAD skips entirely (no MMIO write ever
+	// happens - it's a snapshot resume, not a re-execution of PROM's init).
+	// Confirmed live via a real repro (task #66/journal.md): a presave hook
+	// reading a specific RAM address showed a genuine, real value there
+	// (0xBFC0F0E0) at the exact moment of save; a postload hook reading the
+	// SAME address after reload showed 0x00000000 - the raw bytes DID
+	// round-trip correctly (save_pointer() above is doing its job), but the
+	// fresh process's own pre-load, config=0, "everything unmapped" address
+	// mapping was still in effect, so reads through the CPU's address space
+	// simply weren't reaching the correctly-restored buffer at all. Fix:
+	// re-apply memcfg_w() with the just-restored m_memcfg[] values after
+	// every load, so the mapping actually reflects what was live at save
+	// time instead of the fresh process's own reset-time default.
+	machine().save().register_postload(save_prepost_delegate(FUNC(sgi_mc_device::mame_sgi_ram_remap_postload), this));
+}
+
+void sgi_mc_device::mame_sgi_ram_remap_postload()
+{
+	memcfg_w(0, m_memcfg[0]);
+	memcfg_w(1, m_memcfg[1]);
 }
 
 void sgi_mc_device::device_reset()
@@ -162,24 +233,20 @@ void sgi_mc_device::device_reset()
 
 	m_space = &m_maincpu->space(AS_PROGRAM);
 
-	u16 const simms = m_simms->read();
-
-	// allocate installed memory
-	for (unsigned bank = 0; bank < 4; bank++)
+	// MAME_SGI_RAM_SAVESTATE_FIX: allocation itself now happens once in
+	// device_start() (see its own comment) so save_pointer() has a stable
+	// buffer to register - this only logs the already-allocated bank sizes
+	// for parity with the removed allocation loop's own logging.
 	{
-		u32 const size = BIT(simms, bank * 4, 3);
-
-		switch (size)
+		u16 const simms = m_simms->read();
+		for (unsigned bank = 0; bank < 4; bank++)
 		{
-		case 0:
-			LOG("ram bank %c empty\n", bank + 'A');
-			m_ram[bank].reset();
-			break;
-		default:
-			LOG("ram bank %c size %dM (%s rank)\n",
-				bank + 'A', 1U << (size + 1), BIT(simms, bank * 4 + 3) ? "dual" : "single");
-			m_ram[bank] = std::make_unique<u8[]>(1U << (size + 21));
-			break;
+			u32 const size = BIT(simms, bank * 4, 3);
+			if (size == 0)
+				LOG("ram bank %c empty\n", bank + 'A');
+			else
+				LOG("ram bank %c size %dM (%s rank)\n",
+					bank + 'A', 1U << (size + 1), BIT(simms, bank * 4 + 3) ? "dual" : "single");
 		}
 	}
 

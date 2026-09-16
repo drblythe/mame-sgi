@@ -64,6 +64,7 @@ private:
 	void update_count();
 
 	void memcfg_w(offs_t offset, u32 data);
+	void mame_sgi_ram_remap_postload();
 
 	required_device<cpu_device> m_maincpu;
 	required_device<eeprom_serial_93cxx_device> m_eeprom;
