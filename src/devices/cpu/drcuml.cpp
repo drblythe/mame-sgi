@@ -38,6 +38,18 @@
 #include "drcbec.h"
 #include "drcbex64.h"
 
+// TEMPORARY diagnostic (2026-08-17) - see drcuml_block::end()'s own
+// comment below and drcbex64.cpp's matching MAME_SGI_DRC_LOG_FILTER_PC.
+// Kept as a separate #define here (not a shared header) since this file
+// is MAME's own generic DRC frontend, used by every core - a standing
+// filter would be surprising to anyone building any other target.
+// Enable only for a deliberate investigation session; must match the
+// value in drcbex64.cpp for -drc_log_uml and -drc_log_native to filter
+// consistently.
+// DISABLED (2026-08-17) - task #69/#71 concluded. Commented out, not
+// deleted - reusable for a future investigation session.
+// #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024c64
+
 #include "emuopts.h"
 
 #include <iostream>
@@ -356,7 +368,29 @@ void drcuml_block::end()
 	optimize();
 
 	// if we have a logfile, generate a disassembly of the block
+#ifdef MAME_SGI_DRC_LOG_FILTER_PC
+	// TEMPORARY diagnostic (2026-08-17) - same filter, same rationale,
+	// as drcbex64.cpp's own MAME_SGI_DRC_LOG_FILTER_PC (see its comment
+	// there): -drc_log_uml's disassemble() call below has no filter of
+	// its own and logs every compiled block system-wide unconditionally,
+	// which for a full boot produced a multi-gigabyte-per-minute log
+	// file - confirmed live 2026-08-17, killed after ~6 minutes at 2.8GB
+	// and still growing. Mirrors the exact same OP_HASH scan already
+	// used in drcbex64.cpp's generate() to decide per-block whether this
+	// specific compiled sequence is the one being investigated.
+	bool log_this_block = false;
+	for (u32 inum = 0; inum < m_nextinst; inum++)
+	{
+		if (m_inst[inum].opcode() == uml::OP_HASH && (offs_t)m_inst[inum].param(1).immediate() == offs_t(MAME_SGI_DRC_LOG_FILTER_PC))
+		{
+			log_this_block = true;
+			break;
+		}
+	}
+	if (m_drcuml.logging() && log_this_block)
+#else
 	if (m_drcuml.logging())
+#endif
 		disassemble();
 
 	// generate the code via the back-end

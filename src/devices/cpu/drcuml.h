@@ -153,6 +153,20 @@ public:
 	virtual void generate(drcuml_block &block, uml::instruction const *instlist, u32 numinst) = 0;
 	virtual bool hash_exists(u32 mode, u32 pc) const noexcept = 0;
 	virtual void hash_invalidate_range(u32 pcstart, u32 pcend) noexcept = 0;
+	// MAME_SGI_DRC_GET_CODEPTR_ACCESSOR (permanent, no #ifdef): exposes
+	// drc_hash_table's existing internal get_codeptr() lookup (drcbeut.h)
+	// through the public backend interface. Currently active consumer:
+	// mips3.h's debug_get_codeptr() host-gdb helper (gated by the
+	// separate MIPS3_DEBUG_HELPERS, which is defined/active). Originally
+	// added alongside mips3drc.cpp's guard-based per-call-site inline
+	// cache prototype (see wiki/drc-optimizations.md) - that consumer is
+	// currently disabled (MAME_SGI_CALLSITE_IC_PROTOTYPE commented out,
+	// confirmed not compiled into the binary), but this accessor stayed
+	// since the debug helper still needs it. Implemented in every
+	// concrete backend (drcbex64.cpp/drcbec.cpp/drcbearm64.cpp) since
+	// this is a pure virtual - all three just forward to their own
+	// m_hash.get_codeptr(), matching this method's own name.
+	virtual drccodeptr get_codeptr(u32 mode, u32 pc) const noexcept = 0;
 	virtual void get_info(drcbe_info &info) const noexcept = 0;
 	virtual bool logging() const noexcept { return false; }
 
@@ -194,6 +208,7 @@ public:
 	void get_backend_info(drcbe_info &info) const { m_beintf->get_info(info); }
 	bool hash_exists(u32 mode, u32 pc) const { return m_beintf->hash_exists(mode, pc); }
 	void hash_invalidate_range(u32 pcstart, u32 pcend) { m_beintf->hash_invalidate_range(pcstart, pcend); }
+	drccodeptr get_codeptr(u32 mode, u32 pc) const { return m_beintf->get_codeptr(mode, pc); }  // MAME_SGI_DRC_GET_CODEPTR_ACCESSOR
 	void generate(drcuml_block &block, uml::instruction *instructions, u32 count) { m_beintf->generate(block, instructions, count); }
 
 	// handle management

@@ -6,6 +6,19 @@
 
 ***************************************************************************/
 
+// DISABLED (2026-07-29): the get_value() scan-distance instrumentation
+// below (see drcbeut.h's own comment on the m_diag_scan_* fields) is
+// gated behind this rather than left unconditionally active, after the
+// user raised a real concern this file's own header comment didn't
+// address: raw per-call cost is negligible, but if the actual bug under
+// investigation has any race-condition/timing-sensitive character,
+// *any* perturbation - even a few nanoseconds added consistently to a
+// path called thousands of times a second - could change whether it
+// manifests, making "negligible overhead" not the same guarantee as
+// "doesn't affect the bug." Re-enable only for a deliberate, isolated
+// measurement pass, not as a standing default.
+// #define MAME_SGI_GETVALUE_SCAN_DIAG
+
 #include "emu.h"
 #include "drcbeut.h"
 
@@ -519,8 +532,24 @@ uint32_t drc_map_variables::get_value(drccodeptr codebase, uint32_t mapvar) cons
 	auto curscan = reinterpret_cast<uint64_t const *>((uintptr_t(codebase) | 7) + 1);
 	auto const endscan = reinterpret_cast<uint64_t const *>(m_cache.top());
 
+#ifdef MAME_SGI_GETVALUE_SCAN_DIAG
+	// TEMPORARY diagnostic (2026-07-29): measure real scan distance - see
+	// this class's own comment in drcbeut.h for why (in-memory counters,
+	// no I/O, read via a live debugger session rather than printed).
+	auto const diag_scan_start = curscan;
+#endif
+
 	// look for the signature
 	while ((curscan < endscan) && (*curscan++ != m_uniquevalue)) { }
+
+#ifdef MAME_SGI_GETVALUE_SCAN_DIAG
+	m_diag_scan_calls++;
+	uint64_t const diag_words_scanned = curscan - diag_scan_start;
+	m_diag_scan_words_total += diag_words_scanned;
+	if (diag_words_scanned > m_diag_scan_words_max)
+		m_diag_scan_words_max = diag_words_scanned;
+#endif
+
 	if (curscan >= endscan)
 		return 0;
 

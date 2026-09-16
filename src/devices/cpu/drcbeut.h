@@ -139,6 +139,17 @@ private:
 	uint32_t                m_mapvalue[uml::MAPVAR_END - uml::MAPVAR_M0]; // array of current values
 	map_entry_vector        m_entry_list;       // list of entries
 	std::vector<uint32_t>   m_out_temp;         // buffer for building output
+
+public:
+	// TEMPORARY diagnostic (2026-07-29): pure in-memory counters (no I/O,
+	// negligible overhead) for get_value()'s signature scan - measuring
+	// real call volume and scan distance directly, rather than guessing,
+	// before deciding whether the cost is dominated by call frequency or
+	// by individual scans traveling unexpectedly far. Read via a live
+	// debugger session, not printed - see get_value()'s own comment.
+	mutable uint64_t m_diag_scan_calls = 0;
+	mutable uint64_t m_diag_scan_words_total = 0;
+	mutable uint64_t m_diag_scan_words_max = 0;
 };
 
 

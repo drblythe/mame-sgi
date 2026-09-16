@@ -211,12 +211,200 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
+#include <ctime>
 #include <locale>
 #include <string>
 #include <sstream>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+// DISABLED (2026-09-01) - MXCSR-desync investigation concluded. Repurposed
+// UML_GETFMOD (unused by any real CPU core - see op_getfmod below) to read
+// the real live MXCSR via stmxcsr instead of the cached m_state.fmod belief,
+// letting mips3drc.cpp's diagnostics capture ground truth mid-generated-code.
+// Root cause found and fixed elsewhere (MAME_SGI_FMOD_ENTRY_RESYNC_FIX,
+// this file's DRC entry point) - nothing calls UML_GETFMOD once this and the
+// mips3drc.cpp-side diagnostics that used it are all disabled. See
+// wiki/drc-bugfixes.md section D for the full writeup.
+// #define MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
+
+// TEMPORARY diagnostic (2026-08-02): -drc_log_native/-drc_log_uml's
+// per-block disassembly logging (generate(), below) is prohibitively
+// expensive to run for a whole boot - every compiled block across the
+// entire system gets fully disassembled and written out, not just the
+// ones under investigation. This narrows generate()'s per-instruction
+// commenting and final disasm_code_range() dump to only fire for blocks
+// whose entry PC matches the address(es) being investigated (an
+// sgi-project-specific need, kept out of the generic backend's own
+// always-on behavior), while every other compiled block in the system
+// pays none of that cost. Undefined by default - this file is MAME's
+// shared x64 DRC backend, used by every core, not sgi-specific; a
+// standing filter here would be surprising to anyone building any other
+// target. Enable only for a deliberate investigation session, and pass
+// -drc_log_native (and usually -drc_log_uml) on the command line as
+// before - this only narrows what that flag actually logs, doesn't
+// replace needing it.
+// DISABLED (2026-08-17) - task #69/#71 concluded, pinned PC no longer
+// relevant. Commented out, not deleted - reusable for a future
+// investigation session.
+// #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024d14
+
+// TEMPORARY diagnostic (2026-09-03, task #84 Opus-review followup):
+// range variant of the above, narrowing -drc_log_native's per-block
+// disasm_code_range() dump to any block whose seqhead PC falls inside
+// cc1's parse_answer()/_cpp_do__Pragma critical window
+// (0x1007de40-0x1007e02c, real function bounds per the disassembly in
+// wiki/task84-opus-review-2026-09-03.md - kept a little wider on both
+// sides as margin). Goal: capture the actual compiled x86 bytes for
+// this region across a natural-rate loop run and diff whether a
+// pass-then-fail transition corresponds to a recompile at all (if the
+// same block serves both outcomes, that rules out "persistently
+// mis-compiled block" and points back toward an execution-time/register
+// mechanism instead).
+//
+// EXTENDED (2026-09-05, task #84): added a second, disjoint window for
+// cpp_get_token() itself - the actual callee that computes $v0, never
+// covered by the original window and never dumped at all despite 15
+// UML-op/register-path hypotheses in the caller's own three-instruction
+// resumption window (dmov/dand/dcmp) all coming back clean by source
+// reading (see wiki/task84.md's eliminated-mechanisms table, #13-#15).
+// cpp_get_token's real entry, 0x10076008, is independently confirmed two
+// ways: live gdb (a breakpoint there, conditioned on $ra==0x1007df4c,
+// forced 26/26 failures matching the established bisection) and a fresh
+// static GOT read against cc1_extracted this session (gp=0x103b2630,
+// call site's `lw $t9,-31128($gp)` -> GOT slot 0x103aac98 -> value
+// 0x10076008). The window below is centered on that entry with margin
+// generous enough to cover everything traced inside the function so far
+// (the _cpp_lex_token call site at 0x100761c8, the macro-check calls at
+// 0x100760e0/0x1007610c, the non-macro fast-path return at 0x10076120)
+// without needing the function's exact end address - a single OP_HASH
+// landing anywhere in-range is enough to log the whole compiled block,
+// whatever its true extent turns out to be. Kept as a second range
+// rather than widening the first: the two functions are ~32KB apart, and
+// spanning that whole gap would reintroduce the "log every block in the
+// system" cost this diagnostic exists to avoid.
+// #define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER
+// Widened 2026-09-09 to cover cpp_get_token's whole function body (was
+// 0x10076140, only the first ~5 seqheads) - the flush/recompile-
+// checkints experiment found two flush cycles with the IDENTICAL set of
+// compiled seqheads (same structural split points) but wildly different
+// pass/fail rates (53% vs 0% across matched samples) - ruling out
+// seqhead-structure as the differentiator and reopening the question of
+// whether the actual emitted BYTES differ between a "good" and "bad"
+// compile instance that looks structurally identical. Needs the whole
+// function in view to do that comparison properly, not just the entry.
+#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_LO 0x10076000
+#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_HI 0x10076400
+// Retargeted 2026-09-10 to parse_answer's own sibling function
+// (0x1007de40-0x1007e100) - the one containing BOTH cpp_get_token call
+// sites (the outer open-paren check at 0x1007de88 and the answer-list
+// loop's own repeated call at 0x1007df48) and the cpp_error call site
+// itself (0x1007dec4/0x1007e020's failure branch). Live-timing-race
+// hypotheses for this region were just ruled out (wiki/task84.md,
+// 2026-09-10 "traced state before the first (loop) cpp_get_token call"
+// entry - warm-phase PREDICATE runs show zero re-entry/exception events
+// in the $v0-consumption window yet still fail), narrowing the remaining
+// candidate to a compile-time LINKAGE/register-liveness defect - this is
+// the whole point of getting the real emitted x86 in view rather than
+// reasoning from UML/MIPS-level logs alone. Same matched-pair byte-diff
+// methodology already validated on cpp_get_token/parse_answer
+// themselves. Revert to 0x1007b5c0/0x1007c700 (second cpp_get_token
+// caller) or 0x10078aa0/0x10078b60 (_cpp_temp_token) if resuming either
+// of those instead.
+#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_LO 0x1007de40
+#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_HI 0x1007e100
+
+// TEMPORARY diagnostic (2026-09-05, task #84): host-side-only wall-clock
+// timestamp for every fresh compile whose seqhead is EXACTLY
+// cpp_get_token's own entry (0x10076008) - not just anywhere in the
+// window above, which also matches interior branch targets not relevant
+// to this specific question. Written from inside generate() itself,
+// BEFORE any code is emitted into the guest's code cache - this is plain
+// host C++ file I/O, not an instruction inserted into the compiled
+// block, so it cannot perturb DRC sequence-boundary decisions or any
+// guest-visible timing (see wiki/debugging.md's "Standing hazard: any
+// inserted probe can perturb interrupt/event ordering" section for why
+// that distinction is load-bearing here, not incidental). Purpose:
+// correlate "when did cpp_get_token get freshly recompiled" against
+// console_live.log's own --timestamps output after the fact, entirely
+// via wall-clock proximity in two independently-written passive logs -
+// no gdb attach, no runtime hook, nothing added to either the caller's
+// or callee's guest-executed instruction stream.
+// #define MAME_SGI_TASK84_CPPGETTOKEN_COMPILE_TIMESTAMP
+
+// TEMPORARY diagnostic (2026-09-09, task #84): logs EVERY fresh compile's
+// first seqhead PC, completely unfiltered - not scoped to cpp_get_token
+// or parse_answer at all. Motivation: this investigation has now proven
+// (wiki/task84.md, 2026-09-09 entry) that cpp_get_token's AND
+// parse_answer's own compiled bytes are identical between a passing and
+// a failing instance, for multiple matched pairs - closing off both
+// functions directly implicated in this bug as the source of the
+// non-determinism. Combined with the earlier flush/recompile finding
+// (outcome decided once, near a fresh compile event, sticky thereafter),
+// the remaining candidate is that some OTHER function - one that also
+// gets freshly recompiled by the same full-cache flush, running earlier
+// in the same cc1 invocation - has real codegen variance that produces
+// different DATA for cpp_get_token/parse_answer to correctly process.
+// This logs just "which PC, in what order" (one line per compile, no
+// disassembly) to keep volume bounded for a single short cc1-on-/dev/null
+// run, unlike a full unfiltered -drc_log_native capture (900MB/minute
+// for a full boot per wiki/assets.md - this is orders of magnitude
+// smaller in scope, one cc1 invocation's worth of compiles only).
+// Same host-side-only, zero-guest-perturbation shape as the timestamp
+// diagnostic just above.
+// #define MAME_SGI_TASK84_COMPILE_ORDER_DIAG
+
+// TEMPORARY diagnostic (2026-08-17): logs the REAL native code
+// address/size of whatever block was just compiled, whenever that block
+// contains the specific gated UML_MOV this investigation cares about
+// (mips3drc.cpp's MAME_SGI_LWC1_DELAYSLOT_PROBE sets
+// g_mame_sgi_lwc1_target_block when it emits that exact instruction into
+// the block currently being built). This sidesteps reconstructing a
+// (mode,pc) cache key and calling get_codeptr() after the fact - that
+// technique turned out to be resolving to the nocode_point miss-fallback
+// stub rather than a real block for this whole investigation. Volume is
+// bounded by the same gate as the existing probe (~a handful of hits per
+// boot), not one line per compiled block system-wide. Self-defined here
+// rather than via sgi.lua for the same reason as every other diagnostic
+// in this file - src/devices/ files compile into the shared "optional"
+// project, which sgi.lua's defines{} block never reaches.
+// DISABLED (2026-08-17) - task #69/#71 concluded; the actual root cause
+// was MIPS3DRC_STRICT_COP1 never being enabled (see drc-bugfixes.md),
+// not a DRC codegen omission - this probe's own finding (the store IS
+// correctly emitted) is what helped establish that. Commented out, not
+// deleted; the matching mips3drc.cpp-side gate
+// (MAME_SGI_LWC1_DELAYSLOT_PROBE) is disabled in the same way.
+// #define MAME_SGI_LWC1_BLOCK_ADDR_PROBE
+#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
+extern bool g_mame_sgi_lwc1_target_block;
+#endif
+
+// TEMPORARY diagnostic (2026-09-08, task #84): the narrow, targeted
+// follow-up to the broad global $v0 shadow-divergence detector
+// (mips3drc.cpp's MAME_SGI_TASK84_V0_SHADOW_DIAG) - that one never caught
+// r15 diverging from guest-written state at any INSTRUCTION boundary, but
+// never tested the one place a REAL C++ function call happens WITHIN a
+// single instruction's own codegen: op_read/op_write's call to
+// accessors.resolved.*.func (reached on every single memory access this
+// whole system makes, since this driver has no fastram configured -
+// mips3.cpp's m_fastram_select stays 0, confirmed no add_fastram() call
+// anywhere in indy_indigo2.cpp - a real, opt-in speed optimization other
+// MIPS3 drivers in this tree use and this one simply doesn't, per
+// midway/seattle.cpp's own commented-out add_fastram calls). SysV ABI
+// requires the callee to preserve r15 (callee-saved); this call site has
+// zero explicit protection for it, trusting that guarantee entirely. This
+// tests that trust directly rather than continuing to reason about it.
+// See emit_task84_r15_guard_save/_check's own comment for the mechanism.
+// Reverted 2026-09-08 for a clean baseline ahead of the predicate-stress
+// reduced-test-case experiment: this guard wraps every op_read/op_write
+// call site unconditionally (save+compare on every guest memory access,
+// system-wide), a real confound to leave active for a fresh, independent
+// experiment. Already gave its clean negative result (530 invocations,
+// 135 failures, 0 clobbers - see wiki/task84.md) - re-enable only if
+// resuming that specific ABI-trust line of investigation.
+// #define MAME_SGI_TASK84_MEMOP_R15_GUARD
 
 
 // This is a trick to make it build on Android where the ARM SDK declares ::REG_Rn
@@ -283,6 +471,21 @@ const Gp::Id int_register_map[REG_I_COUNT] =
 #ifdef _WIN32
 	Gp::kIdBx, Gp::kIdSi, Gp::kIdDi, Gp::kIdR12, Gp::kIdR13, Gp::kIdR14, Gp::kIdR15,
 #else
+	// Task #84 (2026-09-07): REVERTED - adding Gp::kIdR8 as a 6th direct
+	// integer register (to also fast-map $v1, testing whether task #84's
+	// corruption is $v0-specific or generic to any fast-mapped register)
+	// broke emulation at a fundamental level: both a -state resume AND a
+	// genuine cold boot produced ZERO console output (not even power-on
+	// diagnostics), while gdb confirmed the host process was still
+	// actively executing/progressing through normal MAME code paths -
+	// meaning something about R8 specifically (not just "one more
+	// register") breaks correctness somewhere not found by grepping this
+	// file for existing r8/r9 references (which found none on the
+	// non-Windows path - the safety check was necessary but evidently not
+	// sufficient; something else, not yet identified, depends on this
+	// register or on int_register_map's exact prior contents/size). See
+	// wiki/task84.md's matching entry for the full attempt and this
+	// negative result. Do not re-add R8 without root-causing this first.
 	Gp::kIdBx, Gp::kIdR12, Gp::kIdR13, Gp::kIdR14, Gp::kIdR15
 #endif
 };
@@ -386,6 +589,7 @@ public:
 	virtual void generate(drcuml_block &block, const uml::instruction *instlist, u32 numinst) override;
 	virtual bool hash_exists(u32 mode, u32 pc) const noexcept override;
 	virtual void hash_invalidate_range(u32 pcstart, u32 pcend) noexcept override;
+	virtual drccodeptr get_codeptr(u32 mode, u32 pc) const noexcept override;
 	virtual void get_info(drcbe_info &info) const noexcept override;
 	virtual bool logging() const noexcept override { return bool(m_log); }
 
@@ -470,6 +674,12 @@ private:
 		u32                 ssemode;                // saved SSE mode on entry
 		u32                 ssemodesave;            // temporary location for saving SSE mode across calls
 		u8                  nominalfmod;            // FMOD equivalent to SSE mode on entry or 0xff
+#ifdef MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
+		u32                 mame_sgi_getfmod_diag_scratch; // dedicated scratch for op_getfmod real-MXCSR diagnostic
+#endif
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		u64                 task84_r15_shadow;      // TEMPORARY (2026-09-08, task #84): r15 snapshotted immediately before a memory-accessor C++ call in op_read/op_write, compared immediately after - see emit_task84_r15_guard_save/_check's own comments.
+#endif
 
 		u32                 ssecontrol[4];          // copy of the sse_control array
 		float               single1;                // 1.0 in single-precision
@@ -502,6 +712,10 @@ private:
 	void smart_call_r64(Assembler &a, x86code *target, Gp const &reg) const;
 	void smart_call_m64(Assembler &a, x86code **target) const;
 	void emit_memaccess_setup(Assembler &a, const memory_accessors &accessors, const address_space::specific_access_info::side &side) const;
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+	void emit_task84_r15_guard_save(Assembler &a) const;
+	void emit_task84_r15_guard_check(Assembler &a, u32 site) const;
+#endif
 
 	[[noreturn]] void end_of_block() const;
 	static void debug_log_hashjmp(char const *tag, offs_t pc, int mode);
@@ -521,6 +735,7 @@ private:
 	void op_debug(Assembler &a, const uml::instruction &inst);
 	void op_exit(Assembler &a, const uml::instruction &inst);
 	void op_hashjmp(Assembler &a, const uml::instruction &inst);
+	void op_directjmp(Assembler &a, const uml::instruction &inst);
 	void op_jmp(Assembler &a, const uml::instruction &inst);
 	void op_exh(Assembler &a, const uml::instruction &inst);
 	void op_callh(Assembler &a, const uml::instruction &inst);
@@ -668,6 +883,7 @@ inline void drcbe_x64::generate_one(Assembler &a, const uml::instruction &inst)
 	case uml::OP_DEBUG:   op_debug(a, inst);      break; // DEBUG   pc
 	case uml::OP_EXIT:    op_exit(a, inst);       break; // EXIT    src1[,c]
 	case uml::OP_HASHJMP: op_hashjmp(a, inst);    break; // HASHJMP mode,pc,handle
+	case uml::OP_DIRECTJMP: op_directjmp(a, inst); break; // DIRECTJMP slotptr
 	case uml::OP_JMP:     op_jmp(a, inst);        break; // JMP     imm[,c]
 	case uml::OP_EXH:     op_exh(a, inst);        break; // EXH     handle,param[,c]
 	case uml::OP_CALLH:   op_callh(a, inst);      break; // CALLH   handle[,c]
@@ -926,6 +1142,27 @@ inline Gp drcbe_x64::get_base_register_and_offset(Assembler &a, void *target, Gp
 }
 
 
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+// Called by raw address from generated code (see emit_task84_r15_guard_check)
+// with args in the plain SysV integer convention (rdi,rsi,edx) - not a
+// UML_CALLC, so no `this`/mips3_device parameter; logs directly. Site
+// values: 1-5 = op_read (1=shift/mask general case, 2/3/4/5=byte/word/
+// dword/qword direct), 11-15 = the same for op_write.
+static void cfunc_task84_memop_r15_clobber(uint64_t before, uint64_t after, uint32_t site)
+{
+	static uint64_t s_hits = 0;
+	++s_hits;
+	if (s_hits > 500)
+		return;
+	FILE *f = fopen("/home/blythe/mame-sgi/task84_window_trace.log", "a");
+	if (!f)
+		return;
+	fprintf(f, "[MEMOP_R15_CLOBBER] #%llu site=%u before=%016llx after=%016llx\n",
+		(unsigned long long)s_hits, site, (unsigned long long)before, (unsigned long long)after);
+	fclose(f);
+}
+#endif
+
 //-------------------------------------------------
 //  smart_call_r64 - generate a call either
 //  directly or via a call through pointer
@@ -942,6 +1179,69 @@ inline void drcbe_x64::smart_call_r64(Assembler &a, x86code *target, Gp const &r
 		a.call(reg);                                                                    // call  reg
 	}
 }
+
+
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+//-------------------------------------------------
+//  emit_task84_r15_guard_save/_check (2026-09-08,
+//  task #84) - the narrow, targeted version of the
+//  question raised after the broad per-instruction
+//  shadow detector: does the real C++ function
+//  op_read/op_write calls (accessors.resolved.*.func,
+//  reached only because this driver has no fastram
+//  configured - see mips3.cpp's m_fastram_select,
+//  always 0 here) ever fail to preserve r15 across
+//  the call, as SysV ABI callee-saved-register rules
+//  require? Unlike the per-instruction detector, this
+//  wraps the ONE specific, previously-unverified call
+//  site directly - no guest-instruction-boundary
+//  blind spot, no delay-slot/compiler_temp labelnum
+//  hazard (no manual label needed here at all; this
+//  is asmjit's own Label type, a completely different
+//  mechanism from drcuml's uml::code_label, so
+//  neither of tonight's earlier bugs can recur here),
+//  and no dependence on load_fast_iregs() resync
+//  (this checks WITHIN a single op_read/op_write call,
+//  never across a DRC re-entry).
+//
+//  Save snapshots live r15 immediately before the
+//  call; check compares immediately after, on every
+//  return path, and calls the diagnostic ONLY on
+//  mismatch (self-capped at 500 hits, same convention
+//  as every other task84 log function - see
+//  MAME_SGI_TASK84_WINDOW_TRACE's own comment for why
+//  that cap exists). RAX (the call's own result/status)
+//  is explicitly preserved across the diagnostic's own
+//  nested call via push/pop, with a matching sub/add
+//  rsp,8 to keep the nested call's own entry 16-byte
+//  aligned per the SysV ABI (push shifts alignment by
+//  8; without the compensating sub, the diagnostic's
+//  OWN call would itself violate the very convention
+//  this probe exists to test, which would be a
+//  needless irony to introduce by accident).
+//-------------------------------------------------
+
+void drcbe_x64::emit_task84_r15_guard_save(Assembler &a) const
+{
+	a.mov(MABS(&m_near.task84_r15_shadow), r15);
+}
+
+void drcbe_x64::emit_task84_r15_guard_check(Assembler &a, u32 site) const
+{
+	Label const ok = a.new_label();
+	a.cmp(r15, MABS(&m_near.task84_r15_shadow));
+	a.je(ok);
+	a.push(rax);                                                                     // preserve the call's own result/status
+	a.mov(rdi, MABS(&m_near.task84_r15_shadow));                                     // arg1 = before
+	a.mov(rsi, r15);                                                                 // arg2 = after
+	a.mov(edx, imm(site));                                                           // arg3 = site id
+	a.sub(rsp, 8);                                                                   // realign for our own nested call (push above shifted by 8)
+	smart_call_r64(a, (x86code *)&cfunc_task84_memop_r15_clobber, rax);
+	a.add(rsp, 8);
+	a.pop(rax);
+	a.bind(ok);
+}
+#endif
 
 
 //-------------------------------------------------
@@ -1187,6 +1487,96 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	a.cmovne(gpd(REG_PARAM1), gpd(REG_PARAM3));
 	a.mov(MABS(&m_near.nominalfmod), gpb_lo(REG_PARAM1));
 
+	// MAME_SGI_FMOD_ENTRY_RESYNC_FIX (2026-09-01): m_state.fmod (the cache
+	// op_setfmod/op_getfmod trust for whether a real ldmxcsr is needed) was
+	// never updated here or at the exit point below - only by op_setfmod
+	// itself, driven by a guest CTC1. Across an execute() return/re-enter
+	// cycle, the exit point can restore real MXCSR to this nominal value
+	// while leaving m_state.fmod holding whatever the guest last set it to;
+	// if the guest's rounding mode hasn't changed since, its own
+	// unconditional entry-point SETFMOD (mips3drc.cpp, CTC1-adjacent
+	// compiled prologue) sees the (now-stale) cache already matching its
+	// request and skips the real ldmxcsr, leaving real MXCSR silently wrong
+	// relative to both the guest's own state and this cache - see
+	// wiki/drc-bugfixes.md section D and journal.md for the full
+	// investigation (IRIX printf/%f leading-digit corruption). Resync here,
+	// right before the cache gets trusted by any guest code this call runs:
+	// if the host's ambient MXCSR matched one of the four known presets
+	// (nominalfmod != 0xff, REG_PARAM1 still holds that exact value),
+	// record it as m_state.fmod's new baseline. If it didn't (0xff sentinel
+	// - non-standard host MXCSR this backdoor doesn't manage), leave
+	// m_state.fmod untouched rather than write an invalid index that could
+	// later be used as an out-of-bounds ssecontrol[] lookup - matching the
+	// exit point's own existing care about not clobbering non-standard host
+	// state it doesn't understand.
+	//
+	// Toggle-numbered (not a plain #define) per this project's established
+	// convention for changes in this exact code region (see mips3drc.cpp's
+	// MAME_SGI_TLB_MISMATCH_REFRESH_FIX) - three functionally-equivalent
+	// variants kept side by side while their relative perf cost is measured
+	// (2026-09-01), all validated correct (mxcsrtest clean under real load
+	// in each case):
+	//   1 = always write nominalfmod into m_state.fmod (except the 0xff
+	//       sentinel) - simplest, original fix. perf stat vs no-fix:
+	//       +0.42% instructions, +1.15% cycles.
+	//   2 = also skip the write when m_state.fmod already equals
+	//       nominalfmod (the common steady-state case - guest not
+	//       actively changing rounding mode across this entry) - one more
+	//       branch+load, but avoids the store's read-after-write
+	//       dependency against mips3drc.cpp's own unconditional
+	//       entry-point SETFMOD that reads m_state.fmod again right after
+	//       (on the other side of the call below) - a same-address/
+	//       same-size store-to-load forward that x86 handles via its fast
+	//       path (no memory-model hazard defeats it, this isn't a stall in
+	//       the blocked-forwarding sense) but which still costs real,
+	//       nonzero latency (~4-7 cycles is typical on modern cores) paid
+	//       on literally every execute() call when unconditional. perf
+	//       stat vs variant 1: -0.37% instructions, -0.47% cycles - see
+	//       wiki/drc-bugfixes.md for the full caveat (contradicts static
+	//       per-call instruction-count analysis, likely noise-band, not
+	//       confidently attributed to the code change alone).
+	//   3 = branch-free: always load m_state.fmod, CMOV-select
+	//       nominalfmod-or-current based on the 0xff check, always store
+	//       the selected value. No control-flow branch for this decision
+	//       at all, but the store (and its forwarding dependency against
+	//       the same downstream read) is paid unconditionally on every
+	//       execute() call, same as variant 1 - built to test whether
+	//       branch misprediction or store-forwarding latency is the real
+	//       cost driver, since branch-miss rate barely moved between
+	//       variants 1/2/no-fix (~2.15-2.21%, all clustered tight),
+	//       suggesting misprediction was never the bottleneck. x86 has no
+	//       conditional-store instruction - CMOV only selects a register
+	//       value, so branch-free necessarily means the store itself
+	//       becomes unconditional again.
+#define MAME_SGI_FMOD_ENTRY_RESYNC_FIX 1
+#if MAME_SGI_FMOD_ENTRY_RESYNC_FIX == 1
+	{
+		Label const skip_fmod_resync = a.new_label();
+		a.cmp(gpb_lo(REG_PARAM1), 0xff);
+		a.short_().je(skip_fmod_resync);
+		a.mov(MABS(&m_state.fmod, 1), gpb_lo(REG_PARAM1));
+		a.bind(skip_fmod_resync);
+	}
+#elif MAME_SGI_FMOD_ENTRY_RESYNC_FIX == 2
+	{
+		Label const skip_fmod_resync = a.new_label();
+		a.cmp(gpb_lo(REG_PARAM1), 0xff);
+		a.short_().je(skip_fmod_resync);
+		a.movzx(gpd(REG_PARAM3), MABS(&m_state.fmod, 1));
+		a.cmp(gpb_lo(REG_PARAM1), gpb_lo(REG_PARAM3));
+		a.short_().je(skip_fmod_resync);
+		a.mov(MABS(&m_state.fmod, 1), gpb_lo(REG_PARAM1));
+		a.bind(skip_fmod_resync);
+	}
+#elif MAME_SGI_FMOD_ENTRY_RESYNC_FIX == 3
+	{
+		a.movzx(gpd(REG_PARAM3), MABS(&m_state.fmod, 1));
+		a.cmp(gpb_lo(REG_PARAM1), 0xff);
+		a.cmove(gpd(REG_PARAM1), gpd(REG_PARAM3));
+		a.mov(MABS(&m_state.fmod, 1), gpb_lo(REG_PARAM1));
+	}
+#endif
+
 	a.call(gpq(REG_PARAM2));
 
 	// generate an exit point
@@ -1331,6 +1721,109 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	m_map.block_begin(block);
 	m_invariant_block = block.invariant();
 
+#ifdef MAME_SGI_TASK84_CODEDIFF_LOG_FILTER
+	// TEMPORARY diagnostic (2026-09-03) - see the macro's own comment
+	// near the top of this file. Range variant of
+	// MAME_SGI_DRC_LOG_FILTER_PC below, both mutually exclusive in
+	// practice (only one is ever defined at a time).
+	bool log_this_block = false;
+	for (u32 inum = 0; inum < numinst; inum++)
+	{
+		if (instlist[inum].opcode() == OP_HASH)
+		{
+			offs_t const seqpc = (offs_t)instlist[inum].param(1).immediate();
+			if ((seqpc >= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_LO) && seqpc <= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_HI)) ||
+				(seqpc >= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_LO) && seqpc <= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_HI)))
+			{
+				log_this_block = true;
+				break;
+			}
+		}
+	}
+#ifdef MAME_SGI_TASK84_CPPGETTOKEN_COMPILE_TIMESTAMP
+	// See the macro's own comment near the top of this file. Deliberately
+	// a separate scan from the one above (matches only the exact entry
+	// PC, not the whole window) rather than folding into it, so this
+	// stays trivially removable independent of the broader codediff
+	// filter.
+	for (u32 inum = 0; inum < numinst; inum++)
+	{
+		if (instlist[inum].opcode() == OP_HASH && (offs_t)instlist[inum].param(1).immediate() == offs_t(0x10076008))
+		{
+			FILE *f = fopen("task84_cppgettoken_compile_times.log", "a");
+			if (f)
+			{
+				using namespace std::chrono;
+				auto const now = system_clock::now();
+				auto const ms = duration_cast<milliseconds>(now.time_since_epoch()).count();
+				time_t const secs = time_t(ms / 1000);
+				struct tm tmval;
+				localtime_r(&secs, &tmval);
+				fprintf(f, "[%02d:%02d:%02d.%03d] compiled cpp_get_token entry (0x10076008)\n",
+					tmval.tm_hour, tmval.tm_min, tmval.tm_sec, int(ms % 1000));
+				fclose(f);
+			}
+			break;
+		}
+	}
+#endif
+#elif defined(MAME_SGI_DRC_LOG_FILTER_PC)
+	// TEMPORARY diagnostic (2026-08-02) - see the macro's own comment
+	// near the top of this file. Only this block's logging decision is
+	// affected; block_begin() above and the actual code generation below
+	// are completely unaffected either way.
+	bool log_this_block = false;
+	for (u32 inum = 0; inum < numinst; inum++)
+	{
+		if (instlist[inum].opcode() == OP_HASH && (offs_t)instlist[inum].param(1).immediate() == offs_t(MAME_SGI_DRC_LOG_FILTER_PC))
+		{
+			log_this_block = true;
+			break;
+		}
+	}
+#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
+	// Also log via the precise g_mame_sgi_lwc1_target_block gate (set by
+	// mips3drc.cpp's MAME_SGI_LWC1_DELAYSLOT_PROBE) rather than only the
+	// PC-scan filter above - this gets MAME's own already-proven
+	// disasm_code_range()/add_comment() disassembly (with UML-source
+	// comments interleaved) for the exact block ground-truth-identified
+	// by MAME_SGI_LWC1_BLOCK_ADDR_PROBE, without relying on raw byte-scan
+	// signature guesses. Read, not cleared, here - the address-probe
+	// block below still needs it and clears it once, after emit().
+	if (g_mame_sgi_lwc1_target_block)
+		log_this_block = true;
+#endif
+#else
+	constexpr bool log_this_block = true;
+#endif
+
+#ifdef MAME_SGI_TASK84_COMPILE_ORDER_DIAG
+	// See the macro's own comment near the top of this file. Independent
+	// of log_this_block/the filter chain above by design - this must fire
+	// for EVERY compile, not just ones inside cpp_get_token/parse_answer's
+	// own windows, since the whole point is to see what ELSE compiles.
+	{
+		offs_t first_seqhead = 0xffffffff;
+		for (u32 inum = 0; inum < numinst; inum++)
+		{
+			if (instlist[inum].opcode() == OP_HASH)
+			{
+				first_seqhead = (offs_t)instlist[inum].param(1).immediate();
+				break;
+			}
+		}
+		if (first_seqhead != 0xffffffff)
+		{
+			FILE *f = fopen("task84_compile_order.log", "a");
+			if (f)
+			{
+				fprintf(f, "0x%08x\n", first_seqhead);
+				fclose(f);
+			}
+		}
+	}
+#endif
+
 	// compute the base by aligning the cache top to a cache line
 	auto [err, linesize] = osd_get_cache_line_size();
 	uintptr_t linemask = 63;
@@ -1353,7 +1846,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	ch.set_error_handler(&e);
 
 	FileLogger logger(m_log_asmjit);
-	if (logger.file())
+	if (logger.file() && log_this_block)
 	{
 		logger.set_flags(FormatFlags::kHexOffsets | FormatFlags::kHexImms | FormatFlags::kMachineCode);
 		logger.set_indentation(FormatIndentationGroup::kCode, 4);
@@ -1362,7 +1855,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 
 	Assembler a(&ch);
 	a.add_encoding_options(EncodingOptions::kOptimizedAlign);
-	if (logger.file())
+	if (logger.file() && log_this_block)
 		a.add_diagnostic_options(DiagnosticOptions::kValidateIntermediate);
 
 	// generate code
@@ -1375,7 +1868,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 		std::string dasm;
 
 		// add a comment
-		if (m_log)
+		if (m_log && log_this_block)
 		{
 			dasm = inst.disasm(&m_drcuml);
 
@@ -1397,7 +1890,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	}
 
 	// catch falling off the end of a block
-	if (m_log)
+	if (m_log && log_this_block)
 	{
 		m_log->add_comment(dst + a.offset(), "%s", "end of block");
 		a.set_inline_comment("end of block");
@@ -1409,8 +1902,23 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	if (!bytes)
 		block.abort();
 
+#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
+	if (g_mame_sgi_lwc1_target_block)
+	{
+		FILE *f = fopen("/home/blythe/mame-sgi/block_addr_probe.log", "a");
+		if (f)
+		{
+			fprintf(f, "[BLOCK_ADDR_PROBE] %s dst=%p end=%p bytes=%zu\n",
+				blockname.empty() ? "Unknown block" : blockname.c_str(),
+				(void *)dst, (void *)(dst + bytes), bytes);
+			fclose(f);
+		}
+		g_mame_sgi_lwc1_target_block = false;
+	}
+#endif
+
 	// log it
-	if (m_log)
+	if (m_log && log_this_block)
 		m_log->disasm_code_range(blockname.empty() ? "Unknown block" : blockname.c_str(), dst, dst + bytes);
 
 	// tell all of our utility objects that the block is finished
@@ -1438,6 +1946,19 @@ bool drcbe_x64::hash_exists(u32 mode, u32 pc) const noexcept
 void drcbe_x64::hash_invalidate_range(u32 pcstart, u32 pcend) noexcept
 {
 	m_hash.invalidate_range(pcstart, pcend);
+}
+
+
+//-------------------------------------------------
+//  get_codeptr - return the compiled code pointer
+//  for the given mode/pc, or the "no code" sentinel
+//  if not compiled
+//  MAME_SGI_DRC_GET_CODEPTR_ACCESSOR - see drcuml.h
+//-------------------------------------------------
+
+drccodeptr drcbe_x64::get_codeptr(u32 mode, u32 pc) const noexcept
+{
+	return m_hash.get_codeptr(mode, pc);
 }
 
 
@@ -2174,6 +2695,40 @@ void drcbe_x64::op_hashjmp(Assembler &a, const instruction &inst)
 
 
 //-------------------------------------------------
+//  op_directjmp - process a DIRECTJMP opcode -
+//  PROTOTYPE (2026-08-08, SGI driver): see uml.h's
+//  comment on OP_DIRECTJMP. Deliberately minimal -
+//  no mode/pc table walk, no nocode fallback (the
+//  caller is required to have already confirmed the
+//  target slot holds a valid, resolved codeptr before
+//  ever reaching this op). Mirrors exactly the one
+//  piece of op_hashjmp's preamble that matters for
+//  correctness here - the rsp reset - which is why
+//  this op exists at all rather than being expressible
+//  as a driver-level byte patch: m_near.stacksave is
+//  private to this backend, with no UML-level hook to
+//  reach it from outside.
+//-------------------------------------------------
+
+void drcbe_x64::op_directjmp(Assembler &a, const instruction &inst)
+{
+	// validate instruction
+	assert(inst.size() == 4 || inst.size() == 8);
+	assert_no_condition(inst);
+	assert_no_flags(inst);
+
+	// normalize parameters - PTR-typed, always a fixed host address (mirrors op_load's basep)
+	be_parameter slotp(*this, inst.param(0), PTYPE_M);
+
+	// reset the stack base, same invariant every other dispatch mechanism maintains
+	a.mov(rsp, MABS(&m_near.stacksave));
+
+	// jump through the slot's own contents - the one memory load this whole op exists to make cheap
+	a.jmp(MABS(slotp.memory(), 8));
+}
+
+
+//-------------------------------------------------
 //  op_jmp - process a JMP opcode
 //-------------------------------------------------
 
@@ -2416,6 +2971,23 @@ void drcbe_x64::op_setfmod(Assembler &a, const instruction &inst)
 //  op_getfmod - process a GETFMOD opcode
 //-------------------------------------------------
 
+// TEMPORARY diagnostic (2026-08-24): UML_GETFMOD is unused by every actual
+// CPU core in the tree (only the backend implementations and the macro
+// itself reference it - confirmed via a full-tree grep before repurposing
+// this), so it's safe to redefine here to read the REAL, live host MXCSR
+// (via stmxcsr) instead of the cached m_state.fmod belief the opcode
+// normally returns. This exists to let mips3drc.cpp capture the true
+// pre-callout MXCSR value into a UML register *before* any UML_CALLC runs
+// (UML_CALLC's own op_callc always forces MXCSR to the default mode before
+// the call, making it otherwise impossible to observe the true live value
+// from inside a called C function) - part of the MXCSR-desync investigation,
+// see wiki/performance.md and journal.md. Revert to the original
+// m_state.fmod-based body if GETFMOD is ever wired up for real use.
+// (MAME_SGI_GETFMOD_REAL_MXCSR_DIAG is defined near the top of the file,
+// above near_state, so its dedicated scratch field can be added to the
+// struct - MABS() below requires an m_near/m_state field, not an
+// arbitrary global, since it addresses relative to rbp.)
+
 void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 {
 	// validate instruction
@@ -2426,6 +2998,19 @@ void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 	// normalize parameters
 	be_parameter dstp(*this, inst.param(0), PTYPE_MR);
 
+#ifdef MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
+	Mem const scratch = MABS(&m_near.mame_sgi_getfmod_diag_scratch, 4);
+	a.stmxcsr(scratch);
+	if (dstp.is_int_register())
+	{
+		a.mov(gpd(dstp.ireg()), scratch);
+	}
+	else
+	{
+		a.mov(eax, scratch);
+		a.mov(MABS(dstp.memory()), eax);
+	}
+#else
 	Mem const fmod = MABS(&m_state.fmod, 1);
 
 	// fetch the current mode and store to the destination
@@ -2438,6 +3023,7 @@ void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 		a.movzx(eax, fmod);
 		a.mov(MABS(dstp.memory()), eax);
 	}
+#endif
 }
 
 
@@ -3084,6 +3670,10 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 	// restore caller's floating point environment
 	a.ldmxcsr(MABS(&m_near.ssemode));
 
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+	emit_task84_r15_guard_save(a);
+#endif
+
 	// set up a call to the read handler
 	auto const &accessors = m_memory_accessors[spacesizep.space()];
 	bool const have_specific = (uintptr_t(nullptr) != accessors.specific.read.function) || accessors.specific.read.is_virtual;
@@ -3097,6 +3687,9 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 			a.mov(gpq(REG_PARAM3), make_bitmask<u64>(accessors.specific.native_bytes << 3));
 
 		emit_memaccess_setup(a, accessors, accessors.specific.read);                                // get dispatch table entry
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 1);
+#endif
 	}
 	else if (have_specific && ((1 << spacesizep.size()) < accessors.specific.native_bytes))
 	{
@@ -3182,26 +3775,41 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 			a.shr(eax, cl);                                                                      // shift result by masked bit address
 		else
 			a.shr(rax, cl);                                                                      // shift result by masked bit address
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 2);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_BYTE)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_byte.obj);
 		smart_call_r64(a, accessors.resolved.read_byte.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 3);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_WORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_word.obj);
 		smart_call_r64(a, accessors.resolved.read_word.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 4);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_DWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_dword.obj);
 		smart_call_r64(a, accessors.resolved.read_dword.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 5);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_QWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_qword.obj);
 		smart_call_r64(a, accessors.resolved.read_qword.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 6);
+#endif
 	}
 
 	// restore our rounding mode
@@ -3425,6 +4033,10 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 	// restore caller's floating point environment
 	a.ldmxcsr(MABS(&m_near.ssemode));
 
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+	emit_task84_r15_guard_save(a);
+#endif
+
 	// set up a call to the write handler
 	auto const &accessors = m_memory_accessors[spacesizep.space()];
 	bool const have_specific = (uintptr_t(nullptr) != accessors.specific.write.function) || accessors.specific.write.is_virtual;
@@ -3442,6 +4054,9 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 			a.mov(gpq(REG_PARAM4), make_bitmask<u64>(accessors.specific.native_bytes << 3));
 
 		emit_memaccess_setup(a, accessors, accessors.specific.write);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 11);
+#endif
 	}
 	else if (have_specific && ((1 << spacesizep.size()) < accessors.specific.native_bytes))
 	{
@@ -3513,26 +4128,41 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 			a.call(ptr(r10, accessors.specific.write.function));                                 // call virtual member function
 		else
 			smart_call_r64(a, (x86code *)accessors.specific.write.function, rax);                // call non-virtual member function
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 12);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_BYTE)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_byte.obj);
 		smart_call_r64(a, accessors.resolved.write_byte.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 13);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_WORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_word.obj);
 		smart_call_r64(a, accessors.resolved.write_word.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 14);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_DWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_dword.obj);
 		smart_call_r64(a, accessors.resolved.write_dword.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 15);
+#endif
 	}
 	else if (spacesizep.size() == SIZE_QWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_qword.obj);
 		smart_call_r64(a, accessors.resolved.write_qword.func, rax);
+#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
+		emit_task84_r15_guard_check(a, 16);
+#endif
 	}
 
 	// restore our rounding mode
