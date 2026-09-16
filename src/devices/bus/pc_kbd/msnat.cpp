@@ -13,12 +13,129 @@ TODO:
 #include "emu.h"
 #include "msnat.h"
 
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+
 
 /***************************************************************************
     ONSTANTS
 ***************************************************************************/
 
 #define LOG     0
+
+// TEMPORARY diagnostic (2026-08-23) - real keyboard-drop investigation,
+// see wiki/console.md. input_sdl.cpp's MAME_SGI_KBD_RAW_EVENT_DIAG
+// already proved the host SDL layer delivers every keystroke correctly
+// during a heavy GUI-session-restore stall; this is the next hop down
+// the chain, the embedded 8051 keyboard-controller firmware's own
+// matrix-scan reads (p0_read(), called by the 8051 CPU itself whenever
+// its firmware polls a currently-selected row). Logs only non-idle
+// reads (data != 0xFF, i.e. the firmware just detected some key down on
+// whatever row(s) m_p1/m_p2 currently have selected) - genuinely rare
+// events (only real keypresses), no rate limiting needed, unlike the
+// per-dispatch-style diagnostics elsewhere in this project. Same
+// wall-clock HH:MM:SS.mmm format as MAME_SGI_KBD_RAW_EVENT_DIAG for
+// direct cross-reference. DISABLED (2026-08-23) - task #75
+// reopened-investigation paused; row/column addresses for the affected
+// keys are already recorded in wiki/console.md, re-enable if another
+// live session is needed.
+// #define MAME_SGI_KBD_MATRIX_SCAN_DIAG
+
+#ifdef MAME_SGI_KBD_MATRIX_SCAN_DIAG
+namespace {
+std::string kbd_matrix_scan_timestamp()
+{
+	using namespace std::chrono;
+	auto const now = system_clock::now();
+	auto const t = system_clock::to_time_t(now);
+	auto const ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+	std::tm tm_buf;
+	localtime_r(&t, &tm_buf);
+	char buf[16];
+	std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(ms.count()));
+	return buf;
+}
+}
+#endif
+
+// TEMPORARY diagnostic (2026-08-23) - Bug B investigation (see
+// wiki/console.md): MAME_SGI_KBD_MATRIX_SCAN_DIAG proved a key that IS
+// correctly toggled at the host layer (a real, guaranteed-visible
+// state=0x80 window, confirmed via input_sdl.cpp's own
+// MAME_SGI_KBD_STATE_TRACE_DIAG) can still never be observed by this
+// firmware's own matrix scan. The remaining question is *why*: does the
+// 8051 simply not run enough during a stall, or does it run plenty but
+// its own row-select scan cycle - visiting all 16 rows in sequence -
+// take longer than the host's guaranteed-visible window, so by the time
+// the scan cycles back around to the ONE row a given key lives on, the
+// window has already closed? Unconditionally counts every p0_read()
+// call (every row-select sample, not just non-idle ones) and, per row-
+// select value, the worst (largest) real-time gap ever seen between two
+// consecutive samples of that *same* select value - i.e. the row's own
+// scan-revisit period. Reported periodically (rate-limited), not
+// per-call - p0_read() fires far too often (thousands/sec) for
+// per-call logging like MATRIX_SCAN_DIAG uses. DISABLED (2026-08-23) -
+// answered its question (measured worst_gap=373.9ms, correlated to a
+// drc_cache flush - see wiki/console.md's Bug B writeup); task #75
+// reopened-investigation paused.
+// #define MAME_SGI_KBD_SCAN_RATE_DIAG
+
+#ifdef MAME_SGI_KBD_SCAN_RATE_DIAG
+namespace {
+constexpr int KBD_SCAN_RATE_NUM_SELECTS = 16; // 8 P2.x rows + 8 P1.x rows, distinguished by which register is non-0xff
+uint64_t s_scan_rate_total_calls = 0;
+double s_scan_rate_last_seen_ms[KBD_SCAN_RATE_NUM_SELECTS] = {0};
+double s_scan_rate_worst_gap_ms[KBD_SCAN_RATE_NUM_SELECTS] = {0};
+double s_scan_rate_worst_gap_end_ms[KBD_SCAN_RATE_NUM_SELECTS] = {0}; // wall-clock time the worst gap's scan resumed - for correlating against other timestamped diagnostics (e.g. DRC compile-rate)
+uint64_t s_scan_rate_visit_count[KBD_SCAN_RATE_NUM_SELECTS] = {0};
+double s_scan_rate_first_seen_ms[KBD_SCAN_RATE_NUM_SELECTS] = {0};
+double s_scan_rate_next_report_ms = 0;
+
+double kbd_scan_rate_now_ms()
+{
+	using namespace std::chrono;
+	return duration<double, std::milli>(system_clock::now().time_since_epoch()).count();
+}
+
+// Formats an arbitrary epoch-ms value (not necessarily "now") - used to
+// print WHEN the worst gap was recorded, not just its size, so it can
+// be lined up against other timestamped diagnostics (e.g. a DRC
+// compile-rate counter using the same HH:MM:SS.mmm format).
+std::string kbd_scan_rate_format_ms(double epoch_ms)
+{
+	using namespace std::chrono;
+	auto const dur = duration<double, std::milli>(epoch_ms);
+	auto const tp = system_clock::time_point(duration_cast<system_clock::duration>(dur));
+	auto const t = system_clock::to_time_t(tp);
+	auto const ms = int64_t(epoch_ms) % 1000;
+	std::tm tm_buf;
+	localtime_r(&t, &tm_buf);
+	char buf[16];
+	std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(ms));
+	return buf;
+}
+
+// Returns the row index (0-15) this exact (p2,p1) select pair
+// corresponds to, or -1 if not a single clean row select (multiple
+// rows active at once, or none - both real, just not useful for this
+// per-row cadence measurement).
+int kbd_scan_rate_row_index(uint8_t p2, uint8_t p1)
+{
+	int p2_row = -1, p1_row = -1, p2_count = 0, p1_count = 0;
+	for (int i = 0; i < 8; i++)
+	{
+		if (!(p2 & (1 << i))) { p2_row = i; p2_count++; }
+		if (!(p1 & (1 << i))) { p1_row = i; p1_count++; }
+	}
+	if (p2_count == 1 && p1_count == 0)
+		return p2_row;
+	if (p1_count == 1 && p2_count == 0)
+		return 8 + p1_row;
+	return -1;
+}
+}
+#endif
 
 
 /*****************************************************************************
@@ -336,6 +453,62 @@ uint8_t pc_kbd_microsoft_natural_device::p0_read()
 
 	if ( ! ( m_p1 & 0x80 ) )
 		data &= m_p1_r[7]->read();
+
+#ifdef MAME_SGI_KBD_MATRIX_SCAN_DIAG
+	if (data != 0xFF)
+	{
+		osd_printf_info("MAME_SGI_KBD_MATRIX_SCAN_DIAG: %s select(P2)=%02x select(P1)=%02x data=%02x\n",
+			kbd_matrix_scan_timestamp().c_str(), m_p2, m_p1, data);
+	}
+#endif
+
+#ifdef MAME_SGI_KBD_SCAN_RATE_DIAG
+	{
+		double const now = kbd_scan_rate_now_ms();
+		s_scan_rate_total_calls++;
+		int const row = kbd_scan_rate_row_index(m_p2, m_p1);
+		if (row >= 0)
+		{
+			double const last = s_scan_rate_last_seen_ms[row];
+			if (last != 0.0)
+			{
+				double const gap = now - last;
+				if (gap > s_scan_rate_worst_gap_ms[row])
+				{
+					s_scan_rate_worst_gap_ms[row] = gap;
+					s_scan_rate_worst_gap_end_ms[row] = now; // when the scan resumed after the gap - the DRC compile-rate counter should show a spike shortly before this moment if the two are related
+				}
+			}
+			else
+			{
+				s_scan_rate_first_seen_ms[row] = now;
+			}
+			s_scan_rate_last_seen_ms[row] = now;
+			s_scan_rate_visit_count[row]++;
+		}
+		if (s_scan_rate_next_report_ms == 0.0)
+			s_scan_rate_next_report_ms = now + 1000.0;
+		if (now >= s_scan_rate_next_report_ms)
+		{
+			// Row 10 = P2.2 (the row 'O'/'L'/'9'/'.'/'-'/F7/F8 live on) -
+			// the one directly implicated by MATRIX_SCAN_DIAG's evidence.
+			// avg_period is real elapsed time since this row's first
+			// visit divided by its visit count; worst_gap is the single
+			// largest real gap ever seen between two consecutive visits
+			// to that exact row - i.e. the longest window this row was
+			// not being sampled at all.
+			double const elapsed = s_scan_rate_visit_count[10] ? (now - s_scan_rate_first_seen_ms[10]) : 0.0;
+			osd_printf_info("MAME_SGI_KBD_SCAN_RATE_DIAG: %s total_calls=%llu P2.2(row10): visits=%llu avg_period=%.3fms worst_gap=%.3fms worst_gap_end=%s\n",
+				kbd_matrix_scan_timestamp().c_str(),
+				(unsigned long long)s_scan_rate_total_calls,
+				(unsigned long long)s_scan_rate_visit_count[10],
+				s_scan_rate_visit_count[10] > 1 ? (elapsed / double(s_scan_rate_visit_count[10] - 1)) : 0.0,
+				s_scan_rate_worst_gap_ms[10],
+				s_scan_rate_worst_gap_end_ms[10] != 0.0 ? kbd_scan_rate_format_ms(s_scan_rate_worst_gap_end_ms[10]).c_str() : "n/a");
+			s_scan_rate_next_report_ms = now + 1000.0;
+		}
+	}
+#endif
 
 	return data;
 }

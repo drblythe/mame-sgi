@@ -34,6 +34,13 @@
  *   - receive parity error handling
  */
 
+// Self-defined here (not via sgi.lua's defines{} block) because this
+// file compiles as part of the shared "optional" project
+// (liboptional.a, linked into every MAME subtarget), which sgi.lua's
+// own defines{} block never reaches - only files under src/mame/sgi/
+// do. See the fix itself, in sample(), for what this changes.
+#define MAME_SGI_PS2_MOUSE_OVERFLOW_FIX
+
 #include "emu.h"
 #include "hle_mouse.h"
 
@@ -42,7 +49,7 @@
 #define LOG_REPORT  (1U << 3)
 #define LOG_STATE   (1U << 4)
 
-//#define VERBOSE (LOG_COMMAND)
+//#define VERBOSE (LOG_COMMAND | LOG_REPORT)
 
 #include "logmacro.h"
 
@@ -512,10 +519,43 @@ void hle_ps2_mouse_device::sample(s32 param)
 		m_tx_buf[m_tx_len++] = u8(dy);
 		m_tx_pos = 0;
 
+#ifdef MAME_SGI_PS2_MOUSE_OVERFLOW_FIX
+		// BUG FIX (upstream hle_mouse.cpp, not SGI-specific): on overflow
+		// (|dx| or |dy| > 255, the real 9-bit PS/2 protocol's per-report
+		// limit), the code above already flags it correctly via ox/oy,
+		// but historically still recorded the FULL raw new position as
+		// the next sample's baseline - meaning whatever didn't fit in
+		// this one report was silently discarded, not carried forward.
+		// A real PS/2 mouse's internal mickey-counter keeps accumulating
+		// and drains across multiple reports if movement outpaces the
+		// poll rate; this implementation just lost the excess outright.
+		// Symptom: fast host mouse movement (more than ~255 raw units
+		// within one 10ms sample interval, easily reached by an ordinary
+		// flick) permanently desyncs the guest-tracked cursor position
+		// from the host's true position by the lost amount, accumulating
+		// with every subsequent fast movement - "the emulated cursor
+		// leaves the host cursor behind."
+		//
+		// Fix: only advance the baseline by what this report actually
+		// committed - the full delta when not overflowed (identical to
+		// the original behavior in that case), or the max representable
+		// magnitude in the overflowed direction (matching how a
+		// spec-compliant receiver treats an overflow-flagged report -
+		// clamped to max, not the arbitrary mod-256-wrapped byte value).
+		// The remainder stays pending in the real x/y port state and
+		// gets included in the delta computed by the next sample() call,
+		// rather than evaporating.
+		s16 const committed_dx = ox ? (sx ? -256 : 255) : dx;
+		s16 const committed_dy = oy ? (sy ? -256 : 255) : dy;
+		m_mouse_x = m_mouse_x + committed_dx;
+		m_mouse_y = m_mouse_y - committed_dy;
+		m_mouse_b = b;
+#else
 		// record mouse state
 		m_mouse_x = x;
 		m_mouse_y = y;
 		m_mouse_b = b;
+#endif
 
 		// resume serial communication
 		resume();
