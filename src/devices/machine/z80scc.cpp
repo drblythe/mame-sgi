@@ -94,6 +94,31 @@ baud rate:
 #include "emu.h"
 #include "z80scc.h"
 
+#include <deque>
+
+// WORKAROUND (2026-07-28): a diagnostic tap (since removed) confirmed IRIX's SGI Indy
+// console driver genuinely overflows this chip's real 4-slot TX FIFO
+// during bursty output (multiple characters written back-to-back with no
+// wait for TBE between them) - MAME's own overrun handling is accurate
+// to the real Z8530 (silently discards the byte once the FIFO is truly
+// full, exactly as real silicon would), so the resulting data loss is a
+// faithful emulation of a real hardware race, not a MAME bug. Real IRIX
+// hardware apparently doesn't hit this in practice (never observed on
+// real Indy hardware, per direct operator experience) - plausibly
+// because a real CPU's write rate relative to the chip's actual 9600-
+// baud drain rate never manages to fill 4 slots before the shift
+// register catches up, a ratio this project's much faster host CPU
+// doesn't preserve. Rather than touch the real FIFO's size or timing
+// (shared MAME core code, used by every driver with this chip - keep it
+// hardware-accurate for everyone else), this adds a second-stage
+// software overflow queue: bytes that would otherwise be silently
+// dropped on overrun instead land here, and get fed back into the real,
+// unmodified FIFO/shift-register path one at a time once it's genuinely
+// idle - preserving both byte-stream integrity (nothing lost) and
+// correct per-byte transmission pacing (nothing artificially
+// accelerated). Scoped to channel B only (this project's console port).
+#define MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+
 
 //**************************************************************************
 //  CONFIGURABLE LOGGING
@@ -989,6 +1014,46 @@ void z80scc_device::ab_dc_w(offs_t offset, uint8_t data)
 //  SCC CHANNEL
 //**************************************************************************
 
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+// See MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND's definition near the top
+// of this file for the full rationale. Meyers-singleton style accessor
+// (function-local static) rather than a file-scope global, purely to
+// avoid static-initialization-order questions - there is exactly one
+// z80scc channel B instance in this project's configuration, so a
+// single shared queue is correct, not a simplification that would break
+// under multiple instances. Deliberately placed before every use in
+// this file (both tra_complete() and data_write() reference it) - the
+// same file already has one real bug tonight from getting a similar
+// ordering wrong; not repeating it a third time.
+static std::deque<uint8_t> &s_tx_overflow_queue()
+{
+	static std::deque<uint8_t> queue;
+	return queue;
+}
+
+// RX-direction mirror of the TX overflow queue above. Reproduced live
+// (2026-08-22): a realistic C-file heredoc burst sent over this
+// project's serial FIFO bridge during a fresh boot's daemon-rush DRC
+// churn landed on the guest shorter than sent, with genuine line-level
+// interleaving (different source lines merged mid-word) - matching this
+// project's earlier code-transfer corruption history (2026-08-16)
+// exactly. receive_data()'s real RX FIFO is only 3-8 slots deep
+// (m_rx_fifo_sz) and, like the TX side before its own fix, silently
+// overwrites the last slot in place on overrun rather than queuing - a
+// host that can feed bytes far faster than a busy/stalled guest (e.g.
+// mid DRC recompile) can drain them overflows it easily. Same fix
+// shape as TX: bytes that would otherwise be lost land in this
+// second-stage software queue instead, fed back into the real,
+// unmodified FIFO one at a time as slots genuinely free up (in
+// data_read(), the moment the guest actually reads a byte out and
+// steps the FIFO) rather than a separate hardcoded timing path.
+static std::deque<uint8_t> &s_rx_overflow_queue()
+{
+	static std::deque<uint8_t> queue;
+	return queue;
+}
+#endif
+
 //-------------------------------------------------
 //  SCC_channel - constructor
 //-------------------------------------------------
@@ -1237,12 +1302,39 @@ void z80scc_channel::tra_complete()
 		}
 		else
 		{
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+			// Real FIFO+shift register are both genuinely idle here (the
+			// condition above just failed) - if the overflow queue has
+			// anything waiting, feed it directly into the shift register
+			// now rather than declaring ALL_SENT, mirroring the RELOAD
+			// branch immediately above rather than recursively
+			// re-entering data_write() - a first attempt did that and
+			// silently didn't work, most likely a reentrancy conflict
+			// with the base device_serial_interface's own tra_complete
+			// callback machinery (calling back into a function that can
+			// itself call transmit_register_setup() while already
+			// inside a callback triggered by that same subsystem). This
+			// version only ever touches the shift register directly,
+			// the same single operation the adjacent RELOAD branch
+			// performs, so there's nothing to conflict with.
+			if (m_index == z80scc_device::CHANNEL_B && !s_tx_overflow_queue().empty())
+			{
+				uint8_t next = s_tx_overflow_queue().front();
+				s_tx_overflow_queue().pop_front();
+				transmit_register_setup(next);
+			}
+			else
+			{
+#endif
 			LOGTX("%s: done sending, setting all sent bit\n", FUNCNAME);
 			m_rr1 |= RR1_ALL_SENT;
 
 			// when the RTS bit is reset, the _RTS output goes high after the transmitter empties
 			if (!m_rts) // TODO: Clean up RTS handling
 				set_rts(1);
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+			}
+#endif
 		}
 
 		check_dma_request();
@@ -2397,6 +2489,36 @@ uint8_t z80scc_channel::data_read()
 			// decrease RX FIFO pointer
 			m_rx_fifo_rp_step();
 
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+			// A slot just genuinely freed up - if the overflow queue has
+			// anything waiting, feed it directly into the now-free slot
+			// here rather than recursively calling receive_data() (same
+			// reentrancy caution as tra_complete()'s TX-side drain: this
+			// only ever touches the FIFO array/pointers directly, the
+			// same operation the normal "there is room" path in
+			// receive_data() performs, so there's nothing to conflict
+			// with).
+			if (m_index == z80scc_device::CHANNEL_B && !s_rx_overflow_queue().empty())
+			{
+				uint8_t next = s_rx_overflow_queue().front();
+				s_rx_overflow_queue().pop_front();
+
+				m_rx_error_fifo[m_rx_fifo_wp] &= ~RR1_RX_OVERRUN_ERROR;
+				m_rx_data_fifo[m_rx_fifo_wp] = next;
+				m_rx_fifo_wp++;
+				if (m_rx_fifo_wp >= m_rx_fifo_sz)
+					m_rx_fifo_wp = 0;
+
+				// Notify the guest the same way receive_data()'s normal
+				// path does - without this, an interrupt-driven RX
+				// driver would never know a drained byte is waiting and
+				// could stall instead of just seeing it late.
+				m_rr0 |= RR0_RX_CHAR_AVAILABLE;
+				check_dma_request();
+				check_receive_interrupt();
+			}
+#endif
+
 			// if RX FIFO empty reset RX interrupt status
 			if (m_rx_fifo_wp == m_rx_fifo_rp)
 			{
@@ -2453,15 +2575,40 @@ void z80scc_device::db_w(offs_t offset, uint8_t data) { m_chanB->data_write(data
 //-------------------------------------------------
 //  data_write - write data register
 //-------------------------------------------------
+
 void z80scc_channel::data_write(uint8_t data)
 {
 	/* Tx FIFO is full or...? */
 	LOG("%s: Data Register Write: %02d '%c'\n", FUNCNAME, data, isprint(data) ? data : ' ');
 
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+	// Ordering fix, found the hard way: a first version of this
+	// workaround only diverted a byte to the overflow queue at the
+	// moment the real FIFO was actually full, letting later bytes keep
+	// using the real FIFO in the meantime - byte count matched
+	// perfectly (confirmed via the TX/RX taps), but the console text
+	// was still garbled, because bytes that went straight through the
+	// real FIFO could transmit *before* older bytes still waiting in
+	// the overflow queue, reordering the stream even with nothing
+	// actually lost. Once the queue is non-empty, every new byte has to
+	// join it too - no byte is allowed to skip ahead of one already
+	// queued - until it fully drains and control genuinely returns to
+	// the real FIFO.
+	if (m_index == z80scc_device::CHANNEL_B && !s_tx_overflow_queue().empty())
+	{
+		s_tx_overflow_queue().push_back(data);
+		return;
+	}
+#endif
+
 	if ( !(m_rr0 & RR0_TX_BUFFER_EMPTY) && // NMOS/CMOS 1 slot "FIFO" is controlled by the TBE bit instead of fifo logic
 		( (m_tx_fifo_wp + 1 == m_tx_fifo_rp) || ( (m_tx_fifo_wp + 1 == m_tx_fifo_sz) && (m_tx_fifo_rp == 0) )))
 	{
 		logerror("- TX FIFO is full, discarding data\n");
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+		if (m_index == z80scc_device::CHANNEL_B)
+			s_tx_overflow_queue().push_back(data);
+#endif
 	}
 	else // ..there is still room
 	{
@@ -2560,9 +2707,30 @@ void z80scc_channel::receive_data(uint8_t data)
 {
 	LOGRCV("Received Data Byte '%c'/%02x put into FIFO\n", isprint(data) ? data : ' ', data);
 
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+	// Once the queue is non-empty, every new byte has to join it too -
+	// no byte is allowed to skip ahead of one already queued. Mirrors
+	// the ordering fix data_write() needed on the TX side: byte counts
+	// matched with a naive "only queue on actual overrun" version, but
+	// the stream was still corrupted because bytes with room could
+	// still land in the real FIFO ahead of older queued bytes.
+	if (m_index == z80scc_device::CHANNEL_B && !s_rx_overflow_queue().empty())
+	{
+		s_rx_overflow_queue().push_back(data);
+		return;
+	}
+#endif
+
 	if (m_rx_fifo_wp + 1 == m_rx_fifo_rp || ( (m_rx_fifo_wp + 1 == m_rx_fifo_sz) && (m_rx_fifo_rp == 0) ))
 	{
 		// receive overrun error detected
+#ifdef MAME_SGI_SERIAL_TX_OVERFLOW_WORKAROUND
+		if (m_index == z80scc_device::CHANNEL_B)
+		{
+			s_rx_overflow_queue().push_back(data);
+			return;
+		}
+#endif
 		m_rx_error_fifo[m_rx_fifo_wp] |= RR1_RX_OVERRUN_ERROR;
 
 		// store received character but do not step the fifo
@@ -2765,13 +2933,29 @@ void z80scc_channel::txc_w(int state)
 //   ensure this is to write to WR5 to change the character length before writing the data to the transmit
 //   buffer."
 //
-//  Right now we only detect the problem and log an error
+// FIX (2026-08-11): previously this force-cleared TRANSMIT_REGISTER_EMPTY
+// unconditionally even while a character was still genuinely mid-shift,
+// discarding it - confirmed live to leave the chip in a state that never
+// asserts whatever completion condition guest code (SGI ARCS PROM, in this
+// case its own mid-print SCC reinit on the volume-header-invalid path) was
+// waiting on next, hanging forever. m_wr4/m_wr5 (the actual register
+// values do_sccreg_wr4()/wr5() call this from) are already updated by the
+// caller before this runs, so future characters already pick up the new
+// format/RTS/DTR from their own transmit_register_setup() call - only the
+// in-flight character needs to keep running with its own already-locked-in
+// format (per the spec quote above), which is exactly what leaving it
+// alone here achieves. No corresponding "was I ever actually reset"
+// consumer exists downstream (unlike m_delayed_tx_brg_change, which this
+// mirrors in spirit) because none is needed - the shift register's own
+// natural per-bit completion path already sets TRANSMIT_REGISTER_EMPTY
+// once genuinely done (transmit_register_get_data_bit(), diserial.cpp).
 //---------------------------------------------------------------------------------------------------------
 void z80scc_channel::safe_transmit_register_reset()
 {
 	if (!is_transmit_register_empty())
 	{
-		logerror("Attempt to reset transmit shift register while busy detected, please report\n");
+		LOGTX("Deferring transmit shift register reset - character still in flight, letting it complete naturally\n");
+		return;
 	}
 	transmit_register_reset();
 }
