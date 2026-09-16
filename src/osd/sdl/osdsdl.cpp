@@ -23,6 +23,13 @@
 #include <cstdio>
 #include <cstring>
 
+// Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
+// prints below (tasks #57/#65) - see window.cpp's own copy of this
+// macro/comment for the full rationale (self-defined per-file, per
+// this project's src/devices/ scoping convention, since a macro
+// defined in one .cpp isn't visible in another). Off by default;
+// task #65 is still open, re-enable if it needs revisiting.
+// #define MAME_SGI_MOUSEFOCUS_DIAG
 
 namespace {
 
@@ -457,7 +464,22 @@ bool sdl_osd_interface::should_hide_mouse()
 	if (!options().mouse() && !options().lightgun())
 		return false;
 
-	if (!mouse_over_window())
+	// Capture is gated on window focus, not cursor hover (task #65,
+	// 2026-08-15): the previous mouse_over_window() check toggled a real
+	// XGrabPointer()/XUngrabPointer() round-trip - both asynchronous X11
+	// protocol requests - on every Enter/Leave crossing of the window
+	// boundary. A 100ms debounce (see update_cursor_state() below) cut
+	// how often that happened but couldn't eliminate the chance of a
+	// single mis-ordered request/reply pair permanently desyncing the X
+	// server's recorded PointerMotion event-selection mask for this
+	// client - confirmed live: MAME's own core (CPU/scheduler/throttle)
+	// measured healthy throughout an actual freeze, isolating the break
+	// to this async grab/ungrab churn. Gating on focus instead means the
+	// grab is acquired once when the window becomes active and held for
+	// the whole session, regardless of where the cursor sits within (or
+	// outside) the window bounds - far fewer real grab/ungrab
+	// transitions, so far fewer chances for the race.
+	if (!has_focus())
 		return false;
 
 	// otherwise, yes
@@ -717,6 +739,9 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 
 	case SDL_WINDOWEVENT_ENTER:
 		{
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+			osd_printf_verbose("MOUSEFOCUS_DIAG: ENTER window=%p\n", (void *)window);
+#endif
 			m_mouse_over_window = 1;
 			unsigned device;
 			try
@@ -734,6 +759,9 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 
 	case SDL_WINDOWEVENT_LEAVE:
 		{
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+			osd_printf_verbose("MOUSEFOCUS_DIAG: LEAVE window=%p\n", (void *)window);
+#endif
 			m_mouse_over_window = 0;
 			unsigned device;
 			try
@@ -750,11 +778,17 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 		break;
 
 	case SDL_WINDOWEVENT_FOCUS_GAINED:
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+		osd_printf_verbose("MOUSEFOCUS_DIAG: FOCUS_GAINED window=%p\n", (void *)window);
+#endif
 		m_focus_window = window;
 		window->target()->push_window_focus_event();
 		break;
 
 	case SDL_WINDOWEVENT_FOCUS_LOST:
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+		osd_printf_verbose("MOUSEFOCUS_DIAG: FOCUS_LOST window=%p (was_focus=%d)\n", (void *)window, window == m_focus_window);
+#endif
 		if (window == m_focus_window)
 			m_focus_window = nullptr;
 		window->target()->push_window_defocus_event();

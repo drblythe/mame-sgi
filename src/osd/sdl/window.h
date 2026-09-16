@@ -122,6 +122,7 @@ private:
 	// monitor info
 	bool                m_mouse_captured;
 	bool                m_mouse_hidden;
+	std::chrono::steady_clock::time_point m_cursor_state_change_time;
 
 	// info on currently active pointers - 64 pointers ought to be enough for anyone
 	uint64_t m_pointer_mask;
