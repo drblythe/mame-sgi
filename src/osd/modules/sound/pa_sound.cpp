@@ -132,9 +132,23 @@ int sound_pa::init(osd_interface &osd, osd_options const &options)
 		return 1;
 	}
 
+	// Bug fix (task #70): Pa_GetDeviceCount() returns a negative PaErrorCode
+	// when the host API (e.g. ALSA with no usable device) can't enumerate
+	// anything, not zero. Left unguarded, the old code passed that negative
+	// value straight to resize() - converted to a huge size_t, this throws
+	// before the loop below is ever reached - and, had that not aborted
+	// first, the loop's own `dev != Pa_GetDeviceCount()` bound would never
+	// match a negative count counting up from 0, running unbounded until
+	// Pa_GetDeviceInfo() returned null for an out-of-range index and the
+	// next line dereferenced it. Confirmed live via gdb: SIGSEGV in
+	// osd::sound_pa::init() in a container with no ALSA device
+	// (`-sound none` is the working per-run workaround; this is the actual
+	// fix). Clamp to zero devices instead of crashing.
+	PaDeviceIndex const device_count = std::max(Pa_GetDeviceCount(), PaDeviceIndex(0));
+
 	m_info.m_generation = 1;
-	m_info.m_nodes.resize(Pa_GetDeviceCount());
-	osd_printf_verbose("PortAudio: Found %d devices:\n", Pa_GetDeviceCount());
+	m_info.m_nodes.resize(device_count);
+	osd_printf_verbose("PortAudio: Found %d devices:\n", device_count);
 
 	auto dc = [](PaDeviceIndex dev) -> int { return dev == paNoDevice ? 0 : dev+1; };
 	m_info.m_default_sink = dc(Pa_GetDefaultOutputDevice());
@@ -142,8 +156,10 @@ int sound_pa::init(osd_interface &osd, osd_options const &options)
 
 	std::unordered_map<std::string, int> namecount;
 
-	for(PaDeviceIndex dev = 0; dev != Pa_GetDeviceCount(); dev++) {
+	for(PaDeviceIndex dev = 0; dev != device_count; dev++) {
 		const PaDeviceInfo *di = Pa_GetDeviceInfo(dev);
+		if(!di)
+			continue;
 		const PaHostApiInfo *ai = Pa_GetHostApiInfo(di->hostApi);
 		auto &node = m_info.m_nodes[dev];
 		node.m_id = dev + 1;
