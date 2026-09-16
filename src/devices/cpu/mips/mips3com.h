@@ -24,9 +24,31 @@
 #define PRINTF_TLB              (0)
 #define USE_ABI_REG_NAMES       (1)
 
+// (2026-07-24): tested with this set to (1) to check whether the DRC's
+// $v0/$v1/$a0 fast-register caching (m_regmap[2/3/4], see mips3.cpp's
+// device_start) is implicated in a reproducible DRC-only mutex/kernel-fault
+// corruption bug - the crash reproduced with a byte-for-byte identical
+// signature either way, cleanly ruling this mechanism out. Reverted to (0).
+//
+// TEMPORARY (2026-09-04, task #84): set to (1) again for a different bug -
+// the intermittent guest cc1 "<built-in> predicate's answer is empty"
+// flake. Second Opus review (wiki/task84-exception-hypothesis-handoff-
+// 2026-09-04.md) traced the mechanism to $v0's fast-mapped host register
+// (r15/UML I4) going stale relative to m_core->r[2] across a
+// load_fast_iregs() reload triggered by an EXECUTE_MISSING_CODE
+// recompile - this flag removes the fast-mapping entirely as the most
+// direct possible confirmation. CONFIRMED (2026-09-04): 260/260 clean
+// runs of cc1_null_loop.sh with this set to (1), vs a ~10% natural
+// failure rate normally - full decisive confirmation. Reverted back to
+// (0) here so the follow-up "poison store" test (mips3drc.cpp's
+// MAME_SGI_TASK84_POISON_R2) exercises the fast-register path for real.
 #define DISABLE_FAST_REGISTERS          (0)
 #define SINGLE_INSTRUCTION_MODE         (0)
 
+// TEMPORARY diagnostic (2026-07-24): enabled to log EPC/Cause/BadVAddr/PC
+// for every non-interrupt/non-syscall exception, hunting the source of a
+// reproducible DRC-only KERNEL FAULT/SEGV panic with BadVAddr=0. Revert
+// to (0) once that investigation concludes.
 #define PRINTF_EXCEPTIONS               (0)
 #define PRINTF_MMU                      (0)
 

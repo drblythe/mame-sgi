@@ -8,6 +8,62 @@
 
 ***************************************************************************/
 
+// Interpreter-side counterpart to mips3drc.cpp's own
+// MAME_IRIX_SPINLOCK_INIT_WORKAROUND (self-defined here for the same
+// reason that file self-defines its own macros: this file compiles as
+// part of the shared "optional" project, not the mame_sgi project
+// sgi.lua's defines{} block scopes to, and the two translation units
+// don't share preprocessor state). See the SW opcode case below for the
+// actual fix and its rationale.
+#define MAME_IRIX_SPINLOCK_INIT_WORKAROUND
+
+// TEMPORARY diagnostic (2026-08-13): triggers a one-shot machine().save()
+// at total_cycles() >= this value, from inside execute_run() itself - lets
+// the -state save/restore corruption investigation (see wiki/assets.md and
+// the mousetest_state/pausecheck/racecheck saves) repro against an early
+// PROM-execution moment (seconds of real boot, not 6+ minutes to login),
+// instead of always needing a full boot to reach a save point. Undefined
+// by default - set to a real cycle count (e.g. 1000, 10000) to arm it for
+// one test run.
+// DISABLED (2026-08-18) - task #66 (what this was built for) is done,
+// task #65 has since had a clean resume result too (see journal.md). Was
+// left armed well past its intended one-shot use, silently doing a real
+// unconditional disk write (a full save-state) partway through every
+// single boot test since 2026-08-13, not just the one deliberate run it
+// was meant for. Commented out, not deleted - reusable for a future
+// investigation session, set to a real cycle count to re-arm.
+// #define MAME_SGI_EARLY_SAVE_DIAG 2829794
+
+// Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s and
+// mame_sgi_presave_diag()'s prints - concluded alongside task #66
+// above, was unconditionally wired via register_postload()/
+// register_presave() (so fired on every single save/load, forever),
+// and both prints were mislabeled "MOUSEFOCUS_DIAG:" (an unrelated
+// copy-paste leftover, now fixed to their own name). Off by default;
+// re-enable if task #66's area needs revisiting.
+// #define MAME_SGI_MIPS3_SAVE_DIAG
+
+// TEMPORARY diagnostic (2026-08-14): periodic PC/SR/Cause/k0/k1 trace, every
+// MAME_SGI_PC_TRACE_STEP cycles within [LO,HI], printed from inside
+// execute_run(). Built to directly diff a continuous boot's execution trace
+// against a -state reload's trace (same cycle range, same source CHD -
+// confirmed empirically deterministic run-to-run: repeated single-shot
+// saves at the same requested cycle threshold, and the eret-race window
+// diagnostic's first-hit cycle, have both reproduced to the exact cycle
+// across independent runs today) to find the first point of actual
+// DIVERGENCE, rather than bisecting on the eventual observable failure
+// (which task #66/journal.md's 2026-08-14 entries found can be tens of
+// millions of cycles downstream of whatever actually went wrong - a
+// bisection on failure alone can't distinguish "this save point is the
+// problem" from "this save point just takes longer to reach the same
+// pre-existing problem"). Undefined by default.
+#define MAME_SGI_PC_TRACE_DIAG
+#ifdef MAME_SGI_PC_TRACE_DIAG
+#define MAME_SGI_PC_TRACE_LO 2833334
+#define MAME_SGI_PC_TRACE_HI 2834400
+#define MAME_SGI_PC_TRACE_STEP 20
+#endif
+
 #include "emu.h"
 #include "mips3.h"
 
@@ -18,7 +74,36 @@
 
 #include "emuopts.h"
 
+#include <algorithm>
+#include <cfenv>
 #include <cmath>
+#include <string>
+
+// TEMPORARY diagnostic (2026-08-24) - MXCSR-desync investigation, continuing
+// from schedule.cpp's own MAME_SGI_SCHEDULER_MXCSR_DIAG (see that file's
+// comment for the full history). That check found zero drift across the
+// CPU/timer scheduler boundary while real corruption was independently
+// confirmed occurring in the same window (mxcsrtest's bad= counter), which
+// rules out the scheduler dispatches and points inside execute_run()'s own
+// DRC loop instead - the m_drcuml->execute()/code_compile_block()/
+// code_flush_cache() cycle below, not ordinary sequential compiled-block
+// execution (already shown too expensive to instrument per-instruction
+// without perturbing timing enough to suppress the bug entirely). Shares
+// schedule.cpp's baseline (mame_sgi_mxcsr_diag_record/check, extern
+// linkage - see that file's own comment on why) so the two form one
+// continuous timeline instead of two independently-baselined trackers.
+// DISABLED (2026-09-01) - investigation concluded, see schedule.cpp's own
+// MAME_SGI_SCHEDULER_MXCSR_DIAG disable comment (must stay disabled
+// together - this file only declares/calls the extern functions that
+// macro's block defines). Real root cause: drcbex64.cpp's DRC entry point
+// never resyncing m_state.fmod (MAME_SGI_FMOD_ENTRY_RESYNC_FIX), a missing
+// write invisible to this record-and-compare technique regardless of
+// checkpoint density. See wiki/drc-bugfixes.md section D.
+// #define MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+void mame_sgi_mxcsr_diag_record();
+void mame_sgi_mxcsr_diag_check(const char *checkpoint);
+#endif
 
 #define ENABLE_OVERFLOWS            (0)
 #define ENABLE_EE_ELF_LOADER        (0)
@@ -89,7 +174,33 @@
 #define IS_FR1      (SR & SR_FR)
 
 /* size of the execution code cache */
-#define DRC_CACHE_SIZE              (32 * 1024 * 1024)
+// Bumped 4x from the stock 32MB (2026-07-28): a gdb-captured hang during
+// IRIX boot (SGI Indy, deep into the SCSI-probe/reconfigure phase) showed
+// the same PC (elocore_exl_3) being recompiled twice in a row with
+// different compile-time state moments apart, and two separate
+// interrupts of the same hang landed in completely different subsystems
+// (nscsi_bus_device::ctrl_w, then asmjit's own x86 assembler) - both
+// consistent with code-cache eviction/recompilation thrashing rather
+// than a genuine guest-level infinite loop, given -nodrc (no cache to
+// thrash) gets through this same boot phase without issue. Testing
+// whether a larger cache alone resolves it before looking for a root
+// cause in the eviction/sizing logic itself.
+//
+// Tested 4x again (2026-08-08, briefly, reverted): even a healthy,
+// low-redundancy boot still flushes 15-17 times (wiki/performance.md,
+// 2026-08-01 baseline) - tried a 512MB cache to see whether cache-size
+// pressure explains a meaningful share of DRC Compilation's ~28-32%-
+// of-busy-time cost (g_profiler, 2026-08-08). Result: flush count did
+// drop 4x (16 -> 4 for a full boot), but wall time was unchanged
+// (151.9s -> 153.2s, within noise) - with 1M+ sequences compiled per
+// boot, avoiding a handful of flush-driven recompiles is statistically
+// negligible against that volume. Confirms DRC Compilation's cost is
+// dominated by genuine first-time compilation, not cache-pressure-
+// driven redundancy - unlike the 2026-07-28 bump above, which fixed an
+// actual pathological thrashing hang, not just ordinary flush count.
+// Reverted to 128MB; a bigger cache alone isn't the lever here. See
+// journal.md 2026-08-08 for the full A/B.
+#define DRC_CACHE_SIZE              (128 * 1024 * 1024)
 
 
 
@@ -102,6 +213,18 @@ static const uint8_t fpmode_source[4] =
 	uml::ROUND_TRUNC,
 	uml::ROUND_CEIL,
 	uml::ROUND_FLOOR
+};
+
+// MIPS FCR31 RM field (bits 0-1) -> C <cfenv> rounding mode, same indexing
+// as fpmode_source above (RN=0/RZ=1/RP=2/RM=3). Used by the interpreter's
+// set_cop1_creg to apply a CTC1-requested rounding mode to the real host
+// FPU, mirroring what the DRC's UML_SETFMOD already does via m_fpmode.
+static const int fesetround_source[4] =
+{
+	FE_TONEAREST,
+	FE_TOWARDZERO,
+	FE_UPWARD,
+	FE_DOWNWARD
 };
 
 /***************************************************************************
@@ -234,6 +357,160 @@ device_memory_interface::space_config_vector mips3_device::memory_space_config()
 
 void mips3_device::device_stop()
 {
+	// TEMPORARY diagnostic (2026-08-01): dump before m_drcfe/m_drcuml
+	// (and the drc_cache they depend on) get torn down below. See
+	// mips3.h's comment on m_diag_usermode_recompile_counts for the
+	// full mechanism/hypothesis. Unconditionally safe when empty -
+	// only ever populated if MAME_DRC_USERMODE_RECOMPILE_DIAG was
+	// defined in mips3drc.cpp at compile time (see there for the gate).
+	if (!m_diag_usermode_recompile_counts.empty())
+	{
+		uint64_t total = 0;
+		for (auto const &entry : m_diag_usermode_recompile_counts)
+			total += entry.second;
+		osd_printf_info(
+				"USER-mode recompile diag: %u distinct (mode,pc) keys, %llu total compile events (%.2fx average)\n",
+				unsigned(m_diag_usermode_recompile_counts.size()),
+				(unsigned long long)total,
+				double(total) / m_diag_usermode_recompile_counts.size());
+
+		std::vector<std::pair<uint64_t, uint32_t>> sorted(
+				m_diag_usermode_recompile_counts.begin(), m_diag_usermode_recompile_counts.end());
+		std::partial_sort(
+				sorted.begin(), sorted.begin() + std::min<size_t>(20, sorted.size()), sorted.end(),
+				[] (auto const &a, auto const &b) { return a.second > b.second; });
+		osd_printf_info("Top repeat offenders (mode, pc, count):\n");
+		for (size_t i = 0; i < std::min<size_t>(20, sorted.size()); i++)
+		{
+			uint32_t mode = uint32_t(sorted[i].first >> 32);
+			uint32_t pc = uint32_t(sorted[i].first);
+			osd_printf_info("  mode=%u pc=%08x count=%u\n", mode, pc, sorted[i].second);
+		}
+	}
+
+	// Clean-exit summary for MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - see
+	// diag_cop1_trap_count's comment in mips3.h. Unconditionally safe when
+	// zero (only ever incremented if the diagnostic is compiled in).
+	if (m_core->diag_cop1_trap_count != 0)
+	{
+		osd_printf_info("MAME_SGI_COP1_TRAP_DIAG summary: cop1_trap_count=%u\n",
+				m_core->diag_cop1_trap_count);
+	}
+
+	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8) -
+	// see diag_tlb_mismatch_skip_total's comment in mips3.h. This used to
+	// be a live, self-rate-limited stderr print inside code_compile_block()
+	// (mips3drc.cpp); moved here 2026-09-11 per this project's hygiene
+	// convention of not leaving diagnostics printing during ordinary play
+	// once a live per-event/per-threshold trace is no longer needed. The
+	// fix's own counters (incremented in static_generate_tlb_mismatch())
+	// are untouched - only this reporting moved.
+	if (m_core->diag_tlb_mismatch_skip_total != 0)
+	{
+		osd_printf_info(
+				"MAME_SGI_TLB_MISMATCH_REFRESH_FIX summary: skip_total=%u redispatched=%u (%.2f%% avoided a recompile)\n",
+				m_core->diag_tlb_mismatch_skip_total,
+				m_core->diag_tlb_mismatch_refresh_hits,
+				100.0 * double(m_core->diag_tlb_mismatch_refresh_hits) / double(m_core->diag_tlb_mismatch_skip_total));
+	}
+
+	// Clean-exit summary for MAME_SGI_ERET_RACE_WINDOW_DIAG (task #69/#71,
+	// concluded - MIPS3DRC_STRICT_COP1 was the real fix) - see
+	// diag_eret_window_exception_count's comment in mips3.h. Detailed
+	// per-event trace still available via the VERBOSE sub-macro.
+	if ((m_core->diag_eret_window_exception_count | m_core->diag_eret_window_eret_count | m_core->diag_eret_window_status_count) != 0)
+	{
+		osd_printf_info(
+				"MAME_SGI_ERET_RACE_WINDOW_DIAG summary: exceptions=%u erets=%u status_stores=%u\n",
+				m_core->diag_eret_window_exception_count,
+				m_core->diag_eret_window_eret_count,
+				m_core->diag_eret_window_status_count);
+	}
+
+	// Clean-exit summary for MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
+	// (mips3drc.cpp) - see diag_null_seqlast_count's comment in mips3.h.
+	// The fallback this counts is permanent/unconditional; only this
+	// reporting is optional.
+	if (m_core->diag_null_seqlast_count != 0)
+	{
+		osd_printf_info(
+				"MAME_DRC_BUGFIXES null-seqlast summary: count=%u last_seqhead_pc=0x%08x\n",
+				m_core->diag_null_seqlast_count, m_core->diag_null_seqlast_last_pc);
+	}
+
+	// TEMPORARY diagnostic (2026-08-01): sanity check for the
+	// dispatch_mode fix - see mips3.h's comment on
+	// m_diag_kernel_dispatch_mode_values for what a non-{0,1} result
+	// would mean.
+	if (!m_diag_kernel_dispatch_mode_values.empty())
+	{
+		std::string values;
+		for (uint32_t v : m_diag_kernel_dispatch_mode_values)
+			values += std::to_string(v) + " ";
+		osd_printf_info(
+				"KERNEL dispatch_mode sanity check: %u distinct value(s) seen (expect exactly {0,1}): %s\n",
+				unsigned(m_diag_kernel_dispatch_mode_values.size()), values.c_str());
+	}
+
+	// TEMPORARY diagnostic (2026-08-08): dump the per-call-site inline-
+	// cache hit-rate probe - see mips3.h's comment on
+	// m_diag_callsite_ic_state for the full mechanism/purpose. Buckets
+	// call sites by their own hit rate (hits/(hits+misses)) and reports
+	// both site-count and dispatch-volume share per bucket, since a
+	// minority of high-traffic polymorphic sites (e.g. a shared JR $ra
+	// epilogue) could dominate volume even if most distinct sites are
+	// monomorphic. Unconditionally safe when empty - only populated if
+	// MAME_SGI_CALLSITE_IC_HITRATE_DIAG was defined in mips3drc.cpp.
+	if (!m_diag_callsite_ic_state.empty())
+	{
+		static constexpr int NUM_BUCKETS = 5;
+		static const char *const bucket_labels[NUM_BUCKETS] =
+				{ "<10%", "10-50%", "50-90%", "90-99%", "100%" };
+		uint64_t bucket_sites[NUM_BUCKETS] = {};
+		uint64_t bucket_probes[NUM_BUCKETS] = {};
+		uint64_t total_hits = 0, total_probes = 0;
+
+		for (auto const &pair : m_diag_callsite_ic_state)
+		{
+			callsite_ic_entry const &entry = pair.second;
+			uint64_t const probes = uint64_t(entry.hits) + entry.misses;
+			if (probes == 0)
+				continue;
+			double const rate = double(entry.hits) / double(probes);
+			int bucket;
+			if (rate >= 1.0)
+				bucket = 4;
+			else if (rate >= 0.90)
+				bucket = 3;
+			else if (rate >= 0.50)
+				bucket = 2;
+			else if (rate >= 0.10)
+				bucket = 1;
+			else
+				bucket = 0;
+			bucket_sites[bucket]++;
+			bucket_probes[bucket] += probes;
+			total_hits += entry.hits;
+			total_probes += probes;
+		}
+
+		osd_printf_info(
+				"Call-site IC hit-rate diag: %u distinct call sites, %llu total probes, "
+				"%.2f%% overall hit rate\n",
+				unsigned(m_diag_callsite_ic_state.size()),
+				(unsigned long long)total_probes,
+				total_probes ? 100.0 * double(total_hits) / double(total_probes) : 0.0);
+		osd_printf_info("  hit-rate bucket   sites          probes (share of total)\n");
+		for (int b = 0; b < NUM_BUCKETS; b++)
+		{
+			osd_printf_info(
+					"  %-15s   %-12u   %llu (%.2f%%)\n",
+					bucket_labels[b], unsigned(bucket_sites[b]),
+					(unsigned long long)bucket_probes[b],
+					total_probes ? 100.0 * double(bucket_probes[b]) / double(total_probes) : 0.0);
+		}
+	}
+
 	if (m_drcfe != nullptr)
 	{
 		m_drcfe = nullptr;
@@ -393,6 +670,50 @@ void r5900_device::check_irqs()
     CORE CALLBACKS
 ***************************************************************************/
 
+void mips3_device::mame_sgi_postload_diag()
+{
+#ifdef MAME_SGI_MIPS3_SAVE_DIAG
+	uint32_t local0 = m_program->read_dword(0x1fbd9880);
+	uint32_t local1 = m_program->read_dword(0x1fbd9888);
+	uint32_t mapstat = m_program->read_dword(0x1fbd9890);
+	// TEMPORARY (2026-08-14): reads the exact stack slot (physical
+	// 0x087FEF7C = KSEG1 0xA87FEF7C-0xA0000000, i.e. $sp+0x14 for the
+	// $sp=0xA87FEF68 frame at the 0xbfc1174c fault site) SYNCHRONOUSLY
+	// during postload, before any guest instruction has executed - unlike
+	// reading it later via a live trace hook (which only tells you what's
+	// there several thousand cycles after resume, leaving room for
+	// something else having touched it in between), this is the actual,
+	// unambiguous, race-free restored value. See task #66/journal.md.
+	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
+	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 postload IMMEDIATE: PC=%08X SR=%08X Cause=%08X EPC=%08X | ioc2 local0=%08X local1=%08X mapstat=%08X | k0=%08X%08X k1=%08X%08X ra=%08X%08X | stack_slot@087FEF7C=%08X\n",
+		m_core->pc, m_core->cpr[0][COP0_Status], m_core->cpr[0][COP0_Cause], m_core->cpr[0][COP0_EPC],
+		local0, local1, mapstat,
+		(uint32_t)(m_core->r[26] >> 32), (uint32_t)m_core->r[26],
+		(uint32_t)(m_core->r[27] >> 32), (uint32_t)m_core->r[27],
+		(uint32_t)(m_core->r[31] >> 32), (uint32_t)m_core->r[31],
+		stack_slot);
+#endif
+}
+
+void mips3_device::mame_sgi_presave_diag()
+{
+	// TEMPORARY (2026-08-14): the save-side mirror of
+	// mame_sgi_postload_diag()'s stack_slot read - runs synchronously via
+	// register_presave(), immediately before the save is actually
+	// serialized, so this is the true live value at the exact moment of
+	// capture (schedule_save() only SCHEDULES the save for a later safe
+	// point, so reading RAM at the trigger site wouldn't guarantee the
+	// same instant). Closes the other half of the round-trip verification:
+	// mame_sgi_postload_diag() already confirmed LOAD restores exactly
+	// what's in the file; this confirms SAVE wrote exactly what was live.
+	// See task #66/journal.md.
+#ifdef MAME_SGI_MIPS3_SAVE_DIAG
+	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
+	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 presave: PC=%08X SR=%08X Cause=%08X | stack_slot@087FEF7C=%08X\n",
+		m_core->pc, m_core->cpr[0][COP0_Status], m_core->cpr[0][COP0_Cause], stack_slot);
+#endif
+}
+
 void mips3_device::device_start()
 {
 	m_isdrc = allow_drc();
@@ -405,6 +726,10 @@ void mips3_device::device_start()
 
 	/* initialize based on the config */
 	memset(m_core, 0, sizeof(internal_mips3_state));
+	// Must not be a plausible guest PC - 0 (what the memset leaves) would
+	// suppress the very first redispatch at PC 0. See the field's own
+	// comment in mips3.h.
+	m_core->tlb_mismatch_retry_pc = 0xffffffff;
 
 	m_cpu_clock = clock();
 	m_program = &space(AS_PROGRAM);
@@ -444,7 +769,15 @@ void mips3_device::device_start()
 
 	uint32_t flags = 0;
 	/* initialize the UML generator */
-	m_drcuml = std::make_unique<drcuml_state>(*this, m_drc_cache, flags, 8, 32, 2, COMPILE_FORWARDS_BYTES);
+	// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01): widened from 8 to 2048
+	// to fit dispatch_mode's 11-bit encoding (see internal_mips3_state's
+	// comment on that field) - cost stays bounded regardless of this
+	// nominal range since drc_hash_table's L1 tables are lazily allocated
+	// only for values actually seen at runtime, not this whole range.
+	// COMPILE_FORWARDS_BYTES (last arg) is upstream 0.289's new
+	// max_sequence_length parameter backing hash_invalidate_range() -
+	// see Finding 1, mame-sgi wiki/tasks.md 2026-09-15 port survey.
+	m_drcuml = std::make_unique<drcuml_state>(*this, m_drc_cache, flags, 2048, 32, 2, COMPILE_FORWARDS_BYTES);
 
 	/* add symbols for our stuff */
 	m_drcuml->symbol_add(&m_core->pc, sizeof(m_core->pc), "pc");
@@ -544,6 +877,9 @@ void mips3_device::device_start()
 		save_item(NAME(m_tlb[tlbindex].entry_lo), tlbindex);
 	}
 	save_item(NAME(m_tlb_seed));
+
+	machine().save().register_postload(save_prepost_delegate(FUNC(mips3_device::mame_sgi_postload_diag), this));
+	machine().save().register_presave(save_prepost_delegate(FUNC(mips3_device::mame_sgi_presave_diag), this));
 
 	// Register state with debugger
 	state_add( MIPS3_PC,           "PC", m_core->pc).formatstr("%08X");
@@ -1146,6 +1482,7 @@ void mips3_device::device_reset()
 	m_tlb_seed = 0;
 
 	m_core->mode = (MODE_KERNEL << 1) | 0;
+	m_core->dispatch_mode = 0;      // MAME_SGI_DISPATCH_MODE_ASID_FIX: kernel sentinel
 	m_drc_cache_dirty = true;
 	m_interrupt_cycles = 0;
 
@@ -2207,6 +2544,16 @@ inline void mips3_device::set_cop1_creg(int idx, uint64_t val)
 
 		for (i = 0; i < 8; i++)
 			m_cf[1][i] = (val >> fcc_shift[i]) & 1;
+
+		// The interpreter runs guest FP arithmetic as native host C++
+		// float/double ops, which obey the host's ambient FP rounding
+		// control register (MXCSR on x86, FPCR on ARM) rather than
+		// anything guest-visible. Without this, the interpreter silently
+		// ignores CTC1-requested rounding modes and always rounds to
+		// nearest - unlike the DRC, whose UML_SETFMOD (driven by this
+		// same RM field via m_fpmode) does apply it. See wiki/drc-
+		// bugfixes.md task #83.
+		fesetround(fesetround_source[val & 3]);
 	}
 }
 
@@ -5347,25 +5694,116 @@ void r5900_device::handle_sdc2(uint32_t op)
 
 void mips3_device::execute_run()
 {
+#ifdef MAME_SGI_EARLY_SAVE_DIAG
+	{
+		// s_mame_sgi_first_call guards against re-triggering on a -state
+		// reload: total_cycles() resumes from the saved value, so a reload
+		// whose save already crossed MAME_SGI_EARLY_SAVE_DIAG would
+		// otherwise re-fire schedule_save() on its very first execute_run()
+		// call - confirmed live 2026-08-13 to wedge the Lua console's FIFO
+		// input loop mid-resume. Only arm the trigger on a run that
+		// actually starts below the threshold (a genuine fresh boot).
+		static bool s_mame_sgi_first_call = true;
+		static bool s_mame_sgi_early_save_done = false;
+		if (s_mame_sgi_first_call)
+		{
+			s_mame_sgi_first_call = false;
+			if (total_cycles() >= MAME_SGI_EARLY_SAVE_DIAG)
+				s_mame_sgi_early_save_done = true;
+		}
+		if (!s_mame_sgi_early_save_done && total_cycles() >= MAME_SGI_EARLY_SAVE_DIAG)
+		{
+			s_mame_sgi_early_save_done = true;
+			osd_printf_verbose("MAME_SGI_EARLY_SAVE_DIAG: EARLY_SAVE triggering at total_cycles=%llu PC=%08X\n",
+				(unsigned long long)total_cycles(), m_core->pc);
+			machine().schedule_save(std::string("earlysave"));
+		}
+	}
+#endif
+#ifdef MAME_SGI_PC_TRACE_DIAG
+	{
+		static uint64_t s_mame_sgi_pc_trace_next = MAME_SGI_PC_TRACE_LO;
+		uint64_t cyc = total_cycles();
+		if (cyc >= s_mame_sgi_pc_trace_next && cyc <= MAME_SGI_PC_TRACE_HI)
+		{
+			osd_printf_verbose("MAME_PC_TRACE: cyc=%llu PC=%08X SR=%08X Cause=%08X k0=%08X%08X k1=%08X%08X\n",
+				(unsigned long long)cyc, m_core->pc,
+				(uint32_t)m_core->cpr[0][COP0_Status], (uint32_t)m_core->cpr[0][COP0_Cause],
+				(uint32_t)(m_core->r[26] >> 32), (uint32_t)m_core->r[26],
+				(uint32_t)(m_core->r[27] >> 32), (uint32_t)m_core->r[27]);
+			s_mame_sgi_pc_trace_next = cyc - (cyc % MAME_SGI_PC_TRACE_STEP) + MAME_SGI_PC_TRACE_STEP;
+		}
+	}
+#endif
 	if (m_isdrc)
 	{
 		int execute_result;
 
 		/* reset the cache if dirty */
 		if (m_drc_cache_dirty)
+		{
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+			mame_sgi_mxcsr_diag_check("before_dirty_flush_cache");
+#endif
 			code_flush_cache();
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+			mame_sgi_mxcsr_diag_check("after_dirty_flush_cache");
+			mame_sgi_mxcsr_diag_record();
+#endif
+		}
 		m_drc_cache_dirty = false;
 
 		/* execute */
 		do
 		{
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+			mame_sgi_mxcsr_diag_check("before_drcuml_execute");
+#endif
 			/* run as much as we can */
 			execute_result = m_drcuml->execute(*m_entry);
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+			mame_sgi_mxcsr_diag_check("after_drcuml_execute");
+			mame_sgi_mxcsr_diag_record();
+#endif
+
+#ifdef MAME_SGI_TASK84_DRC_EVENT_LOG
+			// See the macro's own comment in mips3.h. Logs why
+			// m_drcuml->execute() just returned control to this host
+			// C++ loop - a real, host-side re-entry boundary - BEFORE
+			// any of the handling below, so m_core->pc reflects exactly
+			// where execution stopped/will resume. EXECUTE_OUT_OF_CYCLES
+			// deliberately excluded (2026-09-10, after the first test run
+			// showed it alone consuming 2.27M of a 3M budget in a single
+			// cc1 invocation): confirmed via generate_update_cycles()
+			// (mips3drc.cpp ~7493) that this is MAME's ordinary
+			// cooperative-scheduling boundary - icount going negative at
+			// a branch/jump, exiting so other emulated devices get their
+			// turn - not a DRC-compilation-path event at all, and firing
+			// this often it drowns out the events actually worth seeing.
+			if (execute_result != EXECUTE_OUT_OF_CYCLES)
+			{
+				const char *reason = "OTHER";
+				if (execute_result == EXECUTE_MISSING_CODE) reason = "MISSING_CODE";
+				else if (execute_result == EXECUTE_UNMAPPED_CODE) reason = "UNMAPPED";
+				else if (execute_result == EXECUTE_RESET_CACHE) reason = "RESET_CACHE";
+				log_drc_event(reason, m_core->pc);
+			}
+#endif
 
 			/* if we need to recompile, do it */
 			if (execute_result == EXECUTE_MISSING_CODE)
 			{
-				code_compile_block(m_core->mode, m_core->pc);
+				// MAME_SGI_DISPATCH_MODE_ASID_FIX: hash registration inside
+				// code_compile_block() must use the same composite key
+				// runtime dispatch (UML_HASHJMP) will look up under.
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+				mame_sgi_mxcsr_diag_check("before_compile_block");
+#endif
+				code_compile_block(m_core->dispatch_mode, m_core->pc);
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+				mame_sgi_mxcsr_diag_check("after_compile_block");
+				mame_sgi_mxcsr_diag_record();
+#endif
 			}
 			else if (execute_result == EXECUTE_UNMAPPED_CODE)
 			{
@@ -5373,7 +5811,14 @@ void mips3_device::execute_run()
 			}
 			else if (execute_result == EXECUTE_RESET_CACHE)
 			{
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+				mame_sgi_mxcsr_diag_check("before_reset_flush_cache");
+#endif
 				code_flush_cache();
+#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
+				mame_sgi_mxcsr_diag_check("after_reset_flush_cache");
+				mame_sgi_mxcsr_diag_record();
+#endif
 			}
 
 		} while (execute_result != EXECUTE_OUT_OF_CYCLES);
@@ -5401,6 +5846,38 @@ void mips3_device::execute_run()
 		/* debugging */
 		m_ppc = m_core->pc;
 		debugger_instruction_hook(m_core->pc);
+
+#ifdef MAME_SGI_PC_TRACE_DIAG
+		// TEMPORARY (2026-08-14): true per-instruction resolution for the
+		// same narrow-window trace as execute_run()'s own hook above -
+		// that one is limited to execute_run()'s own (coarse) re-entry
+		// granularity, since DRC can run a whole compiled block between
+		// re-entries. The interpreter's dispatch loop has no such gap -
+		// every single instruction passes through here - so switch to
+		// -nodrc for this specific narrow-window investigation to get
+		// true single-instruction resolution (already confirmed the bug
+		// reproduces identically under -nodrc, so this is a valid
+		// substitution for this specific narrow window).
+		{
+			uint64_t cyc = total_cycles();
+			// TEMPORARY (2026-08-14): PC-match variant - fire on every visit
+			// to the jr $ra epilogue at 0xbfc1174c specifically, across a
+			// broad cycle safety range, rather than a narrow cycle window -
+			// used to find where a CONTINUOUS boot's own visit(s) to this
+			// exact instruction land, for comparison against the -state
+			// reload's corrupted $ra=0 there (see task #66/journal.md).
+			if (cyc <= 6000000 && m_core->pc == 0xbfc1174c)
+			{
+				osd_printf_verbose("MAME_PC_TRACE_INSN: cyc=%llu PC=%08X SR=%08X Cause=%08X k0=%08X%08X k1=%08X%08X sp=%08X%08X ra=%08X%08X\n",
+					(unsigned long long)cyc, m_core->pc,
+					(uint32_t)m_core->cpr[0][COP0_Status], (uint32_t)m_core->cpr[0][COP0_Cause],
+					(uint32_t)(m_core->r[26] >> 32), (uint32_t)m_core->r[26],
+					(uint32_t)(m_core->r[27] >> 32), (uint32_t)m_core->r[27],
+					(uint32_t)(m_core->r[29] >> 32), (uint32_t)m_core->r[29],
+					(uint32_t)(m_core->r[31] >> 32), (uint32_t)m_core->r[31]);
+			}
+		}
+#endif
 
 		/* instruction fetch */
 		if(!RWORD(m_core->pc, &op, true))
@@ -5492,7 +5969,33 @@ void mips3_device::execute_run()
 			case 0x28:  /* SB */        WBYTE(SIMMVAL+RSVAL32, RTVAL32);                                          break;
 			case 0x29:  /* SH */        WHALF(SIMMVAL+RSVAL32, RTVAL32);                                          break;
 			case 0x2a:  /* SWL */       (this->*m_swl)(op);                                                       break;
-			case 0x2b:  /* SW */        WWORD(SIMMVAL+RSVAL32, RTVAL32);                                          break;
+			case 0x2b:  /* SW */
+				WWORD(SIMMVAL+RSVAL32, RTVAL32);
+#ifdef MAME_IRIX_SPINLOCK_INIT_WORKAROUND
+				// Interpreter-side counterpart to mips3drc.cpp's
+				// MAME_IRIX_SPINLOCK_INIT_WORKAROUND (see that file for the
+				// full rationale: a real, source-confirmed IRIX kernel bug
+				// in sv_timedwait's ospl-truthiness dispatch, defanged by
+				// making every fresh lock_t start at 0 instead of the
+				// literal 2 spinlock_init unconditionally writes). This is
+				// the same fix applied to the plain interpreter's own SW
+				// handler, since -nodrc never executes any DRC-compiled
+				// code and so never sees the DRC-side hook.
+				if (m_core->pc - 4 == 0x881b6540)
+				{
+					// DISABLED (2026-07-28): the workaround itself (the
+					// WWORD below) stays active - it's real and needed -
+					// but this diagnostic print, like its DRC-side twin,
+					// was never gated and fired unconditionally on every
+					// occurrence. Since -nodrc is the baseline every DRC
+					// speed comparison tonight has been measured against,
+					// this was making the baseline itself artificially
+					// slow too - found while auditing the interpreter for
+					// the same category of bug just fixed in mips3drc.cpp.
+					WWORD(SIMMVAL+RSVAL32, 0);
+				}
+#endif
+				break;
 			case 0x2c:  /* SDL */       (this->*m_sdl)(op);                                                       break;
 			case 0x2d:  /* SDR */       (this->*m_sdr)(op);                                                       break;
 			case 0x2e:  /* SWR */       (this->*m_swr)(op);                                                       break;

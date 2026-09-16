@@ -14,14 +14,53 @@ MIPS III/IV emulator.
 
 #pragma once
 
+// TEMPORARY diagnostic (2026-09-10, task #84) - per user direction: stop
+// chasing narrow, targeted hypotheses one at a time and instead build a
+// complete, end-to-end trace of DRC-level events (fresh compiles AND
+// re-entries into already-compiled code) across a whole cc1 invocation,
+// for a matched OK/PREDICATE pair - looking for where a genuinely
+// comparable pass diverges into a fail, without assuming in advance
+// which mechanism it'll be. Deliberately does NOT add any UML
+// instructions to compiled guest code (the exact risk the user flagged
+// - this project's own prior instrumentation, including this session's
+// own $s3 probe, can shift COMPILE_MAX_SEQUENCE boundaries and change
+// behavior). Both event sources logged here are pure host-side C++,
+// called BETWEEN JIT block executions (execute_run()'s own dispatch
+// loop in mips3.cpp) or entirely outside the compiled-code path
+// (code_compile_block() itself, mips3drc.cpp) - zero footprint on the
+// actual generated code or its timing. Shared here (not file-local like
+// most other task84 macros) because it gates code in both mips3.cpp
+// (execute_run) and mips3drc.cpp (code_compile_block, log_drc_event).
+// #define MAME_SGI_TASK84_DRC_EVENT_LOG
+
 #include "ps2vu.h"
 
 #include "cpu/drcuml.h"
+
+#include <unordered_map>
+#include <unordered_set>
+#include <cstring>
 
 #include "divtlb.h"
 
 #include <bitset>
 
+// TEMPORARY diagnostic (2026-08-17) - see debug_get_codeptr/
+// debug_scan_for_immediate's own comments below. Self-defined here
+// (not via sgi.lua's defines{} block) because this header compiles as
+// part of the shared "optional" project (used by every MAME subtarget,
+// not just sgi), which sgi.lua's defines{} block never reaches - see
+// tools/build_profiled.sh-adjacent build notes / the project's own
+// build-verify convention for this exact gotcha.
+#define MIPS3_DEBUG_HELPERS
+
+// PROTOTYPE (2026-08-08): fixed slot count for the per-call-site guard-
+// based inline cache (see the class-scope comment, below, near
+// m_diag_callsite_ic_state). Must be visible to internal_mips3_state,
+// which embeds the near-cache-resident slot arrays - a plain #define,
+// not a class member, since internal_mips3_state is declared before any
+// class-scope constant would be.
+#define MAME_SGI_IC_SITE_COUNT 256
 
 DECLARE_DEVICE_TYPE(R4000BE, r4000be_device)
 DECLARE_DEVICE_TYPE(R4000LE, r4000le_device)
@@ -319,6 +358,59 @@ public:
 	uint32_t mips3drc_get_options();
 	void mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cycles);
 
+	// TEMPORARY diagnostic (2026-08-17) - host-gdb-callable helpers for
+	// live investigation of a specific compiled DRC block, without
+	// needing manual PIE/ASLR address math (drcuml_state::get_codeptr's
+	// own wrapper gets inlined away in an optimized build, and computing
+	// the real runtime address by hand from `nm`'s static address once
+	// already caused a real SIGSEGV in this exact investigation - see
+	// the project journal, 2026-08-16). noinline guarantees a real,
+	// callable symbol regardless of optimization level. Not compiled in
+	// by default (see MIPS3_DEBUG_HELPERS below) since this is purely a
+	// debugging aid with no purpose in a normal build.
+#ifdef MIPS3_DEBUG_HELPERS
+	// `used` is required in addition to `noinline` - noinline only
+	// blocks inlining at call sites, it does not stop the compiler from
+	// dead-code-eliminating the entire function when nothing in the
+	// codebase ever calls it (confirmed live: without `used`, these two
+	// functions simply did not exist as symbols at all after a build,
+	// `nm` found nothing).
+	__attribute__((used, noinline)) void *debug_get_codeptr(uint32_t mode, offs_t pc)
+	{
+		return m_drcuml ? (void *)m_drcuml->get_codeptr(mode, pc) : nullptr;
+	}
+
+	// Bounded, read-only scan of native code starting at `start` for
+	// any 4-byte little-endian occurrence of `needle` (e.g. a target
+	// host address's low 32 bits, or a struct-relative displacement) -
+	// answers "does this compiled block reference this location at
+	// all" directly and reliably, instead of inferring it from grepping
+	// manually-disassembled text (which this investigation already
+	// tried and found inconclusive - not exhaustive enough to rule
+	// anything in or out with confidence) or from -drc_log_uml/
+	// -drc_log_native (which, even filtered, produced a genuine
+	// disk-safety near-miss - see the same journal entry). Caller is
+	// responsible for `len` being a sane bound - this does no
+	// validation of the memory range itself, matching the trust level
+	// already implied by using host gdb to call this in the first
+	// place. Returns the byte offset of the first match, or -1.
+	__attribute__((used, noinline)) int32_t debug_scan_for_immediate(const uint8_t *start, uint32_t len, uint32_t needle)
+	{
+		if (len < 4)
+			return -1;
+		for (uint32_t i = 0; i <= len - 4; i++)
+		{
+			uint32_t v;
+			memcpy(&v, start + i, 4);
+			if (v == needle)
+				return (int32_t)i;
+		}
+		return -1;
+	}
+#endif
+	void mame_sgi_postload_diag();
+	void mame_sgi_presave_diag();
+
 protected:
 	// device_t implementation
 	virtual void device_start() override ATTR_COLD;
@@ -391,6 +483,289 @@ protected:
 
 		uint32_t        mode;                       /* current global mode */
 
+		// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01): separate DRC
+		// hash-dispatch key, distinct from `mode` above. `mode` alone
+		// (privilege+FR, no ASID) is what the DRC hash table has always
+		// keyed compiled blocks on, which works fine for KERNEL-mode code
+		// (kseg0/1 is direct-mapped, genuinely ASID-independent) but
+		// causes real cross-process thrashing for USER/SUPER code, which
+		// is TLB/ASID-mapped: confirmed live, one hot USER-mode PC
+		// recompiled 129,873 times in a single boot as competing
+		// short-lived rc-script processes evicted each other's cached
+		// code at shared conventional virtual addresses (74% of all
+		// USER-mode compiles in that run were pure redundant work - see
+		// wiki/performance.md's "USER-mode cross-process cache thrashing"
+		// section for the full measurement and design). Encoding: kernel
+		// gets a fixed sentinel (just the FR bit, asid-component=0) that
+		// never varies with the live ASID - that constancy is what keeps
+		// kernel code's immunity to this whole problem intact; SUPER/USER
+		// get `((real_asid+1) << 2) | (is_user ? 2 : 0) | FR_bit`.
+		// Computed in exactly one place, generate_update_mode()
+		// (mips3drc.cpp), the same central function `mode` above is
+		// itself recomputed from on every privilege transition - not
+		// scattered across multiple update sites. Used only by the DRC
+		// hash-table dispatch call sites (UML_HASH/UML_HASHJMP/
+		// hash_exists) - every other consumer of `mode` (the 37 sites
+		// using `mode >> 1` as a direct accessor-table index, IS_FR0/
+		// IS_FR1, static_generate_memory_mode_checks, etc.) is completely
+		// unaffected, since `mode` itself keeps its exact original
+		// encoding and meaning.
+		uint32_t        dispatch_mode;
+
+		// TEMPORARY diagnostic (2026-08-06) - jmpdest (JR/JALR) dispatch-key
+		// same-page hit rate for generate_select_dispatch_key()'s short-
+		// circuit. IRIX's PIC ABI resolves essentially every cross-DSO call
+		// through this exact indirect-JALR path (GOT + $t9), so this isn't
+		// a rare corner case - measuring the real hit rate rather than
+		// trusting the "function entries rarely land on the last page slot"
+		// assumption. Incremented directly by JIT'd code at the jmpdest
+		// call site only (mips3drc.cpp), not inside
+		// generate_select_dispatch_key() itself, so the other 4 call sites
+		// (EPC/ErrorPC/branch/entry-point) stay completely unaffected.
+		uint32_t        diag_jmpdest_dispatch_total;
+		uint32_t        diag_jmpdest_dispatch_crosspage;
+
+		// TEMPORARY diagnostic (2026-08-07) - validate_tlb()'s inline
+		// runtime check (mips3drc.cpp, the block-entry/page-boundary TLB
+		// verify, unrelated to ASID_FIX - the same mechanism the
+		// 0x0fac5ffc investigation traced) execution count, for sizing
+		// how much total execution goes to per-dispatch-ish runtime
+		// checks versus real guest work (paired with the jmpdest
+		// counters above for the same measurement). Incremented directly
+		// by JIT'd code at validate_tlb's fast-path site only (the
+		// common case - TLB entry present at compile time); the rare
+		// unconditional-exception path isn't counted, since that exits
+		// immediately and never re-executes this check again for that
+		// compile.
+		uint32_t        diag_validate_tlb_total;
+
+		// TEMPORARY diagnostic (2026-08-07) - real frequency split between
+		// the two independent triggers that mutate vtlb_table() for live
+		// (post-reset) entries, both funneling through tlb_map_entry()
+		// (mips3com.cpp): bulk ASID-switch remaps (mips3com_asid_changed())
+		// vs. single-entry TLBWI/TLBWR writes (tlb_write_common()). Needed
+		// before sizing a global-vs-per-ASID epoch counter for the epoch/
+		// host-fault redesign - if TLBWI/TLBWR fire far more often than
+		// ASID switches, a naive global epoch bumped on every vtlb_table()
+		// mutation would over-invalidate every compiled block on each
+		// write, reproducing the same recompile-storm shape as the
+		// FETCH_ALLOWED regression via a different trigger. Both are plain
+		// host C++ counters (mips3com.cpp), not JIT'd - these call sites
+		// aren't compiled UML code.
+		uint32_t        diag_asid_changed_events;
+		uint32_t        diag_tlbwi_tlbwr_events;
+
+		// TEMPORARY diagnostic (2026-08-07) - dedup potential for
+		// tlb_map_entry()'s real (non-degenerate) vtlb_load() writes:
+		// compares vtlb_table()'s entry before/after each write to see
+		// whether the mapping actually changed, or just re-established
+		// an identical value. If most of the 5.19M TLBWI/TLBWR-triggered
+		// mutations are no-ops, a value-compare before bumping any future
+		// epoch counter could cut the effective invalidation rate by
+		// orders of magnitude with far less new code than a full per-page
+		// epoch redesign. Only covers the "real load" branch (a valid,
+		// in-range mapping); the degenerate/unmap branches (ASID
+		// mismatch, out-of-range VPN, explicit unmap) are counted
+		// separately without a dedup claim, since their actual affected
+		// table index isn't cheaply knowable from mips3com.cpp alone.
+		uint32_t        diag_tlb_write_total;
+		uint32_t        diag_tlb_write_nochange;
+		uint32_t        diag_tlb_write_degenerate;
+
+		// TEMPORARY diagnostic (2026-08-22) - resuming the 0x0fac5ffc
+		// validate_tlb() anomaly investigation (see wiki/performance.md's
+		// "Investigated extensively... still not resolved" section):
+		// every prior check confirmed both the live TLB entry and the
+		// compile-time-baked immediate are individually correct and
+		// stable, yet the JIT'd CMP still evaluates NE far more often
+		// than it should. This field lets an independent, unconditional
+		// C-side re-check run on every dispatch through that one PC's
+		// validate_tlb site (see cfunc_0fac5ffc_anomaly_diag,
+		// mips3drc.cpp) - bumped once per code_compile_block() call for
+		// pc==0x0fac5ffc, read back both at compile time (baked as this
+		// instance's own "generation") and live (this field's current
+		// value) to test whether a stale/older compiled instance could
+		// somehow still be reachable and executing after a newer compile
+		// of the same dispatch key.
+		uint32_t        diag_0fac5ffc_compile_gen;
+
+		// TEMPORARY diagnostic (2026-09-02) - task #84's gcc <built-in>
+		// flake, MAME_SGI_RODATA_LOAD_ADDR_DIAG (mips3drc.cpp). Must live
+		// here, not as plain file-scope statics - the x64 DRC backend
+		// addresses mem() operands RBP-relative to this struct, and a
+		// free-standing global elsewhere in the binary's BSS segment
+		// landed out of the encodable displacement range, crashing with
+		// "drcbe_x64::offset_from_rbp: delta out of range" the first time
+		// generated code actually tried to touch it (confirmed live -
+		// this is not a hypothetical). diag_rodata_hit is reset
+		// unconditionally at the top of every static_generate_memory_
+		// accessor() invocation and only set on this specific call's own
+		// in-range check, so stale data from an unrelated earlier access
+		// can't leak into the post-read callback.
+		uint32_t        diag_rodata_addr;
+		uint32_t        diag_rodata_value;
+		uint32_t        diag_rodata_hit;
+
+		// MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - count of EXCEPTION_
+		// BADCOP deliveries for cop==1 specifically. Counted unconditionally
+		// whenever the diagnostic is compiled in; reported once as a
+		// clean-exit summary in device_stop() (mips3.cpp) rather than
+		// per-event, per this project's own hygiene convention (2026-09-11)
+		// of not leaving live-firing diagnostics printing during ordinary
+		// play once a per-event trace is no longer needed.
+		uint32_t        diag_cop1_trap_count;
+
+		// MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG (mips3drc.cpp) - how often
+		// code_compile_block()'s null-seqlast fallback fires (the
+		// permanent fix itself is unconditional, see its own comment) and
+		// the seqhead PC of the most recent occurrence. Reported once as
+		// a clean-exit summary in device_stop() (mips3.cpp). See
+		// wiki/assets.md's "first DRC bug" section for the full root
+		// cause (build_sequence() in drcfe.ipp discarding a reclaimed
+		// branch-likely description's end_sequence() flag).
+		uint32_t        diag_null_seqlast_count;
+		uint32_t        diag_null_seqlast_last_pc;
+
+		// Standing counters (2026-08-22, not a temporary diagnostic -
+		// this is the fix itself, task #8, MAME_SGI_TLB_MISMATCH_REFRESH_
+		// FIX): how often static_generate_tlb_mismatch()'s skip branch
+		// was able to redispatch through the hash table instead of
+		// falling through to EXECUTE_MISSING_CODE (refresh_hits -
+		// recompile avoided) out of every arrival at that branch
+		// (skip_total). See mips3drc.cpp's own comment on the fix for
+		// the full rationale.
+		uint32_t        diag_tlb_mismatch_skip_total;
+		uint32_t        diag_tlb_mismatch_refresh_hits;
+
+		// Part of MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8) - the last
+		// guest PC the shared tlb_mismatch handler redispatched rather
+		// than recompiling. Read back on the next arrival at that
+		// handler's skip branch: if it is the same PC, the redispatch
+		// landed straight back on the very stub that raised the mismatch
+		// (a compiler_page_fault() sequence head registers its hash entry
+		// at its own PC), so retrying is futile and the real recompile is
+		// taken instead. Initialised to ~0, which is never a valid
+		// word-aligned PC. See static_generate_tlb_mismatch().
+		uint32_t        tlb_mismatch_retry_pc;
+
+		// TEMPORARY diagnostic (2026-08-07) - real compiled-sequence
+		// length distribution (seqhead-to-seqlast, in guest instructions),
+		// for characterizing DRC dispatch fragments after the interpreter-
+		// vs-DRC comparison showed only a ~2.15x wall-time win - far short
+		// of typical JIT speedups. An existing comment in code_compile_
+		// block() (2026-08-02 investigation) already found "231K+ compiles,
+		// all identical single-instruction sequences" for one specific
+		// case; this makes that observation a standing aggregate instead
+		// of an anecdote from one investigation. Plain host C++ counters
+		// (mips3drc.cpp), not JIT'd - counted once per sequence at compile
+		// time, not per dispatch.
+		uint32_t        diag_seq_count;
+		uint64_t        diag_seq_instr_total;
+		uint32_t        diag_seq_len1_count;
+		uint32_t        diag_seq_len_max;
+
+		// TEMPORARY diagnostic (2026-08-08) - categorizes *why* each
+		// sequence ended, using seqlast's own flags (mirroring
+		// describe()'s set_end_sequence() call sites in mips3fe.cpp).
+		// IRIX's PIC ABI resolves nearly every cross-DSO call through
+		// indirect JALR (established 2026-08-06/07), and JR/JALR always
+		// end a sequence since the target isn't statically known - the
+		// leading hypothesis for why sequences average only ~7
+		// instructions (2026-08-07 measurement). This splits that
+		// hypothesis from the alternatives (static jumps/calls,
+		// syscall/break, mode-changing COP0 writes/ERET, or simply
+		// running off the end of the describe_code() window/
+		// COMPILE_MAX_SEQUENCE cap with no terminating instruction at
+		// all) with real counts instead of just plausibility.
+		uint32_t        diag_seqend_indirect_jump;   // JR/JALR (targetpc == BRANCH_TARGET_DYNAMIC)
+		uint32_t        diag_seqend_static_jump;     // J/JAL/unconditional-idiom branches (static target)
+		uint32_t        diag_seqend_exception;       // SYSCALL/BREAK
+		uint32_t        diag_seqend_mode_change;     // MTC0-Status/ERET
+		uint32_t        diag_seqend_window_limit;    // none of the above - window/max-sequence boundary
+
+		// TEMPORARY diagnostic (2026-08-08) - which of the three sequence-
+		// exit transfer tiers actually gets used for the non-branch
+		// fall-through case (code_compile_block()'s per-sequence dispatch
+		// selection, ~line 1151): free (zero-cost straight-line fall-
+		// through - the very next sequence in this same compile batch
+		// already starts at nextpc, no code emitted at all),
+		// mode_change_hashjmp (seqlast->can_change_modes(), a real runtime
+		// hash-table lookup via live_dispatch_key()), or static_hashjmp
+		// (seqlast->next() is null or doesn't start at nextpc - also a
+		// real hash-table lookup, just with static_dispatch_key()'s
+		// compile-time-resolved key). Tests whether the dominant
+		// branch_target sequence-termination cause (2026-08-08, ~31% of
+		// all terminations) already gets the free tier for free (the
+		// split-off sequence is typically the very next node in program
+		// order) or actually pays the expensive hash-lookup path despite
+		// being reachable without one.
+		uint32_t        diag_seqexit_free_fallthrough;
+		uint32_t        diag_seqexit_mode_change_hashjmp;
+		uint32_t        diag_seqexit_static_hashjmp;
+
+		// TEMPORARY diagnostic (2026-08-08) - of the static_hashjmp cases
+		// above (66% of non-branch sequence exits), how many actually have
+		// nextpc's own opcode_desc compiled somewhere in the SAME batch's
+		// desclist (just not literally seqlast->next() - list order is
+		// whatever order do_describe_code()'s branch-target-stack walk
+		// discovered sequences in, not address order) versus genuinely
+		// outside this batch, needing the real hash lookup regardless.
+		// Sizes the actual opportunity for extending the existing
+		// intrablock_branch mechanism (currently gated to curdesc-
+		// >is_branch() only, mips3drc.cpp:4391) to this fall-through
+		// dispatch path too.
+		uint32_t        diag_seqexit_hashjmp_target_in_batch;
+		uint32_t        diag_seqexit_hashjmp_target_outside_batch;
+
+		// TEMPORARY diagnostic (2026-08-08) - live values read by
+		// func_callsite_ic_probe() (mips3drc.cpp), fed from the jmpdest
+		// HASHJMP call site (generate_delay_slot_and_branch). diag_ic_probe_
+		// callsite is desc->pc, baked in at compile time as this JR/JALR's
+		// own address (the call-site identity); diag_ic_probe_mode is the
+		// live resolved dispatch key (I3). jmpdest itself already holds the
+		// live target pc, read directly by the probe - no separate field
+		// needed. See m_diag_callsite_ic_state's comment for the full
+		// mechanism/purpose.
+		uint32_t        diag_ic_probe_callsite;
+		uint32_t        diag_ic_probe_mode;
+
+		// PROTOTYPE (2026-08-08) - live values read by
+		// func_ic_learn_and_arm() (mips3drc.cpp), fed from the jmpdest
+		// guard-miss/establish path (generate_delay_slot_and_branch).
+		// ic_live_mode is the live resolved dispatch key (I3), stashed to
+		// memory because it's not guaranteed to survive the CALLC's
+		// underlying host call. ic_slot_index identifies which slot just
+		// missed, a compile-time immediate at each call site
+		// (= hash(desc->pc) % MAME_SGI_IC_SITE_COUNT). jmpdest itself
+		// already holds the live target pc. An earlier version of this
+		// design also needed a third field here (the call site's own
+		// instruction address, for byte-patching) - no longer necessary
+		// now that OP_DIRECTJMP (uml.h/drcbex64.cpp) reads its target
+		// from a fixed, compile-time-known host address
+		// (&m_core->ic_site_target[idx]) rather than needing any runtime-
+		// captured instruction address at all. See the class-scope
+		// comment near m_diag_callsite_ic_state for the full mechanism.
+		uint32_t        ic_live_mode;
+		uint32_t        ic_slot_index;
+
+		// PROTOTYPE (2026-08-08): the per-call-site guard-based inline
+		// cache's slot table itself - parallel arrays (not an array of
+		// structs, to avoid a nested-struct forward reference to a type
+		// declared later in this class) of MAME_SGI_IC_SITE_COUNT guard
+		// expectations plus their resolved targets, indexed by
+		// ic_slot_index. Deliberately embedded directly in
+		// internal_mips3_state so it's automatically near-cache-resident
+		// (same allocation as m_core itself) - critically, this also
+		// means &ic_site_target[idx] is a fixed, compile-time-known host
+		// address usable directly as OP_DIRECTJMP's PTR parameter, with
+		// none of the "capture an assembled instruction's address" timing
+		// problems the earlier byte-patch design fought - see the
+		// class-scope comment near m_diag_callsite_ic_state for the full
+		// design/history.
+		uint32_t        ic_site_expected_mode[MAME_SGI_IC_SITE_COUNT];
+		uint32_t        ic_site_expected_pc[MAME_SGI_IC_SITE_COUNT];
+		uint64_t        ic_site_target[MAME_SGI_IC_SITE_COUNT];
+
 													/* parameters for subroutines */
 		uint64_t        numcycles;                  /* return value from gettotalcycles */
 		const char *    format;                     /* format string for print_debug */
@@ -400,6 +775,63 @@ protected:
 		uint64_t        count_zero_time;
 		uint32_t        compare_armed;
 		uint32_t        jmpdest;                    /* destination jump target */
+		uint32_t        diag_call_trace_target;     /* TEMPORARY (2026-09-09): JAL/JALR target for func_call_trace_diag */
+		uint32_t        diag_exc_type;               /* TEMPORARY (2026-09-10): exception code for log_drc_exception */
+		uint32_t        diag_tlb_mismatch_pc;        /* TEMPORARY (2026-09-10): recovered PC for log_tlb_mismatch_entry */
+		uint32_t        diag_cpperror_callsite_pc;  /* TEMPORARY (2026-09-10): this call's own desc->pc for func_cpperror_callsite_diag */
+		uint64_t        diag_cpperror_a2;            /* TEMPORARY (2026-09-10): $a2 (message ptr) at the real cpp_error call */
+		uint64_t        diag_cpperror_s3;            /* TEMPORARY (2026-09-10): $s3 at the real cpp_error call */
+		uint64_t        diag_cond_v1;                /* TEMPORARY (2026-09-10): $v1 (token type) for func_cpperror_cond_trace_diag */
+		uint64_t        diag_cond_s1;                /* TEMPORARY (2026-09-10): $s1 for func_cpperror_cond_trace_diag */
+		uint64_t        diag_srctext_s0;             /* TEMPORARY (2026-09-10): $s0 (pfile) for func_source_text_diag */
+		uint64_t        diag_srctext_s3;             /* TEMPORARY (2026-09-10): $s3 (loop iteration/acount) for func_source_text_diag */
+		uint64_t        diag_token_result_v0;       /* TEMPORARY (2026-09-09): stashed $v0 for func_token_result_diag */
+		uint64_t        diag_beql_s3;                /* TEMPORARY (2026-09-10): $s3 read right at the beql compare itself, for func_beql_s3_diag */
+		uint64_t        diag_beql_v0;                /* TEMPORARY (2026-09-10): $v0 at the same point, for func_beql_s3_diag */
+		uint64_t        diag_breakcheck_v0;          /* TEMPORARY (2026-09-10): $v0 (token type) at the loop's own break check, 0x1007df68 */
+		uint64_t        diag_breakcheck_s3;          /* TEMPORARY (2026-09-10): $s3 at the same point */
+		uint64_t        diag_s3_increment_newval;    /* TEMPORARY (2026-09-10): $s3's new value right after the loop's own acount++ */
+		uint64_t        diag_tlbmiss_redispatch_s3;  /* TEMPORARY (2026-09-10): $s3 at the moment static_generate_tlb_mismatch redispatches back to 0x1007DFFC (mid-delay-slot TLB miss test) */
+		uint32_t        diag_tlbmiss_redispatch_firstpc; /* TEMPORARY (2026-09-10): first UML_RECOVER's (delay-slot-rounded-up) PC, for the same event */
+		uint32_t        diag_new_epc;                /* TEMPORARY (2026-07-27): stashed I0 value about to become EPC in static_generate_exception's EXCEPTION_INTERRUPT case, read by func_interrupt_delivery_probe */
+		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
+		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
+		uint64_t        diag_mtcz_i0_stash;          /* TEMPORARY (2026-07-27): I0 stashed/restored around func_mtcz_read_probe's CALLC so it can't clobber the value generate_set_cop0_reg consumes right after */
+		uint32_t        diag_sd_i0_stash;            /* TEMPORARY (2026-07-27): I0 (store address) stashed/restored around func_sd_value_probe's CALLC in the SD opcode case */
+		uint64_t        diag_sd_i1_stash;            /* TEMPORARY (2026-07-27): I1 (store value) stashed/restored around func_sd_value_probe's CALLC in the SD opcode case */
+		uint32_t        diag_mxcsr_desync_pc;        /* TEMPORARY (2026-08-24): guest pc of the instruction boundary where real MXCSR RC diverged from what CCR1(31)'s RM field predicts, read by func_mxcsr_desync_diag */
+		uint32_t        diag_mxcsr_desync_guest_rm;  /* TEMPORARY (2026-08-24): CCR1(31)&3 at the same boundary, stashed alongside diag_mxcsr_desync_pc */
+		uint32_t        diag_mxcsr_desync_real_rc;   /* TEMPORARY (2026-08-24): real live MXCSR RC bits (13:14) read via the repurposed GETFMOD, stashed alongside diag_mxcsr_desync_pc */
+		uint64_t        diag_task84_inert_scratch;   /* TEMPORARY (2026-09-04): register-inert control-test destination for MAME_SGI_TASK84_INERT_ONLY - must live in m_core, not a free-standing static, so drcbe_x64's compact RBP-relative addressing can reach it (a free-standing static crashed with "offset_from_rbp: delta out of range") */
+		uint32_t        diag_task84_armed;           /* TEMPORARY (2026-09-04): MAME_SGI_TASK84_WINDOW_TRACE - set to 1 at pc==0x1007df50 (right after cpp_get_token() returns), cleared at pc==0x1007dffc (the loop-exit check) - confines save/reload tracing below to the exact narrow window between them, regardless of which handler/process's activity fires it */
+		uint32_t        diag_task84_trace_site;      /* TEMPORARY (2026-09-04): site tag set immediately before each MAME_SGI_TASK84_WINDOW_TRACE CALLC (1=nocode, 2=out_of_cycles, 3=tlb_mismatch, 4=exception) so one shared logging function can identify which save_fast_iregs() call site fired */
+		uint64_t        diag_task84_last_saved_r2;   /* TEMPORARY (2026-09-04): shadow copy of m_core->r[2] written by save_fast_iregs() itself (so ALL 9 call sites are covered by construction, not by patching each one). The entry point compares the live r[2] against this immediately before load_fast_iregs() - a mismatch means r[2] changed between the last save and this reload, which is precisely the stale-reload the fast-register audit is hunting. */
+		uint32_t        diag_ctc1_mxcsr_pc;          /* TEMPORARY (2026-08-24): guest pc of the CTC1 whose own just-emitted UML_SETFMOD didn't produce the expected real MXCSR RC, read by func_ctc1_mxcsr_check_diag */
+		uint32_t        diag_ctc1_mxcsr_fmod;        /* TEMPORARY (2026-08-24): the fmod value (uml::float_rounding_mode) that CTC1 just requested via UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
+		uint32_t        diag_ctc1_mxcsr_real_rc;     /* TEMPORARY (2026-08-24): real live MXCSR RC bits actually observed right after that UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
+		uint32_t        diag_sd_pc;                  /* TEMPORARY (2026-07-27): desc->pc of the SD instruction, for func_sd_value_probe to report */
+		uint32_t        diag_eret_window_exc_type;   /* TEMPORARY (2026-08-14): exception enum stashed in static_generate_exception, read by func_eret_window_exception_diag - eret-race-onset-window investigation, task #66 */
+		uint32_t        diag_eret_window_pc;         /* TEMPORARY (2026-08-14): desc->pc of the ERET instruction, stashed for func_eret_window_eret_diag */
+		/* MAME_SGI_ERET_RACE_WINDOW_DIAG (mips3drc.cpp) - how many of each
+		 * event type landed inside the investigation window, reported once
+		 * as a clean-exit summary in device_stop() (mips3.cpp). Reworked
+		 * 2026-09-11 from an unconditional live per-event stderr trace
+		 * (still available, off by default, via
+		 * MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE) - the eret-race
+		 * investigation itself concluded (task #69/#71, MIPS3DRC_STRICT_
+		 * COP1 was the real fix), only a remaining "does IRIX 5.3 show the
+		 * same issue" curiosity check is open, not worth live noise on
+		 * every normal boot in the meantime. */
+		uint32_t        diag_eret_window_exception_count;
+		uint32_t        diag_eret_window_eret_count;
+		uint32_t        diag_eret_window_status_count;
+		uint64_t        diag_task84_save_count;      /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG - incremented by save_fast_iregs() itself (covers all 4 active call sites by construction), read alongside diag_task84_load_count to check the save/load structural balance the user proposed - see wiki/task84.md's matching entry. */
+		uint64_t        diag_task84_load_count;      /* TEMPORARY (2026-09-05): companion to diag_task84_save_count, incremented by load_fast_iregs() (the single active call site, static_generate_entry_point). Expected to stay within {0,1} of diag_task84_save_count if save/load structurally alternate as assumed - an imbalance beyond that would be a genuine, previously-unverified structural finding. */
+		uint64_t        diag_task84_bracket_save_entry; /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BRACKET_DIAG - snapshot of diag_task84_save_count taken at cpp_get_token's own call site (0x1007df48), so func_task84_saveload_bracket_exit (at the return site, 0x1007df50) can compute the exact save/load activity delta for ONE invocation in guest-instruction order, not wall-clock. */
+		uint64_t        diag_task84_bracket_load_entry; /* TEMPORARY (2026-09-05): companion to diag_task84_bracket_save_entry, for diag_task84_load_count. */
+		uint64_t        diag_v0_shadow;               /* TEMPORARY (2026-09-07): MAME_SGI_TASK84_V0_SHADOW_DIAG - mirrors the live value of R64(2) ($v0), updated unconditionally after every guest instruction (generate_sequence_instruction). Compared against the live value again before the NEXT instruction; any mismatch is an out-of-band change (something touched $v0 without going through this same instrumented path) - see the macro's own comment for the full design. */
+		uint32_t        diag_v0_divergence_pc;        /* TEMPORARY (2026-09-07): desc->pc of the instruction boundary where a divergence was NOTICED (not necessarily where it was caused), stashed for func_v0_shadow_diag. */
+		uint64_t        diag_v0_divergence_current;   /* TEMPORARY (2026-09-07): the live R64(2) value at the moment of the divergence, stashed alongside diag_v0_divergence_pc - diag_v0_shadow itself still holds the OLD (pre-divergence) value at logging time, so both are visible. */
 	};
 
 	/* core state */
@@ -524,6 +956,141 @@ protected:
 	}               m_hotspot[MIPS3_MAX_HOTSPOTS];
 	bool            m_isdrc;
 
+	// MAME_DRC_BUGFIXES (2026-07-28): persistent, address-keyed record of PCs
+	// that have ever been found to need checkints/checksoftints armed by any
+	// of code_compile_block()'s detection scans. describe_code() rebuilds its
+	// sequence/branch-target analysis from scratch on every compile, scoped
+	// only to that call's own window - the same address can be correctly
+	// flagged this time and silently missed next time purely because a
+	// different neighboring PC triggered the compile, causing the same
+	// (pc,state) to be recompiled and rehashed over and over (confirmed live:
+	// one hot PC recompiled 108 times across only 13 cache flushes). Once an
+	// address earns checkints here, via any window, it stays armed on every
+	// future compile regardless of what that particular call's own analysis
+	// finds - see code_compile_block() for where this is consulted/updated.
+	std::unordered_set<offs_t> m_checkints_addrs;
+
+	// TEMPORARY diagnostic (2026-07-28): the literal `pc` argument passed to
+	// the currently-executing code_compile_block() call - the address that
+	// genuinely caused an EXECUTE_MISSING_CODE miss. Set at the top of every
+	// call; consulted deep inside per-instruction codegen (generate_set_
+	// cop0_reg's COMPILETIME diagnostic) to tell a genuine forced recompile
+	// of a hot PC apart from that same PC merely being walked as a member of
+	// some *other* sequence's compile - the two were being conflated into
+	// one inflated count throughout tonight's redundant-recompile
+	// investigation.
+	offs_t m_diag_compile_entry_pc = 0;
+
+	// TEMPORARY diagnostic (2026-08-01): validating a theory about
+	// USER-mode (application) code recompilation during multi-process
+	// operation (rc-script boot phase and beyond) - the DRC hash table
+	// key is (mode, virtual pc) with no ASID/process discrimination, and
+	// the per-block checksum guard only proves "content at this frozen
+	// physical address is unchanged," not "this virtual PC still
+	// resolves to that address under the current process/ASID." Two
+	// different processes whose private code occupies the same virtual
+	// range (the common case under a fixed-load-address ABI) could
+	// plausibly thrash each other's cached compiles on every context
+	// switch. Counts recompile events per (mode, pc) key, USER mode
+	// only - see code_compile_block() for where this is populated and
+	// mips3.cpp's device_stop() for where it's dumped (unconditionally
+	// safe when empty/unused - see MAME_DRC_USERMODE_RECOMPILE_DIAG in
+	// mips3drc.cpp for the gate on actually populating it).
+	std::unordered_map<uint64_t, uint32_t> m_diag_usermode_recompile_counts;
+
+	// TEMPORARY diagnostic (2026-08-01): sanity check for the
+	// dispatch_mode fix above - every KERNEL-privilege compile
+	// (dispatch_mode < 4, i.e. asid-component bits clear) should produce
+	// exactly one of only two possible values (0 or 1, differing only by
+	// the FR bit) regardless of which ASID happens to be live at the
+	// time. If this set ever grows past {0,1}, that's direct proof
+	// kernel code is being incorrectly fragmented by ASID - the one
+	// thing the fixed-sentinel design is specifically supposed to
+	// prevent. Populated in code_compile_block(), dumped alongside
+	// m_diag_usermode_recompile_counts in device_stop() (mips3.cpp).
+	std::unordered_set<uint32_t> m_diag_kernel_dispatch_mode_values;
+
+	// TEMPORARY diagnostic (2026-08-08): measures whether a 1-slot
+	// per-call-site inline cache would actually hit at jmpdest (JR/JALR),
+	// the hottest HASHJMP dispatch site - the deciding question before
+	// implementing the self-patching/inline-caching redesign discussed in
+	// journal.md 2026-08-08 (targets HASHJMP's 3-dependent-load table walk,
+	// shown to cost DRC 38.6x more cache-misses/instruction than the
+	// interpreter on identical guest work). Keyed by desc->pc (this JR/JALR
+	// instruction's own guest address - the call-site identity, stable
+	// across re-executions of the same compiled instance). Each entry
+	// tracks the last resolved {mode,pc} pair seen at that call site plus
+	// hit/miss counts against that 1-slot model. JR $ra (function return)
+	// is the specific risk: the same physical call site's target varies by
+	// caller, the classic polymorphic case that thrashes a monomorphic
+	// cache. Populated in func_callsite_ic_probe() (mips3drc.cpp), gated on
+	// MAME_SGI_CALLSITE_IC_HITRATE_DIAG there; dumped alongside the other
+	// diagnostic maps in mips3.cpp's device_stop().
+	struct callsite_ic_entry
+	{
+		bool     seen = false;
+		uint32_t last_mode = 0;
+		uint32_t last_pc = 0;
+		uint32_t hits = 0;
+		uint32_t misses = 0;
+	};
+	std::unordered_map<uint32_t, callsite_ic_entry> m_diag_callsite_ic_state;
+
+	// PROTOTYPE (2026-08-08): per-call-site guard-based inline cache for
+	// the jmpdest HASHJMP site - see journal.md 2026-08-08 for the full
+	// design rationale and history (targets the measured 38.6x cache-
+	// miss/instruction gap between DRC and the interpreter, traced to
+	// HASHJMP's 3 sequential dependent loads through large, sparse
+	// global tables). Two full redesigns preceded this one: (1) a
+	// per-call-site heap allocation, broken by this backend's mem()/
+	// MABS() addressing requiring every operand within 2GB of rbp and
+	// by the near-cache's tiny fixed 128KB budget; (2) a `UML_CALLH` +
+	// runtime byte-patching scheme (convert a compiled `call` into a
+	// `jmp` in place), which got as far as a working address-capture
+	// mechanism but was then found to be UNSAFE - `op_hashjmp` resets
+	// the host stack pointer before every jump (`mov rsp, [m_near.
+	// stacksave]`), an invariant a raw patched jmp can't replicate
+	// (5 bytes, no room, and the field is private to drcbe_x64 anyway)
+	// - confirmed by a real guest-level `Memory fault(coredump)` on the
+	// first proper boot test. That's what motivated OP_DIRECTJMP (uml.h/
+	// drcbex64.cpp) - a new backend primitive that does the same rsp
+	// reset HASHJMP does, then one indirect jump through a memory slot,
+	// no table walk.
+	//
+	// Current (third) design, using OP_DIRECTJMP: a small, FIXED-SIZE
+	// table of MAME_SGI_IC_SITE_COUNT slots, embedded directly in
+	// internal_mips3_state as parallel arrays (ic_site_expected_mode/
+	// ic_site_expected_pc/ic_site_target - not an array-of-structs, to
+	// avoid a nested-struct forward reference to a type declared later
+	// in this class), automatically near-cache-resident along with
+	// m_core itself. A call site's own slot index is a cheap,
+	// compile-time hash of its own desc->pc, mod MAME_SGI_IC_SITE_COUNT
+	// - no allocation at compile time, and critically, NO per-instruction
+	// address capture either: `&m_core->ic_site_target[idx]` is a fixed,
+	// compile-time-known host address the moment m_core itself is
+	// allocated (device_start()), so it can be passed directly as
+	// OP_DIRECTJMP's PTR parameter with none of the "capture an
+	// assembled instruction's address" timing problems the byte-patch
+	// design fought. Different call sites CAN collide on the same slot;
+	// this is safe, not a correctness bug - the guard always
+	// re-validates live {mode,pc} against the slot's current expectation
+	// before trusting the fast path, so a collision just means more
+	// guard misses (degraded to the always-correct HASHJMP fallback)
+	// for the colliding sites, never a wrong jump.
+	//
+	// expected_mode/expected_pc are reset to the sentinel UINT32_MAX (a
+	// MIPS jmpdest value that can never legitimately occur) for every
+	// slot at the start of every flush (code_flush_cache(), mips3drc.cpp)
+	// - this also covers the very first, pre-flush setup, since
+	// code_flush_cache() unconditionally runs once before any dynamic
+	// compile (execute_run(), mips3.cpp). func_ic_learn_and_arm()
+	// (mips3drc.cpp) commits expected_mode/expected_pc and ic_site_target
+	// TOGETHER, in the same operation, and only once hash_exists()/
+	// get_codeptr() have actually succeeded - guaranteeing "established"
+	// (non-sentinel expected_pc) always implies a valid, resolved
+	// ic_site_target, so a guard-hit can never reach OP_DIRECTJMP with
+	// an unresolved (null) target. Never updated again until the next
+	// flush resets them.
 	void generate_exception(int exception, int backup);
 	void generate_tlb_exception(int exception, offs_t address);
 
@@ -608,14 +1175,97 @@ private:
 	void load_fast_iregs(drcuml_block &block);
 	void save_fast_iregs(drcuml_block &block);
 	void code_flush_cache();
-	void code_compile_block(uint8_t mode, offs_t pc);
+	void code_compile_block(uint32_t mode, offs_t pc);
 public:
 	void func_get_cycles();
+	void func_callsite_ic_probe();
+	void func_ic_learn_and_arm();
 	void func_printf_exception();
+	void func_lockstate_probe(int site);
+	void func_mutex_wake_entry_probe();
+	void func_install_mutex_tap();
+	void func_mutex_unlock_entry_probe();
+	void func_sv_wait_sig_unlock_probe();
+	void func_sv_wait_sig_worker_entry_probe();
+	void func_sv_timedwait_entry_probe();
+	void func_sv_wait_entry_probe();
+	void func_xlog_state_clean_log_entry_probe();
+	void func_biodone_dispatch_probe();
+	void func_xlog_iodone_entry_probe();
+	void func_xlog_complete_entry_probe();
+	void func_xlog_inner_worker_stack_tap();
+	void func_xlog_tlb_recheck_probe();
+	void func_xfs_log_done_entry_probe();
+	void func_xlog_commit_record_entry_probe();
+	void func_xlog_write_call_capture_probe();
+	void func_xlog_write_return_check_probe();
+	void func_xfs_trans_commit_iclog_consume_probe();
+	void func_xlog_write_entry_log_probe();
+	void func_mutex_wake_dequeue_probe();
+	void func_iclogspace_splhi_probe();
+	void func_iclogspace_splx_probe();
+	void func_interrupt_taken_probe();
+	void func_mutex_lock_enqueue_probe();
+	void func_mutex_lock_enqueue_end_probe();
+	void func_spinlock_init_workaround();
+	void func_us_delay_entry_probe();
+	void func_mrupdatef_entry_probe();
+	void func_rmap_del_panic_probe(int site);
+	void func_tlbmiss_entry_probe();
+	void func_fault_store_mode_probe(int site);
+	void func_interrupt_delivery_probe();
+	void func_status_store_probe();
+	void func_premature_interrupt_probe();
+	void func_pckm_mutex_lock_call_probe();
+	void func_pckm_mutex_snapshot_probe();
+	void func_andi_ori_probe(int site);
+	void func_mtcz_read_probe(int compiletime_is_branch_target);
+	void func_sd_value_probe();
+	void func_eret_window_exception_diag();
+	void func_eret_window_eret_diag();
+	void func_eret_window_status_diag();
 	void func_printf_debug();
+	void func_0fac5ffc_anomaly_diag();
+	void func_validate_tlb_mismatch_class_diag();
+	void func_mxcsr_desync_diag();
+	void func_ctc1_mxcsr_check_diag();
+	void func_fpop_mxcsr_check_diag();
+	void func_nocode_0fac5ffc_diag();
+	void func_rodata_load_addr_diag();
+	void func_cop1_trap_diag();
 	void func_printf_probe();
 	void func_debug_break();
 	void func_unimplemented();
+	void func_checksum_mismatch_diag(void *ctx);
+	void func_task84_tlb_mismatch_diag();
+	void func_task84_v0_diag();
+	void func_task84_s3_check_diag();
+	void func_task84_window_trace_save();
+	void func_task84_window_trace_reload();
+	void func_task84_entry_pc_diag();
+	void func_v0_shadow_diag();
+	void func_t9_got_diag();
+	void func_call_trace_diag();
+	void func_cpperror_callsite_diag();
+	void func_cpperror_cond_trace_diag();
+	void func_source_text_diag();
+	void func_beql_s3_diag();
+	void func_breakcheck_s3_diag();
+	void func_s3_increment_diag();
+	void func_token_result_diag();
+	void func_pid_calibration_diag();
+	void log_drc_event(const char *type, uint32_t pc);
+	void log_drc_exception();
+	void log_tlb_mismatch_entry();
+	void func_tlbmiss_redispatch_diag();
+	void func_tlbmiss_redispatch_e020_diag();
+	uint32_t read_guest_dword_translated(offs_t addr);
+	uint32_t read_current_pid();
+	void func_task84_t9_once_diag();
+	void func_task84_reload_mismatch();
+	void func_task84_entry_irq_diag();
+	void func_task84_saveload_bracket_entry();
+	void func_task84_saveload_bracket_exit();
 private:
 	/* internal compiler state */
 	struct compiler_state
@@ -635,10 +1285,117 @@ private:
 	void static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name);
 
 	void generate_update_mode(drcuml_block &block);
-	void generate_update_cycles(drcuml_block &block, compiler_state &compiler, uml::parameter param, bool allow_exception);
+	// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2 (mips3drc.cpp): host-side
+	// (compile-time) writability check for a statically-known target PC
+	// - IRIX's own kernel uses exactly this signal (execmap(), $IRIXSRC)
+	// to decide MAP_SHARED (read-only) vs MAP_PRIVATE (writable), so it's
+	// used the same way here to decide whether a dispatch needs ASID
+	// folded into its key at all. Cheap: a single VTLB table lookup, no
+	// TLB miss handling - matches the live-VTLB-check idiom already used
+	// in static_generate_tlb_mismatch() for the same table.
+	//
+	// REVERTED (2026-08-07): tried restricting FETCH_ALLOWED-awareness to
+	// the delay-slot page only, reasoning that pc's own page is always
+	// pre-verified fetchable. That reasoning only holds for
+	// code_compile_block()'s own `pc` (entered solely via
+	// EXECUTE_MISSING_CODE, i.e. a HASHJMP just proved pc fetchable by
+	// attempting it) - it does NOT hold for static_dispatch_key()/
+	// live_dispatch_key()/generate_select_dispatch_key(), all of which
+	// evaluate a *future, not-yet-attempted* target's page, with nothing
+	// guaranteeing it's currently mapped. Reintroduced the exact same
+	// failure class this whole investigation is about, just on the
+	// target's own page instead of the delay page - a genuinely-unmapped
+	// own page (indistinguishable from a legitimately-shared one under
+	// WRITE_ALLOWED alone) got misclassified as shareable, poisoning the
+	// shared key with a degenerate page-fault stub. Reproduced a real
+	// livelock immediately (journal.md 2026-08-06/07) - reverted to
+	// FETCH_ALLOWED-aware for both pages, the proven-safe version.
+	// page_shareable() used for both pc and pc+4 in dispatch_page_writable()
+	// below.
+	bool page_shareable(offs_t p) const noexcept
+	{
+		vtlb_entry const entry = vtlb_table()[p >> 12];
+		return (entry & (FETCH_ALLOWED | WRITE_ALLOWED)) == FETCH_ALLOWED;
+	}
+	// dispatch_page_writable(pc) itself checks pc's own page AND pc+4
+	// (2026-08-06 "Fix 1"): a compiled block also depends on its delay
+	// slot's page if pc is a branch/jump - always exactly pc+4 in the
+	// MIPS ISA, so this is a pure function of pc alone, safe to apply
+	// unconditionally even when pc isn't actually a branch (pc+4 is then
+	// just the next sequential instruction, itself a legitimate
+	// dependency of nothing in particular, but checking it anyway costs
+	// nothing and is always correct to require). This one function is
+	// the single choke point every registration/lookup site in this file
+	// funnels through (directly, or via static_dispatch_key()/
+	// live_dispatch_key() below) - see wiki/performance.md and
+	// journal.md 2026-08-06 for two earlier, narrower attempts that
+	// instead special-cased the fix at the registration site only,
+	// causing a registration/lookup key mismatch and an infinite
+	// EXECUTE_MISSING_CODE/recompile livelock. generate_select_
+	// dispatch_key() (mips3drc.cpp) is the one call site that can't
+	// route through this host-side function (it needs the equivalent
+	// check emitted as JIT'd runtime code for targets not known until
+	// the guest is actually running) - kept in lockstep with this
+	// definition by hand; if this function's logic changes, that one
+	// must change with it.
+	// A/B toggle (2026-08-06, reverted to off 2026-08-07) - undefined to
+	// run dispatch_page_writable() (and generate_select_dispatch_key()'s
+	// matching JIT'd codegen, mips3drc.cpp) on the original single-page,
+	// WRITE_ALLOWED-only check (pre-2026-08-06, the wiki's 2026-08-02
+	// baseline config: 13-15 flushes for a full boot). The two-page,
+	// FETCH_ALLOWED-aware check is the *more correct* one (closes a real
+	// delay-slot race - journal.md 2026-08-06), but journal.md 2026-08-07
+	// 00:14-00:52 measured that FETCH_ALLOWED-awareness itself - not page
+	// count - is what's expensive: a single-page variant that kept
+	// FETCH_ALLOWED (`ab_singlepage2`, still calling page_shareable())
+	// was just as slow (415s) as the two-page version (424s) at the
+	// `/.oldtmp` milestone, both ~4x over the ~93-105s baseline. Only
+	// dropping FETCH_ALLOWED entirely - not disabling ASID_FIX==2 itself,
+	// a separate, older fix for cross-process DRC cache thrashing, kept
+	// on either way - restores the fast pacing. The delay-slot race this
+	// trades back in has never been observed to cause anything worse than
+	// an extra, self-correcting recompile (a stale stub throws EXH, a
+	// fresh compile follows) - never a crash or wrong result - so until
+	// the epoch/generation-counter redesign (journal.md 2026-08-07,
+	// "Fix 3") lands, paying the smaller known cost is the better trade.
+	// Re-define to switch back to the FETCH_ALLOWED-aware, two-page,
+	// slower-but-more-correct behavior.
+// #define MAME_SGI_DISPATCH_TWO_PAGE_CHECK
+	bool dispatch_page_writable(offs_t pc) const noexcept
+	{
+#ifdef MAME_SGI_DISPATCH_TWO_PAGE_CHECK
+		return !page_shareable(pc) || !page_shareable(pc + 4);
+#else
+		vtlb_entry const entry = vtlb_table()[pc >> 12];
+		return (entry & WRITE_ALLOWED) != 0;
+#endif
+	}
+	// value 2: host-side (compile-time) choice of which key to BAKE as
+	// an immediate, for the sites that already bake m_core->dispatch_mode
+	// directly (proven safe by seqlast->can_change_modes() analysis at
+	// that specific call site - not something this fix changes).
+	uint32_t static_dispatch_key(offs_t target_pc) const noexcept
+	{
+		return dispatch_page_writable(target_pc) ? m_core->dispatch_mode : m_core->mode;
+	}
+	// value 2: host-side choice of *which field* to read live, for a
+	// statically-known target - the writability check is baked (a target
+	// PC's page identity doesn't change compile to compile), but the key
+	// VALUE itself still has to be read live (mem()), since an ASID-scoped
+	// key depends on whichever process is executing when this dispatch
+	// actually runs, not what was current at compile time.
+	uml::parameter live_dispatch_key(offs_t target_pc) const
+	{
+		return dispatch_page_writable(target_pc) ? uml::mem(&m_core->dispatch_mode) : uml::mem(&m_core->mode);
+	}
+	void generate_select_dispatch_key(drcuml_block &block, uml::parameter target_pc, uml::parameter dest, int &labelnum);
+private:
+	void generate_update_cycles(drcuml_block &block, compiler_state &compiler, uml::parameter param, bool allow_exception, bool diag_tag = false, uint32_t diag_desc_pc = 0);
 	void generate_checksum_block(drcuml_block &block, compiler_state &compiler, const opcode_desc *seqhead, const opcode_desc *seqlast, const opcode_desc *codelast);
 	void generate_sequence_instruction(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	void generate_delay_slot_and_branch(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t linkreg);
+	void generate_likely_branch_skip_fixup(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
+	void generate_fpop_mxcsr_precheck(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 
 	bool generate_opcode(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	bool generate_special(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
@@ -646,7 +1403,7 @@ private:
 	bool generate_idt(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 
 	bool generate_set_cop0_reg(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t reg);
-	bool generate_get_cop0_reg(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t reg);
+	bool generate_get_cop0_reg(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t reg, bool is64 = false);
 	bool generate_cop0(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	bool generate_cop1(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	bool generate_cop1x(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);

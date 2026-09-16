@@ -12,7 +12,73 @@
 #include "mips3com.h"
 #include "ps2vu.h"
 
+#include <cstdio>
 #include <iostream>
+
+// dispatch_page_writable() (mips3.h) hardcodes this shift as a literal
+// since MIPS3_MIN_PAGE_SHIFT isn't visible from that header's own
+// include order - catch drift here, where both are visible.
+static_assert(MIPS3_MIN_PAGE_SHIFT == 12, "dispatch_page_writable()'s hardcoded shift in mips3.h must match");
+
+// DISABLED (2026-08-21) - concluded, task #36 (measured ASID-switch vs
+// TLBWI/TLBWR mutation frequency) completed weeks ago; was left
+// enabled unconditionally since, firing fprintf(stderr) regularly with
+// no active investigation using it. TEMPORARY diagnostic toggle
+// (2026-08-07) - real frequency split between ASID-switch-triggered
+// and TLBWI/TLBWR-triggered vtlb_table() mutations, see
+// diag_asid_changed_events'/diag_tlbwi_tlbwr_events' comments in
+// mips3.h. Re-enable if that question needs revisiting.
+// #define MAME_SGI_VTLB_MUTATION_FREQ_DIAG
+
+// DISABLED (2026-08-21) - concluded alongside the above, same reason.
+// TEMPORARY diagnostic toggle (2026-08-07) - dedup potential for
+// tlb_map_entry()'s vtlb_load() writes, see diag_tlb_write_total's
+// comment in mips3.h.
+// #define MAME_SGI_TLB_WRITE_DEDUP_DIAG
+
+// TEMPORARY diagnostic (2026-09-01): task #84's gcc <built-in>
+// "predicate's answer is empty" flake. Earlier work on this task ruled
+// out on-disk/filesystem corruption (cmp/md5sum byte-identical) and
+// showed a plain buffered read of cc1 is always clean immediately after
+// an exec()-triggered failure (100% match, 0 mismatches over 22 real
+// failures) - meaning whatever's wrong is specific to how a fresh
+// executable/rodata page gets mapped into a process's address space,
+// not a generic "file content is wrong" problem. This targets that
+// mapping moment directly: tlb_map_entry() (called identically by both
+// mips3com_tlbwi() and mips3com_tlbwr(), which are in turn called
+// identically by the DRC-compiled path via cfunc_mips3com_tlbwi/wr and
+// the plain interpreter - this is the ONE place TLB entries actually
+// get installed into vtlb_table(), genuinely shared code, not
+// DRC-specific) is where a virtual page gets bound to a physical frame
+// number. If IRIX's kernel installs a TLB mapping for cc1's .rodata
+// page pointing at a physical frame whose SCSI/HPC3 DMA transfer hasn't
+// actually finished landing the real bytes yet - a race between the
+// guest kernel's own page-in bookkeeping and MAME's own DMA-completion
+// emulation - that would explain everything reproduced so far: only
+// shows up around fresh page-in, self-heals (a later remap eventually
+// wins the race), and would apply equally whether the code executing at
+// the time is DRC-compiled or interpreted (since this specific
+// mapping-installation code is identical either way) - the DRC-vs-
+// interpreter split would then come from DRC's different execution
+// *speed* changing when in real time the guest reaches this moment
+// relative to the DMA controller's own event schedule, not from any
+// bug in DRC's own logic. Watches specifically for TLB installs
+// covering the guest virtual page containing the known failing string
+// (0x10343970, established via static analysis of the extracted cc1
+// binary - see wiki/console.md's task #84 section), and immediately
+// reads the physical memory the new mapping points at, to see directly
+// whether the promised bytes are actually there yet at install time.
+// RESULT (2026-09-02): ran against a matched-load compile loop that
+// reproduced a 73-consecutive-failure stuck streak - 1,579 TLB installs
+// observed for this exact page, ALL with correct, non-corrupted content
+// (including throughout the entire stuck streak), zero
+// ALL_ZERO_SUSPICIOUS hits. Physical memory is provably fine at every
+// TLB-install moment; this rules out the DMA-completion-race theory as
+// framed here. See wiki/console.md's task #84 section for the pivot
+// this motivated (checking whether DRC's own sequence-window compiler
+// ever misdecodes into this same page, in mips3drc.cpp - a different
+// mechanism that wouldn't touch this page's stored bytes at all).
+// #define MAME_SGI_CC1_RODATA_TLB_RACE_DIAG
 
 
 void mips3_device::execute_set_input(int inputnum, int state)
@@ -63,6 +129,24 @@ void mips3_device::mips3com_update_cycle_counting()
 void mips3_device::mips3com_asid_changed()
 {
 	int tlbindex;
+
+#ifdef MAME_SGI_VTLB_MUTATION_FREQ_DIAG
+	// TEMPORARY diagnostic (2026-08-07) - see diag_asid_changed_events'
+	// comment in mips3.h. One event per real ASID switch (already gated
+	// by the caller on an actual EntryHi ASID-field change), regardless
+	// of how many individual TLB entries this loop ends up remapping.
+	{
+		static uint32_t s_last_reported = 0;
+		uint32_t const total = ++m_core->diag_asid_changed_events;
+		if (s_last_reported == 0 || total >= s_last_reported + 1000)
+		{
+			fprintf(stderr, "[VTLB_MUTATION_FREQ] asid_changed_events=%u tlbwi_tlbwr_events=%u\n",
+				total, m_core->diag_tlbwi_tlbwr_events);
+			fflush(stderr);
+			s_last_reported = total;
+		}
+	}
+#endif
 
 	/* iterate over all non-global TLB entries and remap them */
 	for (tlbindex = 0; tlbindex < m_tlbentries; tlbindex++)
@@ -355,6 +439,9 @@ void mips3_device::tlb_map_entry(int tlbindex)
 	/* the ASID doesn't match the current ASID, and if the page isn't global, unmap it from the TLB */
 	if (!entry.matches_asid(current_asid) && !entry.is_global())
 	{
+#ifdef MAME_SGI_TLB_WRITE_DEDUP_DIAG
+		m_core->diag_tlb_write_degenerate += 2;
+#endif
 		vtlb_load(2 * tlbindex + 0, 0, 0, 0);
 		vtlb_load(2 * tlbindex + 1, 0, 0, 0);
 		return;
@@ -364,6 +451,9 @@ void mips3_device::tlb_map_entry(int tlbindex)
 	vpn = ((entry.entry_hi >> 13) & 0x07ffffff) << 1;
 	if (vpn >= (1 << (MIPS3_MAX_PADDR_SHIFT - MIPS3_MIN_PAGE_SHIFT)))
 	{
+#ifdef MAME_SGI_TLB_WRITE_DEDUP_DIAG
+		m_core->diag_tlb_write_degenerate += 2;
+#endif
 		vtlb_load(2 * tlbindex + 0, 0, 0, 0);
 		vtlb_load(2 * tlbindex + 1, 0, 0, 0);
 		return;
@@ -403,9 +493,69 @@ void mips3_device::tlb_map_entry(int tlbindex)
 
 		/* load the virtual TLB with the corresponding entries */
 		if ((effvpn + count) <= (0x80000000 >> MIPS3_MIN_PAGE_SHIFT) || effvpn >= (0xc0000000 >> MIPS3_MIN_PAGE_SHIFT))
+		{
+#ifdef MAME_SGI_TLB_WRITE_DEDUP_DIAG
+			// TEMPORARY diagnostic (2026-08-07) - see diag_tlb_write_total's
+			// comment in mips3.h. Snapshot before/after rather than
+			// replicating vtlb_load()'s own FLAG_FIXED/pagenum-shift
+			// encoding here - simpler and can't drift out of sync with it.
+			vtlb_entry const before = vtlb_table()[effvpn];
+#endif
 			vtlb_load(2 * tlbindex + which, count, effvpn << MIPS3_MIN_PAGE_SHIFT, (pfn << MIPS3_MIN_PAGE_SHIFT) | flags);
+#ifdef MAME_SGI_CC1_RODATA_TLB_RACE_DIAG
+			// Target page: guest VA 0x10343970 (the known failing string's
+			// address), page-aligned VPN = 0x10343970 >> MIPS3_MIN_PAGE_SHIFT.
+			// Only matches the common 4KB-page case (count==1 covering
+			// exactly this VPN) - a larger IRIX page size spanning this
+			// address with a different base VPN would be missed by this
+			// exact-match check; acceptable for a first pass, note if this
+			// comes back silent despite reproducing the flake.
+			{
+				constexpr uint32_t target_vpn = 0x10343970u >> MIPS3_MIN_PAGE_SHIFT;
+				if (target_vpn >= effvpn && target_vpn < effvpn + count && (flags & FETCH_ALLOWED))
+				{
+					static uint64_t s_event_count = 0;
+					s_event_count++;
+					uint32_t const page_pfn = pfn + (target_vpn - effvpn);
+					uint32_t const phys = (page_pfn << MIPS3_MIN_PAGE_SHIFT) | (0x10343970u & 0xfffu);
+					uint32_t const w0 = m_program->read_dword(phys & ~3u);
+					uint32_t const w1 = m_program->read_dword((phys & ~3u) + 4);
+					uint32_t const w2 = m_program->read_dword((phys & ~3u) + 8);
+					uint32_t const w3 = m_program->read_dword((phys & ~3u) + 12);
+					bool const all_zero = (w0 == 0 && w1 == 0 && w2 == 0 && w3 == 0);
+					fprintf(stderr, "[MAME_SGI_CC1_RODATA_TLB_RACE_DIAG] #%llu asid=0x%02x effvpn=0x%05x count=%u pfn=0x%05x phys=0x%08x words=%08x %08x %08x %08x %s\n",
+						(unsigned long long)s_event_count, current_asid, effvpn, count, page_pfn, phys,
+						w0, w1, w2, w3, all_zero ? "ALL_ZERO_SUSPICIOUS" : "nonzero");
+					fflush(stderr);
+				}
+			}
+#endif
+#ifdef MAME_SGI_TLB_WRITE_DEDUP_DIAG
+			{
+				static uint32_t s_last_reported = 0;
+				vtlb_entry const after = vtlb_table()[effvpn];
+				uint32_t const total = ++m_core->diag_tlb_write_total;
+				if (after == before)
+					++m_core->diag_tlb_write_nochange;
+				if (total >= s_last_reported + 50000)
+				{
+					fprintf(stderr, "[TLB_WRITE_DEDUP] total=%u nochange=%u (%.4f%%) degenerate=%u\n",
+						total, m_core->diag_tlb_write_nochange,
+						100.0 * double(m_core->diag_tlb_write_nochange) / double(total),
+						m_core->diag_tlb_write_degenerate);
+					fflush(stderr);
+					s_last_reported = total;
+				}
+			}
+#endif
+		}
 		else
+		{
+#ifdef MAME_SGI_TLB_WRITE_DEDUP_DIAG
+			m_core->diag_tlb_write_degenerate++;
+#endif
 			vtlb_load(2 * tlbindex + which, 0, 0, 0);
+		}
 	}
 }
 
@@ -420,6 +570,14 @@ void mips3_device::tlb_write_common(int tlbindex)
 	/* only handle entries within the TLB */
 	if (tlbindex < m_tlbentries)
 	{
+#ifdef MAME_SGI_VTLB_MUTATION_FREQ_DIAG
+		// TEMPORARY diagnostic (2026-08-07) - see diag_tlbwi_tlbwr_events'
+		// comment in mips3.h. One event per guest TLBWI/TLBWR instruction,
+		// independent of any ASID switch - the trigger the epoch design
+		// needs a real frequency number for before choosing global vs.
+		// per-ASID granularity.
+		++m_core->diag_tlbwi_tlbwr_events;
+#endif
 		mips3_tlb_entry &entry = m_tlb[tlbindex];
 
 		/* fill in the new TLB entry from the COP0 registers */

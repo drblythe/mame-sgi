@@ -13,6 +13,19 @@
 
 #include "mips3com.h"
 
+// TEMPORARY (2026-08-02): same toggle/rationale as mips3drc.cpp's own
+// MAME_SGI_HOST_DEBUG_NOOPT - disables optimization for this file's
+// *host* C++ compilation only (compile-time DRC frontend logic:
+// describe_code()/build_sequence()/describe(), all in drcfe.ipp which
+// gets included here), so host-gdb breakpoints/locals resolve reliably
+// instead of landing in the wrong inlined frame under -O3. No effect on
+// JIT-generated guest code. Undefined by default - only enable for a
+// deliberate host-gdb investigation session (see wiki/debugging.md).
+// #define MAME_SGI_HOST_DEBUG_NOOPT
+#ifdef MAME_SGI_HOST_DEBUG_NOOPT
+#pragma GCC optimize("O0")
+#endif
+
 #include "cpu/drcfe.ipp"
 
 
@@ -52,7 +65,8 @@ bool mips3_device::frontend::describe(opcode_desc &desc, const opcode_desc *prev
 	// compute the physical PC
 	assert((desc.physpc & 3) == 0);
 	address_space *tspace;
-	if (!m_mips3->memory_translate(AS_PROGRAM, device_memory_interface::TR_FETCH, desc.physpc, tspace))
+	bool const fetch_translated = m_mips3->memory_translate(AS_PROGRAM, device_memory_interface::TR_FETCH, desc.physpc, tspace);
+	if (!fetch_translated)
 	{
 		// uh-oh: a page fault; leave the description empty and just if this is the first instruction, leave it empty and
 		// mark as needing to validate; otherwise, just end the sequence here
