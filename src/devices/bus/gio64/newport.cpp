@@ -37,6 +37,15 @@
 #include "emu.h"
 #include "newport.h"
 
+#include <cstdarg>
+
+// Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
+// prints below (tasks #57/#65) - see osd/sdl/window.cpp's own copy of
+// this macro/comment for the full rationale (self-defined per-file,
+// per this project's src/devices/ scoping convention). Off by default;
+// task #65 is still open, re-enable if it needs revisiting.
+// #define MAME_SGI_MOUSEFOCUS_DIAG
+
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_VC2         (1U << 2)
 #define LOG_CMAP        (1U << 3)
@@ -49,6 +58,86 @@
 
 #define VERBOSE         (0)
 #include "logmacro.h"
+
+// TEMPORARY diagnostic (2026-08-17) - passive watch for a candidate
+// mechanism behind a reported desktop black-to-white text/icon-color
+// regression (see journal.md and wiki/console.md's color-race entry).
+// get_default_color() substitutes m_color_vram (the REX3 "VRAM
+// Fastclear Color" register - see its own log message a few hundred
+// lines below, a genuinely distinct register from the normal explicit
+// drawing color) for the caller's real color argument whenever
+// draw_mode1 bit 17 is set. If that bit is set for a command that
+// should really be using the explicit color (a text/glyph draw, say),
+// the pixel color silently comes from whatever was last used for an
+// unrelated fast-clear instead - a plausible, Newport-specific
+// mechanism for "shape correct, color wrong" with zero pixel-data
+// corruption. Only logs when the branch choice is actually
+// CONSEQUENTIAL (color_vram != src - if they already match, no
+// visible difference exists regardless of which is "correct"), to
+// stay low-volume and high-signal rather than firing on every
+// legitimate fastclear. Meant to run passively in the background
+// during unrelated $f20 debugging - if the color artifact recurs,
+// this file will have caught the exact register state and screen
+// coordinates at the moment it happened, without needing a dedicated
+// repro session. Self-defined here, not via sgi.lua's defines{}
+// block, since this file compiles as part of the shared "optional"
+// project (see scripts/src/bus.lua), which sgi.lua's SGI-only
+// defines{} block never reaches - see the project's own build-verify
+// convention for this exact gotcha.
+// DISABLED (2026-08-17) - task #69/#71 concluded with no recurrence of
+// the color regression ever logged here across the whole investigation.
+// The one confirmed trigger (MAME_SGI_LWC1_DELAYSLOT_PROBE's fopen/
+// fclose I/O timing perturbation) is being disabled in this same
+// cleanup, so this diagnostic would have nothing left to passively
+// watch for going forward. The underlying color-race mechanism itself
+// remains unconfirmed/unresolved (see journal.md and wiki/console.md) -
+// this is diagnostic cleanup, not a claim the regression is fixed.
+// Commented out, not deleted - reusable if the symptom recurs.
+// #define MAME_SGI_COLOR_SRC_DIAG
+#ifdef MAME_SGI_COLOR_SRC_DIAG
+static void color_src_diag_log(const char *fmt, ...)
+{
+	FILE *f = fopen("/home/blythe/mame-sgi/color_src_diag.log", "a");
+	if (!f)
+		return;
+	va_list args;
+	va_start(args, fmt);
+	vfprintf(f, fmt, args);
+	va_end(args);
+	fclose(f);
+}
+#endif
+
+// TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
+// newport_base_device::screen_update()'s own CPU cost (the per-pixel
+// software compositing loop below) in isolation, to compare directly
+// against the separate OSD blit-to-window cost measured alongside it in
+// video.cpp - splitting screen_device::vblank_begin's overall cost (found
+// to dominate idle-time timer-callback share, 66-75%, via the schedule.cpp
+// diagnostic) into "CPU-side framebuffer composition" vs. "push finished
+// frame to the real window." Same periodic snapshot-and-reset pattern and
+// same disabled-by-default discipline as that diagnostic.
+// #define MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
+#ifdef MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
+namespace {
+	uint64_t s_mame_sgi_composite_calls = 0;
+	osd_ticks_t s_mame_sgi_composite_ticks = 0;
+	osd_ticks_t s_mame_sgi_composite_next_dump = 0;
+}
+#endif
+
+// Real per-region dirty-rectangle tracking replaced the original
+// 2026-07-31 crude whole-board dirty-flag experiment (skip the full
+// per-pixel recompute only when NOTHING was written since the last one,
+// with no sense of *where*) - see newport_dirty_rect (newport.h),
+// rb2_device::store_pixel()/vc2_device::mark_cursor_dirty() for how
+// regions get marked, and newport_base_device::screen_update() for how
+// they're consumed. The double-buffer flicker the crude experiment hit
+// (screen_device's own m_bitmap[2] toggles every frame regardless of
+// skip status, so a single-frame dirty mark only refreshes whichever
+// buffer is current, leaving the other stale) still applies here and is
+// still fixed the same way: any dirty region is held and reapplied for
+// 2 consecutive real recomputes before a skip is allowed.
 
 DEFINE_DEVICE_TYPE(XMAP9,      xmap9_device,      "xmap9",      "SGI XMAP9")
 DEFINE_DEVICE_TYPE(CMAP,       cmap_device,       "cmap",       "SGI CMAP")
@@ -339,6 +428,19 @@ void vc2_device::device_start()
 	save_item(NAME(m_readout_y1));
 
 	save_item(NAME(m_enable_cursor));
+
+	// m_dirty (the compositor's dirty-rectangle accumulator, see
+	// mark_cursor_dirty()'s own comment) is deliberately not save_item()'d -
+	// it's a pure rendering-optimization cache, not real emulated hardware
+	// state. That means a -state load restores m_cursor_x/y/m_enable_cursor
+	// correctly but leaves m_dirty exactly as freshly-constructed (empty),
+	// so the cursor's on-screen region never gets marked for a redraw -
+	// nothing else drives it dirty except a live register write, which the
+	// guest has no reason to reissue for state it already believes is
+	// current. Re-derive the dirty contribution once after any load so the
+	// compositor picks up the cursor's just-restored position/state on the
+	// next frame instead of never drawing it at all.
+	machine().save().register_postload(save_prepost_delegate(FUNC(vc2_device::mark_cursor_dirty), this));
 }
 
 void vc2_device::device_reset()
@@ -373,6 +475,8 @@ void vc2_device::device_reset()
 	m_readout_y1 = 0;
 
 	m_enable_cursor = false;
+
+	m_dirty.clear();
 }
 
 void vc2_device::serialize(FILE *file)
@@ -435,8 +539,42 @@ void vc2_device::deserialize(FILE *file)
 	fread(&m_enable_cursor, sizeof(bool), 1, file);
 }
 
+void vc2_device::mark_cursor_dirty()
+{
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+	osd_printf_verbose("MOUSEFOCUS_DIAG: mark_cursor_dirty() called, m_enable_cursor=%d m_cursor_x=%d m_cursor_y=%d\n",
+		(int)m_enable_cursor, (int)m_cursor_x, (int)m_cursor_y);
+#endif
+
+	if (!m_enable_cursor)
+		return;
+
+	int x0, y0, x1, y1;
+	cursor_bounds(x0, y0, x1, y1);
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+	osd_printf_verbose("MOUSEFOCUS_DIAG: mark_cursor_dirty() bounds x0=%d y0=%d x1=%d y1=%d\n", x0, y0, x1, y1);
+#endif
+	m_dirty.add_rect(x0, y0, x1, y1);
+}
+
 void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 {
+	// The cursor is composited on-the-fly by newport_base_device's
+	// screen_update() from this device's live state - unlike everything
+	// else here, it never touches rb2_device's framebuffer, so a cursor
+	// position/content/enable change needs its own dirty contribution.
+	// Captured before any mutation below so the OLD position's box (not
+	// just the new one) gets marked - otherwise the cursor would leave a
+	// visible ghost at its previous position once it moves, since nothing
+	// else would ever tell the compositor that region needs a fresh
+	// (now cursor-free) recompute. Only actually applied for writes that
+	// can plausibly affect the cursor (register cases below, or a RAM
+	// word write that might touch its bitmap) - see cursor_relevant.
+	const uint16_t old_cursor_x = m_cursor_x;
+	const uint16_t old_cursor_y = m_cursor_y;
+	const bool old_enable_cursor = m_enable_cursor;
+	bool cursor_relevant = false;
+
 	if (mem_mask == 0x000000ff)
 	{
 		// Register Select
@@ -456,6 +594,12 @@ void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 		if (offset == 3)
 		{
 			LOGMASKED(LOG_VC2, "RAM Write: %04x = %08x\n", m_ram_addr, (uint16_t)data);
+			// Could be writing into the cursor's own bitmap - not worth
+			// tracking the exact address range precisely (rare event,
+			// and RAM also holds the DID/VT tables), so conservatively
+			// treat any RAM write as cursor-relevant when the cursor is
+			// currently enabled.
+			cursor_relevant = m_enable_cursor;
 			m_ram[m_ram_addr] = (uint16_t)data;
 			m_ram_addr++;
 			if (m_ram_addr >= RAM_SIZE)
@@ -486,15 +630,18 @@ void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 				case 0x01:
 					m_cursor_entry = m_reg_data;
 					LOGMASKED(LOG_VC2, "Register Write: Cursor Entry Pointer, %04x\n", m_cursor_entry);
+					cursor_relevant = true;
 					break;
 				case 0x02:
 					m_cursor_x = m_reg_data;
 					LOGMASKED(LOG_VC2, "Register Write: Cursor X, %04x\n", m_cursor_x);
+					cursor_relevant = true;
 					break;
 				case 0x03:
 					m_cursor_y = m_reg_data;
 					LOGMASKED(LOG_VC2, "Register Write: Cursor Y, %04x\n", m_cursor_y);
 					m_cur_cursor_x = m_cursor_x;
+					cursor_relevant = true;
 					break;
 				case 0x04:
 					m_cur_cursor_x = m_reg_data;
@@ -550,6 +697,7 @@ void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 					m_enable_cursor = BIT(m_display_ctrl, CURSOR_FUNC_ENABLE_BIT) != 0
 								   && BIT(m_display_ctrl, CURSOR_ENABLE_BIT) != 0
 								   && BIT(m_display_ctrl, CURSOR_MODE_BIT) == CURSOR_MODE_GLYPH;
+					cursor_relevant = true;
 					break;
 				case 0x1f:
 					m_config = m_reg_data;
@@ -568,6 +716,33 @@ void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 	else
 	{
 		LOGMASKED(LOG_VC2 | LOG_UNKNOWN, "Unknown Memory Mask: %08x, Offset %02x, Value %08x\n", mem_mask, offset, data);
+	}
+
+	if (cursor_relevant)
+	{
+		if (old_enable_cursor)
+		{
+			// Restore the pre-write cursor position/enable state before
+			// marking the old box - mark_cursor_dirty() reads current
+			// state (including m_enable_cursor, not just position), so
+			// temporarily put ALL of it back rather than duplicating the
+			// box-math here. Swapping enable too matters: without it, a
+			// write that both moves the cursor AND disables it in the
+			// same call would skip marking the old position entirely,
+			// since mark_cursor_dirty() would see the already-updated
+			// (now false) m_enable_cursor and bail out.
+			const uint16_t new_cursor_x = m_cursor_x;
+			const uint16_t new_cursor_y = m_cursor_y;
+			const bool new_enable_cursor = m_enable_cursor;
+			m_cursor_x = old_cursor_x;
+			m_cursor_y = old_cursor_y;
+			m_enable_cursor = old_enable_cursor;
+			mark_cursor_dirty();
+			m_cursor_x = new_cursor_x;
+			m_cursor_y = new_cursor_y;
+			m_enable_cursor = new_enable_cursor;
+		}
+		mark_cursor_dirty();
 	}
 }
 
@@ -876,6 +1051,10 @@ void rb2_device::device_reset()
 
 	m_dest_buf = &m_rgbci[0];
 	m_buf_ptr = &m_rgbci[0];
+
+	m_cur_x = 0;
+	m_cur_y = 0;
+	m_dirty.clear();
 }
 
 void rb2_device::serialize(FILE *file)
@@ -1020,6 +1199,12 @@ void rb2_device::set_flags(uint16_t data)
 void rb2_device::set_address(uint32_t address)
 {
 	m_buf_ptr = &m_dest_buf[address];
+	// Every call site computes address as y * 1344 + x (matching
+	// rgbci()/cidaux()'s own stride) - cached here so store_pixel() can
+	// update the dirty tracker without redoing the division/modulo on
+	// every single pixel write.
+	m_cur_x = (int)(address % 1344);
+	m_cur_y = (int)(address / 1344);
 }
 
 uint32_t rb2_device::read_pixel()
@@ -1066,6 +1251,7 @@ void rb2_device::store_pixel(uint32_t value)
 	const uint32_t write_mask = m_write_mask & m_global_mask;
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
+	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
 }
 
 
@@ -1214,6 +1400,16 @@ void newport_base_device::device_reset()
 	m_rex3.m_x_window = 0x1000;
 	m_rex3.m_y_window = 0x1000;
 
+	// Force a real recompute for the first frames after reset - initial
+	// framebuffer content is unknown, so the dirty trackers' own
+	// "nothing written yet" default (m_valid == false) would be wrong
+	// here. Bounds match BUFFER_SIZE's own max (1280+64)x(1024+64) rather
+	// than querying current screen dimensions, which aren't necessarily
+	// settled yet at reset time.
+	m_pending_dirty.clear();
+	m_pending_dirty.add_rect(0, 0, 1280 + 64 - 1, 1024 + 64 - 1);
+	m_dirty_hold_frames = 2;
+
 #if ENABLE_NEWVIEW_LOG
 	m_newview_log = nullptr;
 #endif
@@ -1276,6 +1472,60 @@ TIMER_CALLBACK_MEMBER(newport_base_device::dcb_timeout_tick)
 
 uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect)
 {
+#ifdef MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
+	osd_ticks_t mame_sgi_composite_t0 = osd_ticks();
+#endif
+	uint32_t mame_sgi_result = 0;
+
+	// Gather this frame's fresh dirty contributions (framebuffer writes +
+	// cursor state changes) and merge into the held region. A hold-and-
+	// reapply cycle (not a simple "skip if nothing new since last frame"
+	// flag) is needed because MAME's own screen_device double buffering
+	// (m_bitmap[2], toggled every frame regardless of skip status) only
+	// has whichever buffer is current refreshed by a single recompute,
+	// leaving the other stale - same fix the original crude experiment
+	// needed, just carrying a real rectangle instead of a bool.
+	{
+		newport_dirty_rect frame_dirty;
+		frame_dirty.add_rect(m_rb2->dirty());
+		frame_dirty.add_rect(m_vc2->dirty());
+		m_rb2->clear_dirty();
+		m_vc2->clear_dirty();
+
+		if (frame_dirty.valid())
+		{
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+			osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() frame_dirty.valid()=true, setting m_dirty_hold_frames=2\n");
+#endif
+			m_pending_dirty.add_rect(frame_dirty);
+			m_dirty_hold_frames = 2;
+		}
+	}
+
+	if (m_dirty_hold_frames <= 0)
+	{
+		// Nothing pending, both buffers already in sync - tell MAME's own
+		// frame_update()/finish_screen_updates() machinery this call
+		// didn't change anything, so it can skip the OSD blit too.
+		mame_sgi_result = UPDATE_HAS_NOT_CHANGED;
+		goto mame_sgi_composite_done;
+	}
+#ifdef MAME_SGI_MOUSEFOCUS_DIAG
+	osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() proceeding with recompute, m_dirty_hold_frames=%d\n", m_dirty_hold_frames);
+#endif
+	m_dirty_hold_frames--;
+
+	{
+	// Once this was the last held frame, m_pending_dirty must be cleared
+	// (below, after actually using it for this recompute) rather than
+	// left sitting around - otherwise a later, completely unrelated dirty
+	// episode would union onto this stale, already-fully-resolved
+	// rectangle instead of starting fresh, and the tracked region would
+	// only ever grow across the whole session instead of staying tight.
+	// Declared inside this block (not right after the decrement above)
+	// so the early-exit goto above it never jumps over its initialization.
+	const bool mame_sgi_last_held_frame = (m_dirty_hold_frames == 0);
+
 	const uint16_t cursor_msb = (uint16_t)m_xmap[0]->cursor_cmap() << 5;
 	const uint16_t popup_msb = (uint16_t)m_xmap[0]->popup_cmap() << 5;
 	const uint32_t *palette = m_cmap[0]->palette_base();
@@ -1283,8 +1533,26 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	const int y_start = m_vc2->readout_y0();
 	const int y_end = m_vc2->readout_y1();
 
+	// Clip the row range to the pending dirty rect intersected with
+	// cliprect - rows outside it are left untouched, correct since the
+	// bitmap already holds their unchanged content from a previous
+	// recompute. X range deliberately stays the full cliprect width for
+	// now: the DID mode-table walk below (begin_did_line()/
+	// next_did_line_entry()) can only be walked forward from a row's
+	// start, not seeked to an arbitrary starting column, so a real
+	// per-row x-clip needs that walker extended first - left for task #4,
+	// which already wants to restructure this loop around DID runs.
+	int row_start_y = cliprect.min_y;
+	int row_end_y = cliprect.max_y;
+	if (m_pending_dirty.valid())
+	{
+		if (m_pending_dirty.y0() > row_start_y) row_start_y = m_pending_dirty.y0();
+		if (m_pending_dirty.y1() < row_end_y) row_end_y = m_pending_dirty.y1();
+	}
+	const int sy_offset = row_start_y - cliprect.min_y;
+
 	/* loop over rows and copy to the destination */
-	for (int y = cliprect.min_y, sy = y_start; y <= cliprect.max_y && sy < y_end; y++, sy++)
+	for (int y = row_start_y, sy = y_start + sy_offset; y <= row_end_y && sy < y_end; y++, sy++)
 	{
 		uint32_t *dest = &bitmap.pix(y, cliprect.min_x);
 		const uint32_t *src_rgbci = m_rb2->rgbci(y);
@@ -1328,15 +1596,15 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				}
 				curr_did_entry = m_vc2->next_did_line_entry();
 			}
-			uint8_t cursor_pixel = m_vc2->get_cursor_pixel(x, y);
 
+			// Cursor pixels are NOT composited here anymore - background
+			// only in this loop. See the separate overlay stamp pass
+			// after this row's x-loop, which draws the cursor over
+			// whatever this pass wrote, scoped to just the cursor's own
+			// small x-span instead of checked per-pixel across the whole
+			// row width.
 			bool pixel_replaced = false;
-			if (cursor_pixel)
-			{
-				*dest++ = palette[cursor_msb | cursor_pixel];
-				pixel_replaced = true;
-			}
-			else if (*src_cidaux & 0xcc)
+			if (*src_cidaux & 0xcc)
 			{
 				const uint32_t src = (*src_cidaux >> 2) & 3;
 				*dest++ = palette[popup_msb | src];
@@ -1510,7 +1778,43 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 			src_rgbci++;
 			src_cidaux++;
 		}
+
+		// Cursor overlay stamp - separate small pass over just the
+		// cursor's own x-span, only for rows it actually occupies,
+		// drawn on top of whatever the background pass above just wrote.
+		if (m_vc2->cursor_enabled())
+		{
+			int cx0, cy0, cx1, cy1;
+			m_vc2->cursor_bounds(cx0, cy0, cx1, cy1);
+			if (y >= cy0 && y <= cy1)
+			{
+				int stamp_x0 = cx0 > cliprect.min_x ? cx0 : cliprect.min_x;
+				int stamp_x1 = cx1 < cliprect.max_x - 1 ? cx1 : cliprect.max_x - 1;
+				for (int x = stamp_x0; x <= stamp_x1; x++)
+				{
+					const uint8_t cursor_pixel = m_vc2->get_cursor_pixel(x, y);
+					if (cursor_pixel)
+					{
+						uint32_t &dest = bitmap.pix(y, x);
+						dest = palette[cursor_msb | cursor_pixel];
+						// The main loop below runs every pixel, cursor
+						// included, through the RAMDAC's own LUTs
+						// (ramdac_remap()) before this compositing pass
+						// was split out - omitting it here left the raw
+						// pre-LUT palette value on screen (wrong cursor
+						// color, e.g. white instead of red).
+						ramdac_remap(&dest);
+					}
+				}
+			}
+		}
 	}
+
+	if (mame_sgi_last_held_frame)
+		m_pending_dirty.clear();
+	}
+
+mame_sgi_composite_done:
 
 #if ENABLE_NEWVIEW_LOG
 	if (machine().input().code_pressed_once(KEYCODE_TILDE))
@@ -1539,7 +1843,23 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	}
 #endif
 
-	return 0;
+#ifdef MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
+	osd_ticks_t mame_sgi_composite_t1 = osd_ticks();
+	s_mame_sgi_composite_calls++;
+	s_mame_sgi_composite_ticks += (mame_sgi_composite_t1 - mame_sgi_composite_t0);
+	if (mame_sgi_composite_t1 >= s_mame_sgi_composite_next_dump)
+	{
+		osd_printf_info("MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG: calls=%12llu ticks=%12llu avg_ticks=%llu\n",
+			(unsigned long long)s_mame_sgi_composite_calls,
+			(unsigned long long)s_mame_sgi_composite_ticks,
+			s_mame_sgi_composite_calls ? (unsigned long long)(s_mame_sgi_composite_ticks / s_mame_sgi_composite_calls) : 0ULL);
+		s_mame_sgi_composite_calls = 0;
+		s_mame_sgi_composite_ticks = 0;
+		s_mame_sgi_composite_next_dump = mame_sgi_composite_t1 + osd_ticks_per_second() * 5;
+	}
+#endif
+
+	return mame_sgi_result;
 }
 
 void newport_base_device::ramdac_remap(uint32_t *dest)
@@ -2351,6 +2671,7 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 
 	const uint32_t address = (uint32_t)(y * (1280 + 64) + x);
 	set_address(address);
+
 	if (BIT(m_rex3.m_draw_mode1, 18))
 		blend_pixel(color);
 	else
@@ -3270,6 +3591,17 @@ void newport_base_device::iterate_shade()
 
 uint32_t newport_base_device::get_default_color(uint32_t src)
 {
+#ifdef MAME_SGI_COLOR_SRC_DIAG
+	if (BIT(m_rex3.m_draw_mode1, 17) && m_rex3.m_color_vram != src)
+	{
+		color_src_diag_log("[COLOR_SRC_DIAG] fastclear-color substituted: "
+			"mode0=0x%08x mode1=0x%08x color_vram=0x%08x src=0x%08x "
+			"rect=(%d,%d)-(%d,%d) plane_depth=%d\n",
+			m_rex3.m_draw_mode0, m_rex3.m_draw_mode1, m_rex3.m_color_vram, src,
+			m_rex3.m_x_start_i, m_rex3.m_y_start_i, m_rex3.m_x_end_i, m_rex3.m_y_end_i,
+			m_rex3.m_plane_depth);
+	}
+#endif
 	uint32_t color = BIT(m_rex3.m_draw_mode1, 17) ? m_rex3.m_color_vram : src;
 	switch (m_rex3.m_plane_depth)
 	{
@@ -3582,6 +3914,11 @@ void newport_base_device::write_y_end(int32_t val)
 
 void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask)
 {
+	// No dirty-marking needed here directly anymore - it now happens
+	// precisely at the actual point of change (rb2_device::store_pixel()
+	// for framebuffer writes, vc2_device::write()'s mark_cursor_dirty()
+	// for cursor state), both of which this function ends up calling
+	// into for whichever sub-path a given write actually takes.
 #if ENABLE_NEWVIEW_LOG
 	if (m_newview_log != nullptr)
 	{
@@ -4474,6 +4811,14 @@ void newport_base_device::device_add_mconfig(machine_config &config)
 	//m_screen->set_visarea(0, 2047, 0, 2047);
 	m_screen->set_size(1280+64, 1024+64);
 	m_screen->set_visarea(0, 1279, 0, 1023);
+	// Real SGI Indy/Indigo2 monitors at this resolution are fixed-frequency,
+	// square-pixel displays (5:4), not a 4:3 CRT - without this,
+	// screen_device::physical_aspect() falls back to assuming a "standard
+	// CRT" 4:3 aspect for any unconfigured SCREEN_TYPE_RASTER, and MAME's
+	// default -keepaspect window sizing stretches the visible 1280x1024
+	// area into a 4:3 box (e.g. 1376x1032) even when -resolution requests
+	// an exact 1280x1024 window.
+	m_screen->set_native_aspect();
 	m_screen->set_screen_update(FUNC(newport_base_device::screen_update));
 	m_screen->screen_vblank().set(m_vc2, FUNC(vc2_device::vblank_w));
 }

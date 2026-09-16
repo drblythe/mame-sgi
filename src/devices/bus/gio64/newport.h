@@ -21,6 +21,60 @@
 
 /*************************************
  *
+ *  Dirty-region tracker (shared by rb2_device, vc2_device, and
+ *  newport_base_device's own compositor)
+ *
+ *************************************/
+
+// Bounding-box dirty-region tracker for the Newport compositor. Currently
+// a single running rectangle - the cheapest possible correct
+// implementation - kept behind this narrow add_rect()/valid()/clear()
+// interface specifically so it can later grow into a small fixed-size
+// list of disjoint rectangles with overlap/proximity merging without any
+// caller needing to change. That extension matters for realistic desktop
+// use: an independently-moving cursor plus separately-updating windows
+// can produce widely-separated dirty regions that a single bbox coalesces
+// into something close to the whole screen, which a small-N rect list
+// would keep tight.
+class newport_dirty_rect
+{
+public:
+	void add_rect(int x0, int y0, int x1, int y1)
+	{
+		if (!m_valid)
+		{
+			m_x0 = x0; m_y0 = y0; m_x1 = x1; m_y1 = y1;
+			m_valid = true;
+			return;
+		}
+		if (x0 < m_x0) m_x0 = x0;
+		if (y0 < m_y0) m_y0 = y0;
+		if (x1 > m_x1) m_x1 = x1;
+		if (y1 > m_y1) m_y1 = y1;
+	}
+
+	void add_rect(const newport_dirty_rect &other)
+	{
+		if (other.m_valid)
+			add_rect(other.m_x0, other.m_y0, other.m_x1, other.m_y1);
+	}
+
+	bool valid() const { return m_valid; }
+	int x0() const { return m_x0; }
+	int y0() const { return m_y0; }
+	int x1() const { return m_x1; }
+	int y1() const { return m_y1; }
+
+	void clear() { m_valid = false; }
+
+private:
+	bool m_valid = false;
+	int m_x0 = 0, m_y0 = 0, m_x1 = 0, m_y1 = 0;
+};
+
+
+/*************************************
+ *
  *  XMAP9 Device
  *
  *************************************/
@@ -139,10 +193,34 @@ public:
 	uint16_t next_did_line_entry();
 	uint8_t get_cursor_pixel(int x, int y);
 
+	// Current on-screen cursor box (same size logic as get_cursor_pixel(),
+	// NOT is_cursor_active()'s narrower fixed-32 early-out) - distinct
+	// from dirty()'s historical old-position-union-new-position box,
+	// used to scope screen_update()'s separate cursor overlay stamp pass
+	// to just the cursor's actual current extent.
+	bool cursor_enabled() const { return m_enable_cursor; }
+	void cursor_bounds(int &x0, int &y0, int &x1, int &y1) const
+	{
+		const bool size64 = BIT(m_display_ctrl, CURSOR_SIZE_BIT) == CURSOR_SIZE_64;
+		const int size = size64 ? 64 : 32;
+		x0 = (int)m_cursor_x - 31;
+		y0 = (int)m_cursor_y - 31;
+		x1 = x0 + size - 1;
+		y1 = y0 + size - 1;
+	}
+
 	void vblank_w(int state);
 
 	auto vert_int() { return m_vert_int.bind(); }
 	auto screen_timing_changed() { return m_screen_timing_changed.bind(); } // Hack. TODO: Figure out a better way
+
+	// Dirty-region tracking for the compositor (see newport_dirty_rect).
+	// The cursor is composited on-the-fly by screen_update() from live
+	// state - it never touches rb2_device's framebuffer - so it needs
+	// its own dirty contribution, unioned in here whenever cursor state
+	// changes, separate from rb2_device's framebuffer-write tracking.
+	const newport_dirty_rect &dirty() const { return m_dirty; }
+	void clear_dirty() { m_dirty.clear(); }
 
 	void serialize(FILE *file);
 	void deserialize(FILE *file);
@@ -165,6 +243,13 @@ private:
 		CURSOR_SIZE_32 = 0,
 		CURSOR_SIZE_64 = 1
 	};
+
+	// Computes the cursor's current on-screen bounding box (same size
+	// logic as get_cursor_pixel()'s own 32-vs-64 check) and unions it
+	// into m_dirty - called from write() both before and after any state
+	// change that could move/resize/enable/disable the cursor or touch
+	// its bitmap RAM, so both the old and new positions get redrawn.
+	void mark_cursor_dirty();
 
 	void decode_vt_line(uint32_t line, uint32_t line_seq_ptr);
 	void decode_vt_table();
@@ -193,6 +278,8 @@ private:
 	uint8_t m_reg_idx;
 	uint16_t m_reg_data;
 	std::unique_ptr<uint16_t[]> m_ram;
+
+	newport_dirty_rect m_dirty;
 
 	std::unique_ptr<uint32_t[]> m_vt_table;
 
@@ -241,6 +328,13 @@ public:
 	uint32_t read_pixel();
 	void write_pixel(uint32_t data);
 
+	// Dirty-region tracking for the compositor (see newport_dirty_rect).
+	// Updated per-pixel directly in store_pixel() - the single choke
+	// point every framebuffer write (direct pixel ops and all REX3
+	// draw/blit/fill/text operations) funnels through.
+	const newport_dirty_rect &dirty() const { return m_dirty; }
+	void clear_dirty() { m_dirty.clear(); }
+
 	void serialize(FILE *file);
 	void deserialize(FILE *file);
 
@@ -270,6 +364,14 @@ private:
 
 	uint32_t *m_dest_buf;
 	uint32_t *m_buf_ptr;
+
+	// x/y derived from the flat address in set_address() (every call
+	// site computes it as y * 1344 + x, matching rgbci()/cidaux()'s own
+	// stride), cached here so store_pixel() can update m_dirty without
+	// redoing the division/modulo on every single pixel write.
+	int m_cur_x;
+	int m_cur_y;
+	newport_dirty_rect m_dirty;
 
 	std::unique_ptr<uint32_t[]> m_rgbci;
 	std::unique_ptr<uint32_t[]> m_cidaux;
@@ -499,6 +601,20 @@ protected:
 	uint32_t m_ramdac_lut_g[256];
 	uint32_t m_ramdac_lut_b[256];
 	uint8_t m_ramdac_lut_index;
+
+	// Dirty-region tracking for screen_update() (see newport_dirty_rect).
+	// m_pending_dirty is the region actually applied on the current
+	// recompute; m_dirty_hold_frames requires 2 consecutive real
+	// recomputes before a skip is allowed, so MAME's own screen_device
+	// double buffering (m_bitmap[2], toggled every frame regardless of
+	// skip status) gets both buffers refreshed before going idle - the
+	// same fix the earlier crude whole-board experiment needed for the
+	// same reason, just applied to a real rectangle instead of a bool.
+	// Starts dirty (full screen, 2 held frames) so the first frames
+	// after boot/reset always do a real recompute rather than assuming
+	// unknown initial framebuffer content matches a blank bitmap.
+	newport_dirty_rect m_pending_dirty;
+	int m_dirty_hold_frames = 2;
 
 	rex3_t m_rex3;
 	uint32_t m_global_mask;
