@@ -72,9 +72,11 @@ private:
 	TIMER_CALLBACK_MEMBER(count_w_deferred);
 	void gate_w(int state) { machine().scheduler().synchronize(timer_expired_delegate(FUNC(pit_counter_device::gate_w_deferred), this), state); }
 	TIMER_CALLBACK_MEMBER(gate_w_deferred);
-	void set_clock_signal(int state) { machine().scheduler().synchronize(timer_expired_delegate(FUNC(pit_counter_device::set_clock_signal_deferred), this), state); }
+	void set_clock_signal(int state);
+	void set_clock_signal_immediate(int state);
 	TIMER_CALLBACK_MEMBER(set_clock_signal_deferred);
 	void set_clockin(double new_clockin);
+	void mame_sgi_postload_diag();
 
 	// internal state
 	int m_index;                // index number of the timer

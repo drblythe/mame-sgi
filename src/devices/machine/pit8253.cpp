@@ -38,6 +38,139 @@
 
 #include "logmacro.h"
 
+// TEMPORARY DIAGNOSTIC (2026-07-31), disabled by default. Logs each
+// counter's actual re-arm rate (from the same cycles_to_output/m_clock_period
+// computation simulate() already does, just before adjust_timer()) whenever
+// it changes, to see what rate IRIX has actually programmed into each of
+// the SGI IOC2's 3 cascaded PIT counters - counter 2 is the only one with a
+// direct clock input (1MHz), and its own output directly drives counters 0
+// and 1's clock inputs (ioc2.cpp's pit_clock2_out -> write_clk0/write_clk1),
+// so all 3 counters' dispatch rates ultimately derive from whatever
+// frequency counter 2 is configured for. Shared device code (used by every
+// MAME PC/PIT-equipped system, not just this SGI driver) - self-defined
+// macro per the established src/devices/ scoping convention, disabled by
+// default.
+// REAL FIX, kept enabled permanently (2026-07-31): mode 4/5's (software/
+// hardware-triggered strobe) cycles_to_output switch has no case for
+// m_phase==0, the documented "waiting for count, infinite length" idle
+// state (matching mode 0's own explicit handling of the same phase a few
+// cases up) - without it, cycles_to_output silently keeps its 0-initialized
+// value once a strobe completes, producing a zero-length timer rearm that
+// refires forever instead of correctly parking. Confirmed via a before/
+// after call-count diagnostic: eliminates ~1-6M redundant update_tick()
+// calls/5s on the SGI IOC2's counter 2. Measured real-world impact via a
+// clean A/B once an unrelated boot hang (ioc2.cpp's input_merger_device
+// race, see wiki/assets.md's RESOLVED section) was fixed and stopped
+// confounding earlier attempts: ~144.5s avg boot time (IRIX Release to
+// login) with this fix vs ~170.2s without, a consistent ~18% improvement
+// across 2 clean samples per arm. Still gated behind this macro rather than
+// applied unconditionally like the IOC2 timer-line fix (Finding 2) mostly
+// out of inertia at this point, not because gating still serves a real
+// purpose - an earlier concern that this fix exposed a checkints-arming DRC
+// gap turned out to be based on stale source reading and was retracted
+// mid-investigation (see journal.md), and the actual hang this fix was once
+// suspected of causing was unrelated. Ungating this to match Finding 2's
+// pattern would be a reasonable small follow-up cleanup.
+#define MAME_SGI_PIT_MODE45_PHASE0_FIX
+// DISABLED again (2026-08-21) - was RE-ENABLED earlier the same day to
+// validate both the cause and the fix for task #74's clean-shutdown
+// near-permanent-stall bug (see wiki/drc-bugfixes.md's C.4 section):
+// confirmed the "counter gets parked, backlog accumulates silently"
+// hypothesis live (a period logged going to 0 Hz/CYCLES_NEVER), and
+// confirmed MAME_SGI_PIT_BULK_CATCHUP_FIX's fastpath actually engages
+// at real scale (1,717,984 fastpath calls, 0 slowpath, on a real
+// ~4.3 billion cycle backlog). Both now fully validated - re-enable if
+// the PIT rate itself needs inspecting again.
+// #define MAME_SGI_PIT_RATE_DIAG
+#ifdef MAME_SGI_PIT_RATE_DIAG
+namespace {
+	std::map<std::string, attoseconds_t> s_mame_sgi_pit_last_period;
+	std::map<std::string, uint64_t> s_mame_sgi_pit_update_tick_calls;
+	osd_ticks_t s_mame_sgi_pit_next_dump = 0;
+	uint64_t s_mame_sgi_pit_fastpath_calls = 0;
+	uint64_t s_mame_sgi_pit_slowpath_calls = 0;
+}
+#endif
+
+// FIX (2026-08-21, gated), task #74: catch-up loops (e.g. Mode 2's
+// do-while in simulate()) can call set_output() -> devcb -> a
+// downstream cascaded PIT's set_clock_signal() many times in a tight
+// loop when draining a large historical elapsed_cycles backlog (real
+// case seen: ~94.5 billion cycles after ~8.5 real hours under
+// -nothrottle, draining at ~600K cycles/sec - ~44 real hours to
+// self-resolve, practically a permanent hang). Each such call normally
+// schedules a real emu_timer via device_scheduler::synchronize(), which
+// is the dominant per-call cost at this volume - not the edge delivery
+// itself. This depth counter tracks reentrancy into a genuine bulk
+// historical replay (simulate() called with elapsed_cycles far
+// exceeding a single period) so set_clock_signal() can safely deliver
+// the edge immediately instead of scheduling a timer. simulate()'s own
+// top-of-function comment already documents the invariant this relies
+// on ("assumes no callbacks occur during that time" - nothing else is
+// genuinely concurrent with a historical replay, we're single-threaded
+// and deep inside device_scheduler::timeslice()'s dispatch of an
+// already-expired event). Every edge is still individually delivered,
+// in the same order, with identical effect on the receiving counter's
+// internal state - this changes WHEN it's dispatched (an immediate
+// call vs. a same-instant scheduled timer), never WHAT is delivered, so
+// it does not touch the "skip edges" approach already ruled unsafe
+// (downstream counters 0/1 have no lazy catch-up of their own and would
+// silently under-count if edges were skipped rather than just
+// dispatched differently).
+#define MAME_SGI_PIT_BULK_CATCHUP_FIX
+#ifdef MAME_SGI_PIT_BULK_CATCHUP_FIX
+namespace {
+	int s_mame_sgi_pit_bulk_catchup_depth = 0;
+	constexpr int64_t MAME_SGI_PIT_BULK_CATCHUP_THRESHOLD = 64;
+	struct bulk_catchup_guard
+	{
+		bool active;
+		bool outermost;
+#ifdef MAME_SGI_PIT_RATE_DIAG
+		uint64_t fastpath_at_entry = 0;
+		uint64_t slowpath_at_entry = 0;
+#endif
+		explicit bulk_catchup_guard(int64_t elapsed_cycles) : active(elapsed_cycles > MAME_SGI_PIT_BULK_CATCHUP_THRESHOLD),
+			outermost(active && s_mame_sgi_pit_bulk_catchup_depth == 0)
+		{
+			if (active)
+			{
+				s_mame_sgi_pit_bulk_catchup_depth++;
+#ifdef MAME_SGI_PIT_RATE_DIAG
+				fastpath_at_entry = s_mame_sgi_pit_fastpath_calls;
+				slowpath_at_entry = s_mame_sgi_pit_slowpath_calls;
+				if (outermost)
+					osd_printf_info("MAME_SGI_PIT_RATE_DIAG: bulk catchup started, elapsed_cycles=%lld\n", (long long)elapsed_cycles);
+#endif
+			}
+		}
+		~bulk_catchup_guard()
+		{
+			if (active)
+			{
+				s_mame_sgi_pit_bulk_catchup_depth--;
+#ifdef MAME_SGI_PIT_RATE_DIAG
+				if (outermost)
+					osd_printf_info("MAME_SGI_PIT_RATE_DIAG: bulk catchup finished, fastpath_calls=%llu slowpath_calls=%llu\n",
+						(unsigned long long)(s_mame_sgi_pit_fastpath_calls - fastpath_at_entry),
+						(unsigned long long)(s_mame_sgi_pit_slowpath_calls - slowpath_at_entry));
+#endif
+			}
+		}
+	};
+}
+#endif
+
+// Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s print,
+// concluded weeks ago alongside task #66 (find what gates the wait
+// loop before 0xbfc1174c) - was unconditionally wired via
+// register_postload() AND fired periodically during ordinary
+// operation (every 20000 update_tick() calls, not just on real
+// -state save/load), and its print was also mislabeled
+// "MOUSEFOCUS_DIAG:" (an unrelated copy-paste leftover, now fixed).
+// Off by default; re-enable if task #66's area needs revisiting.
+// #define MAME_SGI_PIT_POSTLOAD_DIAG
+
 #define LOG1(...) LOGMASKED(LOG_1, __VA_ARGS__)
 #define LOG2(...) LOGMASKED(LOG_2, __VA_ARGS__)
 
@@ -105,6 +238,15 @@ void pit8253_device::device_resolve_objects()
 }
 
 
+void pit_counter_device::mame_sgi_postload_diag()
+{
+#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
+	osd_printf_verbose("MAME_SGI_PIT_POSTLOAD_DIAG: pit_counter_device[%d] postload: m_phase=%d m_output=%d m_output_pin=%d m_value=%04X m_control=%02X m_gate=%d m_gate_input=%d timer_enabled=%d timer_remaining=%s\n",
+		m_index, m_phase, m_output, m_output_pin, m_value, m_control, m_gate, m_gate_input,
+		(int)m_update_timer->enabled(), m_update_timer->remaining().as_string());
+#endif
+}
+
 //-------------------------------------------------
 //  device_start - device-specific startup
 //-------------------------------------------------
@@ -137,6 +279,8 @@ void pit_counter_device::device_start()
 	save_item(NAME(m_phase));
 	save_item(NAME(m_last_updated));
 	save_item(NAME(m_clock_signal));
+
+	machine().save().register_postload(save_prepost_delegate(FUNC(pit_counter_device::mame_sgi_postload_diag), this));
 
 	/* zerofill */
 	m_gate = 1;
@@ -340,6 +484,9 @@ void pit_counter_device::simulate(int64_t elapsed_cycles)
 	int mode = CTRL_MODE(m_control);
 	static const uint32_t CYCLES_NEVER = (0xffffffff);
 	uint32_t cycles_to_output = 0;
+#ifdef MAME_SGI_PIT_BULK_CATCHUP_FIX
+	bulk_catchup_guard mame_sgi_pit_bulk_catchup_guard(elapsed_cycles);
+#endif
 
 	LOG2("simulate(): simulating %d cycles in mode %d, bcd = %d, phase = %d, gate = %d, output %d, value = 0x%04x\n",
 			(int)elapsed_cycles, mode, bcd, m_phase, m_gate, m_output, m_value);
@@ -705,6 +852,9 @@ void pit_counter_device::simulate(int64_t elapsed_cycles)
 
 			switch (m_phase)
 			{
+#ifdef MAME_SGI_PIT_MODE45_PHASE0_FIX
+			case 0:  cycles_to_output = CYCLES_NEVER; break;
+#endif
 			case 1:  cycles_to_output = 1; break;
 			case 2:  cycles_to_output = adjusted_count(); break;
 			case 3:  cycles_to_output = 1; break;
@@ -713,6 +863,21 @@ void pit_counter_device::simulate(int64_t elapsed_cycles)
 		break;
 	}
 
+#ifdef MAME_SGI_PIT_RATE_DIAG
+	{
+		attoseconds_t period = (cycles_to_output == CYCLES_NEVER || m_clockin == 0)
+			? 0 : (cycles_to_output * m_clock_period).as_attoseconds();
+		std::string key = tag();
+		auto it = s_mame_sgi_pit_last_period.find(key);
+		if (it == s_mame_sgi_pit_last_period.end() || it->second != period)
+		{
+			s_mame_sgi_pit_last_period[key] = period;
+			double hz = period ? (double)ATTOSECONDS_PER_SECOND / (double)period : 0.0;
+			osd_printf_info("MAME_SGI_PIT_RATE_DIAG: %s mode=%d clockin=%d cycles_to_output=%u period_attosec=%lld (%.2f Hz)\n",
+				key.c_str(), mode, m_clockin, cycles_to_output, (long long)period, hz);
+		}
+	}
+#endif
 	if (cycles_to_output == CYCLES_NEVER || m_clockin == 0)
 		adjust_timer(attotime::never);
 	else
@@ -993,6 +1158,24 @@ void pit8254_device::readback_command(uint8_t data)
 
 TIMER_CALLBACK_MEMBER(pit_counter_device::update_tick)
 {
+	{
+		static std::map<int, uint64_t> s_mame_sgi_diag_calls;
+		if ((++s_mame_sgi_diag_calls[m_index] % 20000) == 1)
+			mame_sgi_postload_diag();
+	}
+#ifdef MAME_SGI_PIT_RATE_DIAG
+	s_mame_sgi_pit_update_tick_calls[tag()]++;
+	osd_ticks_t mame_sgi_pit_now = osd_ticks();
+	if (mame_sgi_pit_now >= s_mame_sgi_pit_next_dump)
+	{
+		std::string line = "MAME_SGI_PIT_RATE_DIAG: update_tick calls in last window:";
+		for (auto &entry : s_mame_sgi_pit_update_tick_calls)
+			line += " " + entry.first + "=" + std::to_string(entry.second);
+		osd_printf_info("%s\n", line.c_str());
+		s_mame_sgi_pit_update_tick_calls.clear();
+		s_mame_sgi_pit_next_dump = mame_sgi_pit_now + osd_ticks_per_second() * 5;
+	}
+#endif
 	update();
 }
 
@@ -1160,9 +1343,26 @@ void pit_counter_device::set_clockin(double new_clockin)
 }
 
 
-TIMER_CALLBACK_MEMBER(pit_counter_device::set_clock_signal_deferred)
+void pit_counter_device::set_clock_signal(int state)
 {
-	const int state = param;
+#ifdef MAME_SGI_PIT_BULK_CATCHUP_FIX
+	if (s_mame_sgi_pit_bulk_catchup_depth > 0)
+	{
+#ifdef MAME_SGI_PIT_RATE_DIAG
+		s_mame_sgi_pit_fastpath_calls++;
+#endif
+		set_clock_signal_immediate(state);
+		return;
+	}
+#endif
+#ifdef MAME_SGI_PIT_RATE_DIAG
+	s_mame_sgi_pit_slowpath_calls++;
+#endif
+	machine().scheduler().synchronize(timer_expired_delegate(FUNC(pit_counter_device::set_clock_signal_deferred), this), state);
+}
+
+void pit_counter_device::set_clock_signal_immediate(int state)
+{
 	LOG2("set_clock_signal(): state = %d\n", state);
 
 	/* Sample GATE and the GATE edge detection flipflop on low to high transition */
@@ -1184,4 +1384,9 @@ TIMER_CALLBACK_MEMBER(pit_counter_device::set_clock_signal_deferred)
 		simulate(1);
 	}
 	m_clock_signal = state;
+}
+
+TIMER_CALLBACK_MEMBER(pit_counter_device::set_clock_signal_deferred)
+{
+	set_clock_signal_immediate((int)param);
 }
