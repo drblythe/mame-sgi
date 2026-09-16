@@ -314,6 +314,16 @@ project ("osd_" .. _OPTIONS["osd"])
 	uuid (os.uuid("osd_" .. _OPTIONS["osd"]))
 	kind (LIBTYPE)
 
+	-- Symbols (-g) enabled deliberately for host-gdb debugging of
+	-- src/osd/sdl code (window.cpp, osdsdl.cpp) - otherwise zero DWARF
+	-- info, same gap devices.lua's "optional" project had. No "NoPCH"
+	-- companion needed here (unlike that fix): this project never calls
+	-- precompiledheaders(), so it doesn't share the global emu.h PCH and
+	-- can't hit the flag-mismatch failure that required NoPCH there.
+	flags {
+		"Symbols",
+	}
+
 	dofile("sdl_cfg.lua")
 	osdmodulesbuild()
 

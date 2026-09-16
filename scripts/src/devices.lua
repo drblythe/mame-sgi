@@ -28,6 +28,25 @@ function devicesProject(_target, _subtarget)
 
 	addprojectflags()
 	precompiledheaders()
+	flags {
+		-- Symbols (-g) enabled deliberately for host-gdb debugging of
+		-- src/devices/ code (this project builds as "liboptional.a" -
+		-- mips3drc.cpp/mips3.cpp among others - which otherwise has zero
+		-- DWARF info, unlike src/mame.lua's main executable project).
+		-- NoPCH is required alongside it: emu.h's precompiled header is
+		-- built once, shared across every project in the whole build
+		-- (build/linux_gcc/obj/<arch>/<config>/emu.h.gch, not scoped per
+		-- project), by a separate "precompile" project whose own flags
+		-- don't include -g - GCC correctly rejects the flag-mismatched
+		-- PCH as invalid, and its fallback -include path points at the
+		-- build-output directory (not the real source location), so it
+		-- can't recover by finding a plain emu.h there either, producing
+		-- a hard "No such file or directory" rather than a graceful
+		-- on-the-fly recompile. Confirmed by direct comparison of this
+		-- project's and precompile's generated release64 ALL_CXXFLAGS.
+		"Symbols",
+		"NoPCH",
+	}
 
 	includedirs {
 		MAME_DIR .. "src/osd",
