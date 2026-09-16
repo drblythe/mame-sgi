@@ -36,7 +36,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <initializer_list>
 #include <iterator>
 #include <list>
@@ -52,10 +54,78 @@
 #undef DELETE
 #endif
 
+// Logs when a burst of keydown+keyup pairs gets deferred simultaneously
+// by the sticky-press fix below (see sdl_keyboard_device) - a direct
+// signal of how many keystrokes a given DRC/scheduler stall would have
+// dropped without it. Off by default.
+// DISABLED (2026-08-23) - task #75 reopened-investigation paused;
+// re-enable if another live session is needed.
+// #define MAME_SGI_KBD_STICKY_DIAG
+
+// TEMPORARY diagnostic (2026-08-23) - wall-clock-timestamped log of
+// every raw SDL_KEYDOWN/SDL_KEYUP process_event() actually receives,
+// independent of the sticky-press logic below. Built to distinguish
+// "the keystroke was lost before reaching MAME's input code at all"
+// (host/X11/window-manager focus race - this log stays silent for the
+// missing character) from "MAME saw it but something downstream (sticky-
+// press, ioport wiring, guest-side 8051 scheduling) lost it" (this log
+// shows the event, but it still never reaches the guest). Timestamp
+// format matches console_live.log's own (HH:MM:SS.mmm) for direct
+// cross-reference against what the guest console shows at the same
+// moment. DISABLED (2026-08-23) - see MAME_SGI_KBD_STICKY_DIAG's own
+// disable note just above; both were used together to pin down Bug A/B,
+// see wiki/console.md.
+// #define MAME_SGI_KBD_RAW_EVENT_DIAG
+
+// Same fix, same diagnostic shape, for mouse buttons (see
+// sdl_mouse_device_base) - m_mouse.buttons[] had the identical
+// unprotected level-state pattern m_keyboard.state[] did, flagged as a
+// known lurking bug during the keyboard fix's own review (task #76) and
+// picked up here once the keyboard case was confirmed real via live
+// diagnostic data. Off by default.
+// #define MAME_SGI_MOUSE_BTN_STICKY_DIAG
+
+// TEMPORARY diagnostic (2026-08-23) - the queued_repress same-key-
+// collision fix (see keyboard_state's own comment) still failed to
+// reproduce a second, distinguishable "down" pulse for one specific
+// scancode in live testing despite tracing correctly on paper - logs
+// every actual change to that scancode's full sticky-press state
+// (state/pending_first_sample/release_deferred/queued_repress/
+// pending_repress_armed) from both process_event() and poll(), to see
+// exactly what the real call sequence did instead of re-deriving it
+// from source alone. Scancode is hardcoded (18 = SDL_SCANCODE_O, the
+// one directly implicated by MAME_SGI_KBD_MATRIX_SCAN_DIAG's evidence)
+// rather than made configurable - this is a one-shot investigation
+// tool, not a standing feature. DISABLED (2026-08-23) - confirmed the
+// queued_repress fix behaves exactly as designed once actually
+// exercised (see wiki/console.md's Bug A writeup); its own question is
+// answered.
+// #define MAME_SGI_KBD_STATE_TRACE_DIAG
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+#define MAME_SGI_KBD_STATE_TRACE_SCANCODE 18
+#endif
 
 namespace osd {
 
 namespace {
+
+#ifdef MAME_SGI_KBD_RAW_EVENT_DIAG
+// Wall-clock HH:MM:SS.mmm, matching console_live.log's own timestamp
+// format so a raw keyboard-event log line can be lined up by eye
+// against what the guest console shows at the same real moment.
+std::string kbd_raw_event_timestamp()
+{
+	using namespace std::chrono;
+	auto const now = system_clock::now();
+	auto const t = system_clock::to_time_t(now);
+	auto const ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+	std::tm tm_buf;
+	localtime_r(&t, &tm_buf);
+	char buf[16];
+	std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(ms.count()));
+	return buf;
+}
+#endif
 
 char const *const CONTROLLER_AXIS_XBOX[]{
 		"LSX",
@@ -575,6 +645,18 @@ public:
 	{
 	}
 
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+	void trace_kbd_state(char const *where)
+	{
+		int const sc = MAME_SGI_KBD_STATE_TRACE_SCANCODE;
+		osd_printf_info("MAME_SGI_KBD_STATE_TRACE_DIAG: %s %-14s state=%02x pending_first_sample=%d release_deferred=%d queued_repress=%d pending_repress_armed=%d\n",
+			kbd_raw_event_timestamp().c_str(), where,
+			unsigned(m_keyboard.state[sc]), int(m_keyboard.pending_first_sample[sc]),
+			int(m_keyboard.release_deferred[sc]), int(m_keyboard.queued_repress[sc]),
+			int(m_keyboard.pending_repress_armed[sc]));
+	}
+#endif
+
 	virtual void poll(bool relative_reset) override
 	{
 		sdl_device::poll(relative_reset);
@@ -583,33 +665,191 @@ public:
 		if (m_keyboard.state[SDL_SCANCODE_CAPSLOCK] && (std::chrono::steady_clock::now() > (m_capslock_pressed + std::chrono::milliseconds(30))))
 			m_keyboard.state[SDL_SCANCODE_CAPSLOCK] = 0x00;
 #endif
+
+		// Sticky-press fix: guarantee every real keydown survives at
+		// least one full poll_if_necessary() cycle as visible "down"
+		// state before a keyup is allowed to clear it. Without this, a
+		// full press+release pair that both land in the gap between two
+		// poll cycles (e.g. during a DRC recompile stall that blocks the
+		// whole emulation loop) updates m_keyboard.state twice with
+		// nothing ever sampling the intermediate "down" value in
+		// between - the keystroke is invisible to the guest even though
+		// SDL delivered both events correctly. Real PS2 controllers
+		// buffer scancode bytes for exactly this reason; this restores
+		// the equivalent guarantee within the existing polling model
+		// instead of requiring a separate input thread.
+		//
+		// before_poll() (input_common.h) calls process_events() - which
+		// drains SDL's queue and is what actually calls process_event()
+		// below - immediately before this poll() runs, both inside the
+		// same poll_if_necessary() invocation. So a same-burst keydown+
+		// keyup pair (the exact case this fix targets) sets
+		// pending_first_sample AND release_deferred together in the
+		// SAME call that reaches this loop - the release must only be
+		// applied once pending_first_sample was already clear *before*
+		// this burst, i.e. on a later call, or the deferral is a no-op.
+#ifdef MAME_SGI_KBD_STICKY_DIAG
+		int sticky_count = 0;
+		for (s8 deferred : m_keyboard.release_deferred)
+			sticky_count += deferred ? 1 : 0;
+		if (sticky_count > MAME_SGI_KBD_STICKY_LOG_THRESHOLD)
+			osd_printf_info("MAME_SGI_KBD_STICKY_DIAG: %d keys simultaneously saved from being dropped this poll cycle\n", sticky_count);
+#endif
+		for (size_t sc = 0; sc < std::size(m_keyboard.release_deferred); sc++)
+		{
+			// Snapshot before this call's own changes - the "survived a
+			// full poll boundary" clear at the bottom must only apply to
+			// a pulse that was already pending_first_sample at the START
+			// of this call, never to one a queued-repress arm below just
+			// made pending THIS call (that one needs its own separate
+			// poll to be guaranteed-visible, same as any fresh press).
+			bool const was_pending = m_keyboard.pending_first_sample[sc];
+
+			if (m_keyboard.release_deferred[sc] && !was_pending)
+			{
+				m_keyboard.release_deferred[sc] = 0;
+				if (m_keyboard.queued_repress[sc] > 0)
+				{
+					// Retire the current pulse THIS poll, so the guest
+					// gets a real state=0x00 to sample - re-arming the
+					// queued cycle in this same call, without ever
+					// letting state visibly leave 0x80, would reproduce
+					// exactly the collapse this fix exists to prevent.
+					m_keyboard.state[sc] = 0x00;
+					m_keyboard.queued_repress[sc]--;
+					m_keyboard.pending_repress_armed[sc] = 1;
+				}
+				else
+				{
+					m_keyboard.state[sc] = 0x00;
+				}
+			}
+			else if (m_keyboard.pending_repress_armed[sc])
+			{
+				m_keyboard.pending_repress_armed[sc] = 0;
+				m_keyboard.state[sc] = 0x80;
+				m_keyboard.pending_first_sample[sc] = 1;
+				// The real keyup for this queued cycle has, in every
+				// realistic case, already happened by the time poll()
+				// gets around to draining the queue (typing is far
+				// slower than the poll rate once a stall clears) - mark
+				// it deferred immediately so this cycle gets exactly the
+				// same one-poll-guaranteed treatment as a normal press.
+				// A queued press still physically held at this exact
+				// instant (a third/fourth rapid tap) would show one
+				// extra brief, harmless tap rather than staying stuck -
+				// far better than the silent drop this replaces.
+				m_keyboard.release_deferred[sc] = 1;
+			}
+
+			if (was_pending)
+				m_keyboard.pending_first_sample[sc] = 0;
+
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE
+				&& (m_keyboard.state[sc] || m_keyboard.pending_first_sample[sc] || m_keyboard.release_deferred[sc]
+					|| m_keyboard.queued_repress[sc] || m_keyboard.pending_repress_armed[sc]))
+			{
+				trace_kbd_state("poll-end");
+			}
+#endif
+		}
 	}
 
 	virtual void process_event(SDL_Event const &event) override
 	{
+#ifdef MAME_SGI_KBD_RAW_EVENT_DIAG
+		if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
+		{
+			osd_printf_info("MAME_SGI_KBD_RAW_EVENT_DIAG: %s %-4s scancode=%u repeat=%d\n",
+				kbd_raw_event_timestamp().c_str(),
+				event.type == SDL_KEYDOWN ? "DOWN" : "UP",
+				unsigned(event.key.keysym.scancode),
+				event.type == SDL_KEYDOWN ? int(event.key.repeat) : 0);
+		}
+#endif
 		switch (event.type)
 		{
 		case SDL_KEYDOWN:
+		{
 			if (event.key.keysym.scancode == SDL_SCANCODE_CAPSLOCK)
 				m_capslock_pressed = std::chrono::steady_clock::now();
 
-			m_keyboard.state[event.key.keysym.scancode] = 0x80;
+			auto const sc = event.key.keysym.scancode;
+			// A held key still shows state[sc]!=0x00 (or has a queued
+			// cycle already waiting to be armed) - a real second press
+			// arriving on top of that, not SDL's own OS-level autorepeat
+			// for the still-held first one, queues instead of clobbering
+			// the pending release - see queued_repress's own comment.
+			bool const busy = (m_keyboard.state[sc] != 0x00) || m_keyboard.pending_repress_armed[sc];
+			if (busy && !event.key.repeat)
+			{
+				if (m_keyboard.queued_repress[sc] < MAME_SGI_KBD_MAX_QUEUED_REPRESS)
+					m_keyboard.queued_repress[sc]++;
+			}
+			else if (!busy)
+			{
+				m_keyboard.state[sc] = 0x80;
+				m_keyboard.pending_first_sample[sc] = 1;
+				m_keyboard.release_deferred[sc] = 0;
+			}
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
+				trace_kbd_state(event.key.repeat ? "keydown(repeat)" : busy ? "keydown(busy)" : "keydown(idle)");
+#endif
 			break;
+		}
 
 		case SDL_KEYUP:
+		{
 #ifdef __APPLE__
 			if (event.key.keysym.scancode == SDL_SCANCODE_CAPSLOCK)
 				break;
 #endif
 
-			m_keyboard.state[event.key.keysym.scancode] = 0x00;
+			auto const sc = event.key.keysym.scancode;
+			// A release landing while a queued cycle is waiting belongs
+			// to that queued press, not the currently-visible pulse -
+			// queued_repress already fully represents "one more complete
+			// press+release cycle to replay" (see poll()'s arm step,
+			// which assumes the release already happened by the time it
+			// gets there - true in every realistic case since typing is
+			// far slower than the poll rate once a stall clears), so
+			// there is nothing to update here.
+			if (m_keyboard.queued_repress[sc] > 0)
+			{
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+				if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
+					trace_kbd_state("keyup(queued-noop)");
+#endif
+				break;
+			}
+
+			// If this key's press hasn't survived a poll() boundary yet,
+			// defer the clear to the next poll() instead of applying it
+			// immediately - see the sticky-press comment in poll().
+			if (m_keyboard.pending_first_sample[sc])
+				m_keyboard.release_deferred[sc] = 1;
+			else
+				m_keyboard.state[sc] = 0x00;
+#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
+			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
+				trace_kbd_state("keyup");
+#endif
 			break;
+		}
 		}
 	}
 
 	virtual void reset() override
 	{
 		sdl_device::reset();
+		// Whole-struct memset is safe again as of the 0.289 port: upstream
+		// removed oldkey[]/currkey[] (the fields that previously made a
+		// blanket clear here overbroad relative to our field-by-field
+		// version), and everything remaining in keyboard_state - upstream's
+		// state[] plus our own sticky-press fields below - is meant to be
+		// zeroed on reset() anyway.
 		memset(&m_keyboard, 0, sizeof(m_keyboard));
 		m_capslock_pressed = std::chrono::steady_clock::time_point::min();
 	}
@@ -633,8 +873,34 @@ private:
 	// state information for a keyboard
 	struct keyboard_state
 	{
+		// state[] narrowed from s32 to u8 by upstream in 0.289 (along with
+		// removing oldkey[]/currkey[] entirely, ported out below) - our own
+		// code only ever writes 0x00/0x80 here, confirmed safe under u8
+		// during the 0.289 port survey (2026-09-15).
 		u8  state[0x3ff];
+		s8  pending_first_sample[0x3ff]; // sticky-press: set on keydown, cleared after surviving one poll()
+		s8  release_deferred[0x3ff];     // sticky-press: keyup arrived before pending_first_sample cleared
+		// Same-key-collision fix (2026-08-23): a SECOND physical press of
+		// the same scancode arriving before poll() retires the first
+		// pulse used to reset release_deferred outright, silently
+		// collapsing two real press+release cycles (e.g. the double-o in
+		// "google") into what the guest sees as one continuous hold -
+		// confirmed live via MAME_SGI_KBD_MATRIX_SCAN_DIAG. Extra cycles
+		// now queue here instead and get replayed one at a time, each
+		// getting its own real state=0x00 gap and its own guaranteed
+		// one-poll-visible window - see poll()/process_event().
+		s8  queued_repress[0x3ff];       // additional press+release cycles queued behind the current pulse
+		s8  pending_repress_armed[0x3ff]; // a queued cycle is waiting to become visible on the NEXT poll()
 	};
+
+#ifdef MAME_SGI_KBD_STICKY_DIAG
+	static constexpr int MAME_SGI_KBD_STICKY_LOG_THRESHOLD = 0;
+#endif
+
+	// Cap on queued_repress - bounds worst case to a handful of same-key
+	// taps arriving faster than poll() can drain them; typing, even a
+	// deliberate rapid-fire test, won't realistically exceed this.
+	static constexpr s8 MAME_SGI_KBD_MAX_QUEUED_REPRESS = 8;
 
 	keyboard_trans_table const &m_trans_table;
 	keyboard_state m_keyboard;
@@ -658,12 +924,36 @@ public:
 			m_mouse.lV = std::exchange(m_v, 0);
 			m_mouse.lH = std::exchange(m_h, 0);
 		}
+
+		// Sticky-press fix, same mechanism and same reasoning as
+		// sdl_keyboard_device's - see the comment there. m_mouse.buttons[]
+		// was the identical unprotected level-state pattern, and a fast
+		// click-and-release landing inside a stalled poll gap would be
+		// just as invisible to the guest as a dropped keystroke.
+#ifdef MAME_SGI_MOUSE_BTN_STICKY_DIAG
+		int sticky_count = 0;
+		for (s8 deferred : m_button_release_deferred)
+			sticky_count += deferred ? 1 : 0;
+		if (sticky_count > 0)
+			osd_printf_info("MAME_SGI_MOUSE_BTN_STICKY_DIAG: %d buttons simultaneously saved from being dropped this poll cycle\n", sticky_count);
+#endif
+		for (size_t b = 0; b < std::size(m_button_release_deferred); b++)
+		{
+			if (m_button_release_deferred[b] && !m_button_pending_first_sample[b])
+			{
+				m_mouse.buttons[b] = 0x00;
+				m_button_release_deferred[b] = 0;
+			}
+			m_button_pending_first_sample[b] = 0;
+		}
 	}
 
 	virtual void reset() override
 	{
 		sdl_device::reset();
 		memset(&m_mouse, 0, sizeof(m_mouse));
+		memset(&m_button_pending_first_sample, 0, sizeof(m_button_pending_first_sample));
+		memset(&m_button_release_deferred, 0, sizeof(m_button_release_deferred));
 		m_v = m_h = 0;
 	}
 
@@ -683,6 +973,29 @@ protected:
 		m_v(0),
 		m_h(0)
 	{
+	}
+
+	// Sets a button's level state with the same deferred-release
+	// guarantee sdl_keyboard_device::process_event() implements for
+	// scancodes - see that class's comments for why the drain has to
+	// happen in poll(), not here, given process_event() and poll() run
+	// back-to-back inside the same poll_if_necessary() cycle.
+	void set_button_state_sticky(unsigned index, bool down)
+	{
+		if (down)
+		{
+			m_mouse.buttons[index] = 0x80;
+			m_button_pending_first_sample[index] = 1;
+			m_button_release_deferred[index] = 0;
+		}
+		else if (m_button_pending_first_sample[index])
+		{
+			m_button_release_deferred[index] = 1;
+		}
+		else
+		{
+			m_mouse.buttons[index] = 0x00;
+		}
 	}
 
 	void add_common_items(input_device &device, unsigned buttons)
@@ -717,6 +1030,8 @@ protected:
 
 	mouse_state m_mouse;
 	s32 m_v, m_h;
+	s8 m_button_pending_first_sample[MAX_BUTTONS] = { 0 };
+	s8 m_button_release_deferred[MAX_BUTTONS] = { 0 };
 };
 
 
@@ -780,11 +1095,11 @@ public:
 			break;
 
 		case SDL_MOUSEBUTTONDOWN:
-			m_mouse.buttons[event.button.button - 1] = 0x80;
+			set_button_state_sticky(event.button.button - 1, true);
 			break;
 
 		case SDL_MOUSEBUTTONUP:
-			m_mouse.buttons[event.button.button - 1] = 0;
+			set_button_state_sticky(event.button.button - 1, false);
 			break;
 
 		case SDL_MOUSEWHEEL:
@@ -876,14 +1191,14 @@ public:
 			break;
 
 		case SDL_MOUSEBUTTONDOWN:
-			m_mouse.buttons[event.button.button - 1] = 0x80;
+			set_button_state_sticky(event.button.button - 1, true);
 			m_x = event.button.x;
 			m_y = event.button.y;
 			m_window = event.button.windowID;
 			break;
 
 		case SDL_MOUSEBUTTONUP:
-			m_mouse.buttons[event.button.button - 1] = 0;
+			set_button_state_sticky(event.button.button - 1, false);
 			m_x = event.button.x;
 			m_y = event.button.y;
 			m_window = event.button.windowID;
@@ -943,7 +1258,7 @@ public:
 				{
 					int w, h;
 					SDL_GetWindowSize(win, &w, &h);
-					m_mouse.buttons[(button & 1) << 1] = 0x80;
+					set_button_state_sticky((button & 1) << 1, true);
 					m_mouse.lX = normalize_absolute_axis(event.button.x, 0, w - 1);
 					m_mouse.lY = normalize_absolute_axis(event.button.y, 0, h - 1);
 				}
@@ -954,7 +1269,7 @@ public:
 			{
 				u8 const button = translate_button(event);
 				if ((button / 2) == m_index)
-					m_mouse.buttons[(button & 1) << 1] = 0;
+					set_button_state_sticky((button & 1) << 1, false);
 			}
 			break;
 		}
