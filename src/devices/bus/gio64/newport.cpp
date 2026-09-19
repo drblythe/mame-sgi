@@ -46,6 +46,69 @@
 // task #65 is still open, re-enable if it needs revisiting.
 // #define MAME_SGI_MOUSEFOCUS_DIAG
 
+// TEMPORARY diagnostic (task #101, 2026-09-17) - counting per-frame
+// contributions to frame_dirty (screen_update()'s own dirty gathering)
+// separately by source (rb2's real pixel writes vs vc2's cursor-position/
+// enable writes), to find why a visually-static screen (confirmed via
+// six 1-second-apart host screenshots, byte-identical) still marks dirty
+// on every single vblank (confirmed via MAME_SGI_TIMER_CALLBACK_OUTLIER_
+// DIAG cross-correlation, schedule.cpp). File-scope counters, not class
+// members - avoids the exact ODR mistake this session already made once
+// with mc.h (a conditionally-compiled member reached from multiple
+// translation units); newport.h is single-consumer here but there's no
+// reason to risk it for a throwaway counter. Time-throttled to one print
+// per real second (steady_clock-gated), not a flat count cap - a count
+// cap would exhaust during early boot's own legitimate redraw burst
+// before ever reaching the target state this diagnostic is meant to
+// observe.
+// #define MAME_SGI_DIRTY_SOURCE_DIAG
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+#include <chrono>
+namespace {
+	uint64_t g_mame_sgi_dirty_pixel_writes_this_frame = 0;
+	uint64_t g_mame_sgi_dirty_cursor_calls_this_frame = 0;
+	// Time-throttled (one print per real second), not count-capped - a
+	// flat count cap would exhaust itself during early boot's own
+	// legitimate dirty activity (PROM/kernel text, real redraws) long
+	// before ever reaching the specific later state under investigation
+	// (a supposedly-static GUI login screen, many boot-seconds in).
+	std::chrono::steady_clock::time_point g_mame_sgi_dirty_diag_next_print{};
+}
+#endif
+
+// TEMPORARY diagnostic (2026-09-18) - answers two concrete questions
+// about a reported low-resolution-fallback display issue (booting with
+// unconfigured/default NVRAM, no console=d1, no ConsoleRes override):
+// (1) does vc2_device::update_screen_size()/newport_base_device::
+// update_screen_size() ever fire more than once during boot (a genuine
+// resolution switch), or does the kernel just inherit whatever the PROM
+// programs once, as expected; (2) what pixel mode/size does XMAP9's
+// mode table actually carry for the active DID entries once painting
+// starts, to separate "low resolution" (VC2 timing, this file) from
+// "low bit depth" (XMAP9 mode table, an independent axis) empirically
+// instead of by inference. Low call volume expected (a handful of
+// resize events at most, one pixel-mode snapshot) - no throttling
+// needed.
+// #define MAME_SGI_LOWRES_BOOT_DIAG
+
+// TEMPORARY, separate from the above - forces screen_update() to fully
+// recompute every single frame (bypasses both the dirty_hold_frames
+// early-exit and the dirty-rect row-range clip entirely), to isolate
+// testing the top_scanline/vram_row register-interpretation fix from
+// the separate dirty-rect coordinate-space question while both are
+// still being nailed down live (2026-09-19). Real, measurable
+// performance cost (full per-pixel recompute every frame instead of
+// only dirtied rows) - never leave this defined in a committed build.
+// #define MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+#include <unordered_set>
+namespace {
+	uint32_t g_mame_sgi_lowres_resize_calls = 0;
+	uint32_t g_mame_sgi_lowres_pixmode_prints = 0;
+	std::unordered_set<uint32_t> g_mame_sgi_lowres_seen_table_entries;
+}
+#endif
+
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_VC2         (1U << 2)
 #define LOG_CMAP        (1U << 3)
@@ -282,7 +345,20 @@ void xmap9_device::write(uint32_t offset, uint32_t data)
 		break;
 	case 5:
 		LOGMASKED(LOG_XMAP, "Mode Register Write: %02x = %06x\n", data >> 24, data & 0xffffff);
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+		if (m_mode_table[data >> 24] != (data & 0xffffff))
+		{
+			m_mode_table[data >> 24] = data & 0xffffff;
+			osd_printf_info("MAME_SGI_LOWRES_BOOT_DIAG mode_table changed (slot %u):\n", data >> 24);
+			for (uint32_t i = 0; i < 0x20; i++)
+			{
+				const uint32_t e = m_mode_table[i];
+				osd_printf_info("  [%u]=%06x pix_mode=%u pix_size=%u\n", i, e, (e >> 8) & 3, (e >> 10) & 3);
+			}
+		}
+#else
 		m_mode_table[data >> 24] = data & 0xffffff;
+#endif
 		break;
 	case 6:
 		LOGMASKED(LOG_XMAP, "Unused Write (Ignored): %08x\n", data);
@@ -541,6 +617,9 @@ void vc2_device::deserialize(FILE *file)
 
 void vc2_device::mark_cursor_dirty()
 {
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+	g_mame_sgi_dirty_cursor_calls_this_frame++;
+#endif
 #ifdef MAME_SGI_MOUSEFOCUS_DIAG
 	osd_printf_verbose("MOUSEFOCUS_DIAG: mark_cursor_dirty() called, m_enable_cursor=%d m_cursor_x=%d m_cursor_y=%d\n",
 		(int)m_enable_cursor, (int)m_cursor_x, (int)m_cursor_y);
@@ -1252,6 +1331,9 @@ void rb2_device::store_pixel(uint32_t value)
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
 	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+	g_mame_sgi_dirty_pixel_writes_this_frame++;
+#endif
 }
 
 
@@ -1477,6 +1559,16 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 #endif
 	uint32_t mame_sgi_result = 0;
 
+	// See this same variable's own fuller comment further down (near
+	// RB2_MAX_ROW) for the full rationale on both the register itself
+	// and the 0x3ff sentinel check - computed up front here (and reused
+	// unchanged below, not recomputed) since rb2_dirty's rows need the
+	// identical conversion, and it has to happen before frame_dirty/
+	// vc2_dirty are merged together, not after (see the comment on
+	// rb2_dirty just below for why the two can't share one conversion
+	// applied later to the merged result).
+	const int top_scanline = (m_rex3.m_top_scanline == 0x3ff) ? 0 : (int)m_rex3.m_top_scanline;
+
 	// Gather this frame's fresh dirty contributions (framebuffer writes +
 	// cursor state changes) and merge into the held region. A hold-and-
 	// reapply cycle (not a simple "skip if nothing new since last frame"
@@ -1487,7 +1579,27 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// needed, just carrying a real rectangle instead of a bool.
 	{
 		newport_dirty_rect frame_dirty;
-		frame_dirty.add_rect(m_rb2->dirty());
+		// rb2_dirty's rows are raw VRAM rows (rb2_device::store_pixel()'s
+		// own m_dirty.add_rect(m_cur_x, m_cur_y, ...) - m_cur_y already
+		// carries the m_y_window write-side offset), but vc2_dirty's rows
+		// (from vc2_device::mark_cursor_dirty()'s cursor_bounds(), driven
+		// by m_cursor_x/m_cursor_y) are already bitmap/display-relative -
+		// the cursor's position is inherently a display concept, never a
+		// framebuffer write. Converting rb2_dirty here, before the two
+		// are merged into one rectangle, keeps that distinction intact;
+		// converting the merged result afterward (tried and reverted
+		// live, 2026-09-19) applies the same offset to both regardless
+		// of which one actually needs it, corrupting the cursor's own
+		// erase/redraw box whenever it - not a pixel write - ends up
+		// deciding the merged rectangle's bounds, producing exactly the
+		// "stale pointer image / delayed position update" seen live.
+		const newport_dirty_rect &rb2_dirty = m_rb2->dirty();
+		if (rb2_dirty.valid())
+		{
+			frame_dirty.add_rect(
+					rb2_dirty.x0(), std::max(rb2_dirty.y0() - top_scanline, 0),
+					rb2_dirty.x1(), rb2_dirty.y1() - top_scanline);
+		}
 		frame_dirty.add_rect(m_vc2->dirty());
 		m_rb2->clear_dirty();
 		m_vc2->clear_dirty();
@@ -1500,9 +1612,39 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 			m_pending_dirty.add_rect(frame_dirty);
 			m_dirty_hold_frames = 2;
 		}
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+		if (frame_dirty.valid())
+		{
+			auto const mame_sgi_now = std::chrono::steady_clock::now();
+			if (mame_sgi_now >= g_mame_sgi_dirty_diag_next_print)
+			{
+				g_mame_sgi_dirty_diag_next_print = mame_sgi_now + std::chrono::seconds(1);
+				auto const wall = std::chrono::system_clock::now();
+				auto const t = std::chrono::system_clock::to_time_t(wall);
+				auto const us = std::chrono::duration_cast<std::chrono::microseconds>(wall.time_since_epoch()) % 1'000'000;
+				std::tm tm_buf{};
+				localtime_r(&t, &tm_buf);
+				char tsbuf[24];
+				std::snprintf(tsbuf, sizeof(tsbuf), "%02d:%02d:%02d.%06d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(us.count()));
+				osd_printf_info(
+						"MAME_SGI_DIRTY_SOURCE_DIAG wallclock=%s frame dirty: pixel_writes=%llu cursor_calls=%llu rect=(%d,%d)-(%d,%d)\n",
+						tsbuf,
+						(unsigned long long)g_mame_sgi_dirty_pixel_writes_this_frame,
+						(unsigned long long)g_mame_sgi_dirty_cursor_calls_this_frame,
+						frame_dirty.x0(), frame_dirty.y0(), frame_dirty.x1(), frame_dirty.y1());
+			}
+		}
+		g_mame_sgi_dirty_pixel_writes_this_frame = 0;
+		g_mame_sgi_dirty_cursor_calls_this_frame = 0;
+#endif
 	}
 
-	if (m_dirty_hold_frames <= 0)
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
+	constexpr bool mame_sgi_force_full_recompute = true;
+#else
+	constexpr bool mame_sgi_force_full_recompute = false;
+#endif
+	if (!mame_sgi_force_full_recompute && m_dirty_hold_frames <= 0)
 	{
 		// Nothing pending, both buffers already in sync - tell MAME's own
 		// frame_update()/finish_screen_updates() machinery this call
@@ -1533,6 +1675,40 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	const int y_start = m_vc2->readout_y0();
 	const int y_end = m_vc2->readout_y1();
 
+	// REX3's "Top of Screen Scanline" register (m_top_scanline, set via
+	// the 0x1320 write case below) tells real hardware which row of RB2's
+	// framebuffer RAM corresponds to the first visible display row - a
+	// pan/scroll register, not a drawing-coordinate offset (that's
+	// m_x_window/m_y_window, applied on the write side in output_pixel()).
+	// Confirmed live (2026-09-19, low-resolution NVRAM-default boot):
+	// IRIX's kernel programs this to a real, non-zero value (255, after a
+	// transition sequence 1023->682->341->0->1023->255 during the PROM-
+	// to-kernel handoff) while drawing through a matching non-zero
+	// m_y_window offset - but nothing here previously read m_top_scanline
+	// at all, so the compositor always displayed framebuffer row 0 as the
+	// first row regardless of what the guest asked for, leaving content
+	// drawn at row_window_offset..(row_window_offset+height) invisible at
+	// its intended position and whatever was at rows 0..row_window_offset
+	// (typically never touched by the guest, since it isn't part of the
+	// window it thinks it's drawing into) showing instead. Clamped to
+	// rb2_device::BUFFER_SIZE's own row count (1088, `(1024+64)` tall) -
+	// m_top_scanline is guest-controlled and only masked to 10 bits
+	// (0-1023) at the write site, so a value near that ceiling combined
+	// with a tall cliprect could otherwise index past the allocated
+	// buffer. Left out of begin_did_line()'s own addressing on purpose -
+	// the DID table enumerates per-visible-line pixel-mode metadata in
+	// the guest's own display-relative order already, independent of
+	// which underlying framebuffer row backs any given line.
+	constexpr int RB2_MAX_ROW = 1088 - 1;
+	// top_scanline itself (including the 0x3ff "no panning configured"
+	// sentinel check - stuck-observed live, 2026-09-19, on a normal,
+	// correctly-configured indy_4610 boot, where m_x_window/m_y_window
+	// stayed at their neutral no-offset baseline the entire time despite
+	// it, which a real "pan 1023 rows" instruction wouldn't be
+	// consistent with) is computed once, up front in this function -
+	// see that declaration's own comment for the full rationale. Reused
+	// unchanged here.
+
 	// Clip the row range to the pending dirty rect intersected with
 	// cliprect - rows outside it are left untouched, correct since the
 	// bitmap already holds their unchanged content from a previous
@@ -1542,21 +1718,32 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// start, not seeked to an arbitrary starting column, so a real
 	// per-row x-clip needs that walker extended first - left for task #4,
 	// which already wants to restructure this loop around DID runs.
+	//
+	// m_pending_dirty is already bitmap-relative by this point - the
+	// rb2-sourced contribution was converted from raw VRAM rows at the
+	// point it was merged in above (see that block's own comment for why
+	// that has to happen before the merge, not here on the combined
+	// rectangle), and the vc2/cursor-sourced contribution was bitmap-
+	// relative from the start. No further conversion needed - used
+	// directly as bitmap-row bounds.
 	int row_start_y = cliprect.min_y;
 	int row_end_y = cliprect.max_y;
+#ifndef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
 	if (m_pending_dirty.valid())
 	{
 		if (m_pending_dirty.y0() > row_start_y) row_start_y = m_pending_dirty.y0();
 		if (m_pending_dirty.y1() < row_end_y) row_end_y = m_pending_dirty.y1();
 	}
+#endif
 	const int sy_offset = row_start_y - cliprect.min_y;
 
 	/* loop over rows and copy to the destination */
 	for (int y = row_start_y, sy = y_start + sy_offset; y <= row_end_y && sy < y_end; y++, sy++)
 	{
 		uint32_t *dest = &bitmap.pix(y, cliprect.min_x);
-		const uint32_t *src_rgbci = m_rb2->rgbci(y);
-		const uint32_t *src_cidaux = m_rb2->cidaux(y);
+		const int vram_row = std::min(y + top_scanline, RB2_MAX_ROW);
+		const uint32_t *src_rgbci = m_rb2->rgbci(vram_row);
+		const uint32_t *src_cidaux = m_rb2->cidaux(vram_row);
 
 		// Fetch the initial DID entry
 		uint16_t curr_did_entry = m_vc2->begin_did_line(y);
@@ -1565,6 +1752,18 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		uint8_t pix_size = (table_entry >> 10) & 3;
 		uint8_t aux_pix_mode = (table_entry >> 16) & 7;
 		uint16_t aux_msb = (table_entry >> 11) & 0x1f00;
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+		if (g_mame_sgi_lowres_seen_table_entries.find(table_entry) == g_mame_sgi_lowres_seen_table_entries.end()
+				&& g_mame_sgi_lowres_pixmode_prints < 50)
+		{
+			g_mame_sgi_lowres_seen_table_entries.insert(table_entry);
+			g_mame_sgi_lowres_pixmode_prints++;
+			osd_printf_info(
+					"MAME_SGI_LOWRES_BOOT_DIAG pixmode #%u (new table_entry): row=%d did_entry=%04x table_entry=%08x pix_mode=%u pix_size=%u aux_pix_mode=%u\n",
+					g_mame_sgi_lowres_pixmode_prints, y, curr_did_entry, table_entry,
+					pix_mode, pix_size, aux_pix_mode);
+		}
+#endif
 		uint16_t ci_msb = 0;
 		switch ((table_entry >> 8) & 3)
 		{
@@ -2028,6 +2227,14 @@ void newport_base_device::update_screen_size(int state)
 	const int y_start = m_vc2->readout_y0();
 	const int x_end = m_vc2->readout_x1();
 	const int y_end = m_vc2->readout_y1();
+
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+	g_mame_sgi_lowres_resize_calls++;
+	osd_printf_info(
+			"MAME_SGI_LOWRES_BOOT_DIAG resize #%u: readout=(%d,%d)-(%d,%d) new_size=%dx%d\n",
+			g_mame_sgi_lowres_resize_calls, x_start, y_start, x_end, y_end,
+			x_end - x_start, y_end - y_start);
+#endif
 
 	m_screen->set_size((uint16_t)(x_end - x_start), (uint16_t)(y_end - y_start));
 	m_screen->set_visarea_full();
@@ -4751,11 +4958,28 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		{
 			const uint32_t data32 = (uint32_t)(data >> 32);
 			LOGMASKED(LOG_REX3, "REX3 Top of Screen Scanline Write: %08x\n", data32);
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+			if (m_rex3.m_top_scanline != (data32 & 0x3ff))
+			{
+				osd_printf_info(
+						"MAME_SGI_LOWRES_BOOT_DIAG top_scanline changed: old=%u new=%u\n",
+						m_rex3.m_top_scanline, data32 & 0x3ff);
+			}
+#endif
 			m_rex3.m_top_scanline = data32 & 0x3ff;
 		}
 		if (ACCESSING_BITS_0_31)
 		{
 			LOGMASKED(LOG_REX3, "REX3 XY Window Write: %08x\n", (uint32_t)data);
+#ifdef MAME_SGI_LOWRES_BOOT_DIAG
+			if (m_rex3.m_xy_window != (uint32_t)data)
+			{
+				osd_printf_info(
+						"MAME_SGI_LOWRES_BOOT_DIAG xy_window changed: old=%08x new=%08x (x_window=%d y_window=%d)\n",
+						m_rex3.m_xy_window, (uint32_t)data,
+						(int)(int16_t)((uint32_t)data >> 16), (int)(int16_t)(uint32_t)data);
+			}
+#endif
 			m_rex3.m_xy_window = (uint32_t)data;
 			m_rex3.m_x_window = (int16_t)(m_rex3.m_xy_window >> 16);
 			m_rex3.m_y_window = (int16_t)m_rex3.m_xy_window;
