@@ -78,6 +78,17 @@
 
 #include "logmacro.h"
 
+// See ip24_state::rtc_host_resync()'s own comment for the full rationale.
+// Confirmed live: measured clock drift fell from 78s to 70s over a
+// ~6.4-minute test and 81s to 51s over a ~20-minute test (both real net
+// reductions, not plateaus), average speed unaffected in both. Also
+// confirmed to correct the reversed direction under -nothrottle (guest
+// gaining time instead of losing it), though doadjtime()'s bounded slew
+// rate can't fully keep up with -nothrottle's own large, host-contention-
+// dependent excess-speed bursts - not a concern for the throttled case
+// this is actually meant for. Opt-in (kept toggleable rather than made
+// unconditional), currently enabled.
+#define MAME_SGI_RTC_HOST_RESYNC
 
 namespace {
 
@@ -113,6 +124,10 @@ public:
 protected:
 	virtual void machine_start() override ATTR_COLD;
 	virtual void machine_reset() override ATTR_COLD;
+
+#ifdef MAME_SGI_RTC_HOST_RESYNC
+	TIMER_CALLBACK_MEMBER(rtc_host_resync);
+#endif
 
 	template <uint32_t addr_base> uint64_t bus_error_r(offs_t offset, uint64_t mem_mask = ~0);
 	template <uint32_t addr_base> void bus_error_w(offs_t offset, uint64_t data, uint64_t mem_mask = ~0);
@@ -162,6 +177,10 @@ protected:
 
 	uint8_t m_volume_l = 0;
 	uint8_t m_volume_r = 0;
+
+#ifdef MAME_SGI_RTC_HOST_RESYNC
+	emu_timer *m_rtc_host_resync_timer = nullptr;
+#endif
 };
 
 class ip22_state : public ip24_state
@@ -302,7 +321,57 @@ void ip24_state::machine_start()
 {
 	save_item(NAME(m_volume_l));
 	save_item(NAME(m_volume_r));
+
+#ifdef MAME_SGI_RTC_HOST_RESYNC
+	m_rtc_host_resync_timer = timer_alloc(FUNC(ip24_state::rtc_host_resync), this);
+	m_rtc_host_resync_timer->adjust(attotime::from_seconds(15), 0, attotime::from_seconds(15));
+#endif
 }
+
+#ifdef MAME_SGI_RTC_HOST_RESYNC
+TIMER_CALLBACK_MEMBER(ip24_state::rtc_host_resync)
+{
+	// MAME's DS1386 RTC model (devices/machine/ds1386.cpp) ticks its own
+	// registers off attotime (the same clock DRC compile overhead makes
+	// fall behind real time during boot - measured at ~78-97 real seconds
+	// of accumulated drift by the time login is reachable), not real host
+	// time - so a hardware RTC read and the guest kernel's own free-running
+	// software clock always agree with each other even as both drift
+	// behind reality. IRIX's kernel already has a complete, working self-
+	// correction mechanism for exactly this mismatch (irix/kern/ml/
+	// clksupport.c's onesec_maint()/chktimedrift(), which reads the
+	// hardware RTC every 32 real seconds via irix/kern/ml/IP22.c's rtodc()
+	// and smoothly slews the software clock via doadjtime() - a genuine
+	// adjtime(2)-style correction, never an abrupt jump - if they disagree
+	// by more than 2 seconds) - it just never fires here because the RTC
+	// never actually disagrees with the software clock. Periodically
+	// overwriting the RTC's registers with genuine real host wallclock
+	// (bypassing running_machine::current_datetime(), which is deliberately
+	// anchored to elapsed emulated time rather than real time, for save-
+	// state determinism) gives IRIX's own unmodified correction logic a
+	// real discrepancy to notice and fix on its own. Scoped to this driver
+	// via a periodic timer rather than changing ds1386_device's own ticking
+	// behavior, which other MAME drivers using that chip may depend on.
+	system_time live_time(::time(nullptr));
+	m_rtc->set_current_time(live_time);
+
+	// set_current_time() re-triggers device_rtc_interface::set_time()'s
+	// generic "year % 100" encoding on every call, undoing the task #98
+	// year-BCD fix below (real hardware here uses years-since-1940, not
+	// years-since-2000) every time this timer fires - confirmed live: the
+	// guest's own `date` jumped to 1996 the first time this ran, exactly
+	// matching irix/kern/ml/IP22.c's rtodc() migration heuristic
+	// (year < 45 gets reinterpreted as a pre-1940-epoch value and
+	// "upgraded"). Re-apply the correct encoding immediately after every
+	// resync, not just once at boot.
+	int const rtc_year = live_time.utc_time.year - 1940;
+	if (rtc_year >= 0 && rtc_year <= 99)
+	{
+		uint8_t const bcd_year = uint8_t(((rtc_year / 10) % 10) << 4) | uint8_t(rtc_year % 10);
+		m_rtc->set_year_bcd_direct(bcd_year);
+	}
+}
+#endif
 
 void ip24_state::machine_reset()
 {
