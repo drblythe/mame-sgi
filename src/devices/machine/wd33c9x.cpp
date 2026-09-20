@@ -1267,13 +1267,21 @@ void wd33c9x_base_device::step(bool timeout)
 		} else {
 			if(cc == COMMAND_CC_SELECT_TRANSFER) {
 				m_regs[COMMAND_PHASE] = COMMAND_PHASE_CP_BYTES_0;
-				std::string cmd;
 				for (uint8_t i = 0; i < m_command_length; ++i) {
-					const uint8_t command_byte = m_regs[CDB_1 + i];
-					cmd += util::string_format(" %02x", command_byte);
-					data_fifo_push(command_byte);
+					data_fifo_push(m_regs[CDB_1 + i]);
 				}
-				LOGMASKED(LOG_COMMANDS, "Sending command:%s (%d)\n", cmd, m_transfer_count);
+				// Building the "%02x %02x..." string cost a real
+				// heap-allocating util::string_format() call per CDB
+				// byte unconditionally, even though LOGMASKED discards
+				// the result whenever LOG_COMMANDS isn't in VERBOSE -
+				// only do that work when it can actually be observed.
+				if (VERBOSE & LOG_COMMANDS) {
+					std::string cmd;
+					for (uint8_t i = 0; i < m_command_length; ++i) {
+						cmd += util::string_format(" %02x", m_regs[CDB_1 + i]);
+					}
+					LOGMASKED(LOG_COMMANDS, "Sending command:%s (%d)\n", cmd, m_transfer_count);
+				}
 			} else
 				m_regs[COMMAND_PHASE] = COMMAND_PHASE_SELECTED;
 			set_scsi_state(INIT_XFR);
@@ -1416,13 +1424,19 @@ void wd33c9x_base_device::step(bool timeout)
 					case S_PHASE_COMMAND: {
 						next_state = INIT_XFR;
 						m_regs[COMMAND_PHASE] = COMMAND_PHASE_CP_BYTES_0;
-						std::string cmd;
 						for (uint8_t i = 0; i < m_command_length; ++i) {
-							const uint8_t command_byte = m_regs[CDB_1 + i];
-							cmd += util::string_format(" %02x", command_byte);
-							data_fifo_push(command_byte);
+							data_fifo_push(m_regs[CDB_1 + i]);
 						}
-						LOGMASKED(LOG_COMMANDS, "Sending command:%s (%d)\n", cmd, m_transfer_count);
+						// See the identical fix's comment at this same
+						// pattern's other occurrence above (DISC_SEL_
+						// ARBITRATION's COMMAND_CC_SELECT_TRANSFER case).
+						if (VERBOSE & LOG_COMMANDS) {
+							std::string cmd;
+							for (uint8_t i = 0; i < m_command_length; ++i) {
+								cmd += util::string_format(" %02x", m_regs[CDB_1 + i]);
+							}
+							LOGMASKED(LOG_COMMANDS, "Sending command:%s (%d)\n", cmd, m_transfer_count);
+						}
 						break;
 					}
 
