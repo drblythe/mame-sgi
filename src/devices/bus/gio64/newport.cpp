@@ -37,6 +37,9 @@
 #include "emu.h"
 #include "newport.h"
 
+#include "debug/debugcon.h"
+#include "debugger.h"
+
 #include <cstdarg>
 
 // Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
@@ -46,35 +49,71 @@
 // task #65 is still open, re-enable if it needs revisiting.
 // #define MAME_SGI_MOUSEFOCUS_DIAG
 
-// TEMPORARY diagnostic (task #101, 2026-09-17) - counting per-frame
-// contributions to frame_dirty (screen_update()'s own dirty gathering)
-// separately by source (rb2's real pixel writes vs vc2's cursor-position/
-// enable writes), to find why a visually-static screen (confirmed via
-// six 1-second-apart host screenshots, byte-identical) still marks dirty
-// on every single vblank (confirmed via MAME_SGI_TIMER_CALLBACK_OUTLIER_
-// DIAG cross-correlation, schedule.cpp). File-scope counters, not class
-// members - avoids the exact ODR mistake this session already made once
-// with mc.h (a conditionally-compiled member reached from multiple
-// translation units); newport.h is single-consumer here but there's no
-// reason to risk it for a throwaway counter. Time-throttled to one print
-// per real second (steady_clock-gated), not a flat count cap - a count
-// cap would exhaust during early boot's own legitimate redraw burst
-// before ever reaching the target state this diagnostic is meant to
-// observe.
-// #define MAME_SGI_DIRTY_SOURCE_DIAG
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+// Originated as a TEMPORARY diagnostic (task #101, 2026-09-17) - counting
+// per-frame contributions to frame_dirty (screen_update()'s own dirty
+// gathering) separately by source (rb2's real pixel writes vs vc2's
+// cursor-position/enable writes), to find why a visually-static screen
+// still marked dirty on every vblank. Promoted to a permanent, always-on
+// facility (task #109, 2026-09-25) after this project's own repeated
+// experience this session that a fixed sleep/settle-time heuristic before
+// sampling is not a validated proxy for "the system has reached steady
+// state" - several perf measurements this session drew conclusions from
+// windows that turned out to still be dominated by boot/login/window-
+// creation transients. These counters (now unconditionally maintained,
+// negligible cost - a handful of integer increments) are readable/
+// resettable on demand via the "sgistat" debugger console command (see
+// mame_sgi_stat_registry below and device_start()'s own registration) -
+// reachable non-interactively through gdbstub's existing "monitor"
+// passthrough (debuggdbstub.cpp bridges GDB "monitor <text>" straight to
+// debugger_console::execute_command()), so a script can explicitly
+// bracket "reset, run guest workload, dump" instead of guessing a delay.
+// File-scope counters, not class members - avoids the exact ODR mistake
+// this session already made once with mc.h (a conditionally-compiled
+// member reached from multiple translation units); newport.h is single-
+// consumer here but there's no reason to risk it. `MAME_SGI_DIRTY_SOURCE_
+// DIAG` still exists purely for the OPTIONAL once-per-second osd_printf_
+// info dump further below - off by default, unrelated to whether the
+// counters themselves are maintained (they always are now).
 #include <chrono>
 namespace {
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+	// Per-frame counters for the OPTIONAL MAME_SGI_DIRTY_SOURCE_DIAG print
+	// below only - reset to 0 every print (see that block), so NOT safe to
+	// reuse as a cumulative/triggered-interval counter. Kept exactly as
+	// this diagnostic originally used them.
 	uint64_t g_mame_sgi_dirty_pixel_writes_this_frame = 0;
 	uint64_t g_mame_sgi_dirty_cursor_calls_this_frame = 0;
+#endif
+
+	// Cumulative-since-last-"sgistat reset" counters (task #109,
+	// 2026-09-25) - separate variables from the pair above on purpose,
+	// specifically so the optional per-frame print diagnostic's own
+	// reset-every-print behavior can never zero these out from under a
+	// script that's mid-way through bracketing a measurement interval.
+	// g_mame_sgi_stat_rows_walked is the single most direct answer to "did
+	// a dirty-rect change actually reduce the compositor's own work",
+	// independent of host-side noise (guest CPU emulation, disk/net
+	// emulation, other processes) that a total host instruction/cycle
+	// count via `perf` can't separate out. See mark_dirty_for_xmap_slot()/
+	// screen_update()'s own row-range-building code for where these
+	// increment.
+	uint64_t g_mame_sgi_stat_pixel_writes = 0;
+	uint64_t g_mame_sgi_stat_cursor_calls = 0;
+	uint64_t g_mame_sgi_stat_rows_walked = 0;
+	uint64_t g_mame_sgi_stat_screen_update_recomputes = 0;
+	uint64_t g_mame_sgi_stat_screen_update_skips = 0;
+	uint64_t g_mame_sgi_stat_mark_full_dirty_calls = 0;
+	uint64_t g_mame_sgi_stat_mark_xmap_slot_calls = 0;
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	// Time-throttled (one print per real second), not count-capped - a
 	// flat count cap would exhaust itself during early boot's own
 	// legitimate dirty activity (PROM/kernel text, real redraws) long
 	// before ever reaching the specific later state under investigation
 	// (a supposedly-static GUI login screen, many boot-seconds in).
 	std::chrono::steady_clock::time_point g_mame_sgi_dirty_diag_next_print{};
-}
 #endif
+}
+// #define MAME_SGI_DIRTY_SOURCE_DIAG
 
 // TEMPORARY diagnostic (2026-09-18) - answers two concrete questions
 // about a reported low-resolution-fallback display issue (booting with
@@ -704,6 +743,7 @@ void vc2_device::deserialize(FILE *file)
 
 void vc2_device::mark_cursor_dirty()
 {
+	g_mame_sgi_stat_cursor_calls++;
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	g_mame_sgi_dirty_cursor_calls_this_frame++;
 #endif
@@ -1418,6 +1458,7 @@ void rb2_device::store_pixel(uint32_t value)
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
 	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
+	g_mame_sgi_stat_pixel_writes++;
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	g_mame_sgi_dirty_pixel_writes_this_frame++;
 #endif
@@ -1460,6 +1501,32 @@ gio64_xl24_device::gio64_xl24_device(const machine_config &mconfig, const char *
 void newport_base_device::device_start()
 {
 	m_dcb_timeout_timer = timer_alloc(FUNC(newport_base_device::dcb_timeout_tick), this);
+
+	// Triggered stat-counter registry (task #109, 2026-09-25) - see
+	// mame_sgi_stat_registry's own comment in newport.h for the full
+	// rationale. Counter registration always happens (cheap, and lets
+	// "sgistat dump" work even without -debug, if ever called some other
+	// way in the future); the debugger command itself is only registered
+	// once (guarded - register_command isn't meant to be called twice for
+	// the same name) and only when a debugger is actually attached.
+	mame_sgi_stat_registry::instance().register_counter("newport.pixel_writes", &g_mame_sgi_stat_pixel_writes);
+	mame_sgi_stat_registry::instance().register_counter("newport.cursor_calls", &g_mame_sgi_stat_cursor_calls);
+	mame_sgi_stat_registry::instance().register_counter("newport.rows_walked", &g_mame_sgi_stat_rows_walked);
+	mame_sgi_stat_registry::instance().register_counter("newport.screen_update_recomputes", &g_mame_sgi_stat_screen_update_recomputes);
+	mame_sgi_stat_registry::instance().register_counter("newport.screen_update_skips", &g_mame_sgi_stat_screen_update_skips);
+	mame_sgi_stat_registry::instance().register_counter("newport.mark_full_dirty_calls", &g_mame_sgi_stat_mark_full_dirty_calls);
+	mame_sgi_stat_registry::instance().register_counter("newport.mark_xmap_slot_calls", &g_mame_sgi_stat_mark_xmap_slot_calls);
+	if (machine().debug_flags & DEBUG_FLAG_ENABLED)
+	{
+		static bool s_sgistat_command_registered = false;
+		if (!s_sgistat_command_registered)
+		{
+			s_sgistat_command_registered = true;
+			machine().debugger().console().register_command(
+					"sgistat", CMDFLAG_NONE, 1, 2,
+					std::bind(&newport_base_device::sgistat_command, this, std::placeholders::_1));
+		}
+	}
 
 	save_item(NAME(m_rex3.m_draw_mode0));
 	save_item(NAME(m_rex3.m_color_host));
@@ -1554,6 +1621,7 @@ void newport_base_device::device_start()
 
 void newport_base_device::mark_full_dirty()
 {
+	g_mame_sgi_stat_mark_full_dirty_calls++;
 #ifdef MAME_SGI_DIRTY_RECT_SMALLRECT_EXPERIMENT
 	m_pending_dirty.add_rect(0, 0, 400 - 1, 400 - 1);
 #else
@@ -1564,6 +1632,7 @@ void newport_base_device::mark_full_dirty()
 
 void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
 {
+	g_mame_sgi_stat_mark_xmap_slot_calls++;
 	const uint32_t bit = 1u << (slot & 0x1f);
 	int y0 = -1, y1 = -1;
 	for (int y = 0; y < 1088; y++)
@@ -1604,6 +1673,29 @@ void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
 	{
 		m_pending_dirty.add_rect(0, y0, 1280 + 64 - 1, y1);
 		m_dirty_hold_frames = 2;
+	}
+}
+
+void newport_base_device::sgistat_command(const std::vector<std::string_view> &params)
+{
+	auto &console = machine().debugger().console();
+	if (params[0] == "reset")
+	{
+		mame_sgi_stat_registry::instance().reset_all();
+		console.printf("sgistat: all counters reset to 0\n");
+	}
+	else if (params[0] == "dump")
+	{
+		const std::string filter = (params.size() > 1) ? std::string(params[1]) : std::string();
+		mame_sgi_stat_registry::instance().for_each([&](const char *name, uint64_t value)
+		{
+			if (filter.empty() || filter == name)
+				console.printf("%s=%llu\n", name, (unsigned long long)value);
+		});
+	}
+	else
+	{
+		console.printf("usage: sgistat reset | sgistat dump [name]\n");
 	}
 }
 
@@ -1798,9 +1890,11 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// Nothing pending, both buffers already in sync - tell MAME's own
 		// frame_update()/finish_screen_updates() machinery this call
 		// didn't change anything, so it can skip the OSD blit too.
+		g_mame_sgi_stat_screen_update_skips++;
 		mame_sgi_result = UPDATE_HAS_NOT_CHANGED;
 		goto mame_sgi_composite_done;
 	}
+	g_mame_sgi_stat_screen_update_recomputes++;
 #ifdef MAME_SGI_MOUSEFOCUS_DIAG
 	osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() proceeding with recompute, m_dirty_hold_frames=%d\n", m_dirty_hold_frames);
 #endif
@@ -1962,6 +2056,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	const int row_start_y = row_ranges[range_idx].y0;
 	const int row_end_y = row_ranges[range_idx].y1;
 	const int sy_offset = row_start_y - cliprect.min_y;
+	g_mame_sgi_stat_rows_walked += uint64_t(row_end_y - row_start_y + 1);
 
 	/* loop over rows and copy to the destination */
 	for (int y = row_start_y, sy = y_start + sy_offset; y <= row_end_y && sy < y_end; y++, sy++)

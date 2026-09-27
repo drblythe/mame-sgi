@@ -147,6 +147,73 @@ private:
 
 /*************************************
  *
+ *  Triggered stat-counter registry
+ *
+ *************************************/
+
+// Named-counter registry for triggered measurement (task #109,
+// 2026-09-25). Motivation: this project repeatedly drew wrong
+// conclusions from perf/diagnostic windows that turned out to still be
+// dominated by boot/login/window-creation transients, because a fixed
+// sleep/settle delay was treated as a validated proxy for "the system
+// has reached steady state" - it wasn't. This lets a script (or a human,
+// via gdb in interactive use) explicitly bracket an interval instead of
+// guessing a delay: reset the counters right when the interval should
+// start, run the guest workload, dump them right when it should end.
+//
+// Reached via the "sgistat" debugger console command (see
+// newport_base_device::device_start() for registration, following
+// sun4c_mmu.cpp's own established device-level pattern of
+// machine().debugger().console().register_command(), gated on
+// DEBUG_FLAG_ENABLED) - and in turn reachable non-interactively without
+// an interactive debugger window, because MAME's own gdbstub backend
+// (src/osd/modules/debugger/debuggdbstub.cpp) bridges GDB's "monitor
+// <text>" command straight to debugger_console::execute_command(). A
+// script can launch with "-debug -debugger gdbstub" (already supported
+// by this project's own boot_test.sh) and drive it with e.g.
+// `gdb -batch -ex "target remote :PORT" -ex "monitor sgistat reset"`.
+//
+// Deliberately separate from MAME's own save_item()/device_state_
+// interface machinery - those serve save-states and CPU-register-style
+// debugger views, a different purpose from this. newport.cpp is this
+// registry's first consumer; kept generic (name -> counter pointer) on
+// purpose so a second subsystem (e.g. a future MIPS3/DRC measurement)
+// can register its own counters into the SAME "sgistat" command without
+// newport.cpp changing at all.
+class mame_sgi_stat_registry
+{
+public:
+	static mame_sgi_stat_registry &instance()
+	{
+		static mame_sgi_stat_registry inst;
+		return inst;
+	}
+
+	void register_counter(const char *name, uint64_t *counter)
+	{
+		m_counters.emplace_back(name, counter);
+	}
+
+	void reset_all()
+	{
+		for (auto &entry : m_counters)
+			*entry.second = 0;
+	}
+
+	template <typename Sink>
+	void for_each(Sink &&sink) const
+	{
+		for (auto &entry : m_counters)
+			sink(entry.first, *entry.second);
+	}
+
+private:
+	std::vector<std::pair<const char *, uint64_t *>> m_counters;
+};
+
+
+/*************************************
+ *
  *  XMAP9 Device
  *
  *************************************/
@@ -691,6 +758,10 @@ protected:
 	// which revisits every row and keeps m_row_xmap_slot_mask in sync
 	// before that new reference could ever be missed. See wiki task #109.
 	void mark_dirty_for_xmap_slot(uint8_t slot);
+
+	// "sgistat reset" / "sgistat dump [name]" debugger console command -
+	// see mame_sgi_stat_registry's own comment for the full rationale.
+	void sgistat_command(const std::vector<std::string_view> &params);
 
 	required_device<screen_device> m_screen;
 	required_device_array<xmap9_device, 2> m_xmap;
