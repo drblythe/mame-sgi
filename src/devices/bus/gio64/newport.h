@@ -26,50 +26,122 @@
  *
  *************************************/
 
-// Bounding-box dirty-region tracker for the Newport compositor. Currently
-// a single running rectangle - the cheapest possible correct
-// implementation - kept behind this narrow add_rect()/valid()/clear()
-// interface specifically so it can later grow into a small fixed-size
-// list of disjoint rectangles with overlap/proximity merging without any
-// caller needing to change. That extension matters for realistic desktop
-// use: an independently-moving cursor plus separately-updating windows
-// can produce widely-separated dirty regions that a single bbox coalesces
-// into something close to the whole screen, which a small-N rect list
-// would keep tight.
+// Small fixed-size (MAX_RECTS) list of disjoint-ish rectangles tracking
+// the Newport compositor's dirty region. Was a single running bounding
+// box until task #109 (2026-09-25) measured why that was costing real
+// precision: an independently-moving cursor plus separately-updating
+// windows produce widely-separated dirty regions that a single bbox
+// coalesces into something close to the whole screen - confirmed live,
+// not just theorized (see wiki task #109's row for the perf-record
+// trace that found this). Kept behind the same narrow add_rect()/
+// valid()/clear() interface every caller already used, so rb2_device,
+// vc2_device, and newport_base_device's own compositor all benefit
+// without their own call sites changing shape - only the few sites that
+// need to iterate per-rect (the rb2_dirty->frame_dirty top_scanline
+// conversion, and screen_update()'s own row-range loop) were touched.
+//
+// add_rect() always GROWS an existing slot or a fresh one - it never
+// shrinks or drops coverage. When a new rect doesn't overlap/touch any
+// existing slot and the list is already full, it folds into whichever
+// existing slot costs the least extra area to absorb it (never invents
+// a 5th slot, never discards the new rect) - this can occasionally merge
+// two regions that didn't need to be merged (a missed optimization, safe
+// by construction) but can never under-mark a pixel that needs recompute
+// (which would be a real, visible correctness bug). x0()/y0()/x1()/y1()
+// remain as an aggregate bounding box across every slot, for callers
+// that only ever wanted coarse bounds (unchanged from the single-bbox
+// era) - real per-rect consumers use count()/rect(i) instead.
 class newport_dirty_rect
 {
 public:
+	static constexpr int MAX_RECTS = 4;
+
+	struct rect_t { int x0, y0, x1, y1; };
+
 	void add_rect(int x0, int y0, int x1, int y1)
 	{
-		if (!m_valid)
+		if (m_count == 0)
 		{
-			m_x0 = x0; m_y0 = y0; m_x1 = x1; m_y1 = y1;
-			m_valid = true;
+			m_rects[0] = { x0, y0, x1, y1 };
+			m_count = 1;
 			return;
 		}
-		if (x0 < m_x0) m_x0 = x0;
-		if (y0 < m_y0) m_y0 = y0;
-		if (x1 > m_x1) m_x1 = x1;
-		if (y1 > m_y1) m_y1 = y1;
+		for (int i = 0; i < m_count; i++)
+		{
+			if (overlaps_or_touches(m_rects[i], x0, y0, x1, y1))
+			{
+				grow(m_rects[i], x0, y0, x1, y1);
+				return;
+			}
+		}
+		if (m_count < MAX_RECTS)
+		{
+			m_rects[m_count++] = { x0, y0, x1, y1 };
+			return;
+		}
+		int best = 0;
+		int64_t best_cost = merge_cost(m_rects[0], x0, y0, x1, y1);
+		for (int i = 1; i < m_count; i++)
+		{
+			const int64_t cost = merge_cost(m_rects[i], x0, y0, x1, y1);
+			if (cost < best_cost)
+			{
+				best_cost = cost;
+				best = i;
+			}
+		}
+		grow(m_rects[best], x0, y0, x1, y1);
 	}
 
 	void add_rect(const newport_dirty_rect &other)
 	{
-		if (other.m_valid)
-			add_rect(other.m_x0, other.m_y0, other.m_x1, other.m_y1);
+		for (int i = 0; i < other.m_count; i++)
+			add_rect(other.m_rects[i].x0, other.m_rects[i].y0, other.m_rects[i].x1, other.m_rects[i].y1);
 	}
 
-	bool valid() const { return m_valid; }
-	int x0() const { return m_x0; }
-	int y0() const { return m_y0; }
-	int x1() const { return m_x1; }
-	int y1() const { return m_y1; }
+	bool valid() const { return m_count > 0; }
+	int count() const { return m_count; }
+	const rect_t &rect(int i) const { return m_rects[i]; }
 
-	void clear() { m_valid = false; }
+	int x0() const { int v = m_rects[0].x0; for (int i = 1; i < m_count; i++) v = std::min(v, m_rects[i].x0); return v; }
+	int y0() const { int v = m_rects[0].y0; for (int i = 1; i < m_count; i++) v = std::min(v, m_rects[i].y0); return v; }
+	int x1() const { int v = m_rects[0].x1; for (int i = 1; i < m_count; i++) v = std::max(v, m_rects[i].x1); return v; }
+	int y1() const { int v = m_rects[0].y1; for (int i = 1; i < m_count; i++) v = std::max(v, m_rects[i].y1); return v; }
+
+	void clear() { m_count = 0; }
 
 private:
-	bool m_valid = false;
-	int m_x0 = 0, m_y0 = 0, m_x1 = 0, m_y1 = 0;
+	// "Touching" (a shared edge, zero-pixel gap) counts as overlap too -
+	// the +1 slack avoids leaving e.g. a cursor at column 99 right next
+	// to a window starting at column 100 as two separate slots when
+	// they're effectively one contiguous region.
+	static bool overlaps_or_touches(const rect_t &r, int x0, int y0, int x1, int y1)
+	{
+		return x0 <= r.x1 + 1 && x1 >= r.x0 - 1 && y0 <= r.y1 + 1 && y1 >= r.y0 - 1;
+	}
+
+	static void grow(rect_t &r, int x0, int y0, int x1, int y1)
+	{
+		if (x0 < r.x0) r.x0 = x0;
+		if (y0 < r.y0) r.y0 = y0;
+		if (x1 > r.x1) r.x1 = x1;
+		if (y1 > r.y1) r.y1 = y1;
+	}
+
+	static int64_t area(const rect_t &r)
+	{
+		return int64_t(r.x1 - r.x0 + 1) * int64_t(r.y1 - r.y0 + 1);
+	}
+
+	static int64_t merge_cost(const rect_t &r, int x0, int y0, int x1, int y1)
+	{
+		rect_t u = r;
+		grow(u, x0, y0, x1, y1);
+		return area(u) - area(r);
+	}
+
+	int m_count = 0;
+	rect_t m_rects[MAX_RECTS]{};
 };
 
 

@@ -157,6 +157,31 @@ namespace {
 // following up on directly).
 // #define MAME_SGI_XMAP_SLOT_RANGE_DIAG
 
+// TEMPORARY diagnostic (task #109, 2026-09-25) - NOT a real fix. Prints
+// the actual row_start_y/row_end_y screen_update() uses for a real
+// recompute (see that function's own comment) - checks whether some
+// OTHER dirty-rect contribution (rb2_dirty from real pixel draws, or the
+// vc2/cursor path - both merged into m_pending_dirty every frame via
+// frame_dirty, independent of the XMAP fix) is unioning in a broader
+// range than mark_dirty_for_xmap_slot()'s own confirmed-narrow
+// contribution. Follows up directly on a perf-record profile showing
+// screen_update()'s self-time share unchanged between the pre-fix
+// baseline and the real fix despite the fix's own row-range being
+// independently confirmed tight - see wiki task #109.
+// #define MAME_SGI_ROW_RANGE_USED_DIAG
+
+// TEMPORARY diagnostic (task #109, 2026-09-25) - NOT a real fix. Prints a
+// running histogram, once/second, of how many distinct dirty rects
+// m_pending_dirty actually holds per real recompute (0 = full-recompute
+// fallback, i.e. m_pending_dirty wasn't valid this call). Answers a
+// concrete question before committing to the N=4 choice: for a realistic
+// desktop workload (test/wave.cpp -db plus whatever else is on screen -
+// a blinking cursor, at minimum), how many separate regions actually
+// show up in practice? If real workloads rarely exceed 2, MAX_RECTS=4
+// has real headroom; if they regularly hit 4 (and therefore the fold-
+// into-cheapest-slot fallback), that's a sign MAX_RECTS should grow.
+// #define MAME_SGI_RECT_COUNT_STATS_DIAG
+
 #ifdef MAME_SGI_LOWRES_BOOT_DIAG
 #include <unordered_set>
 namespace {
@@ -1710,12 +1735,19 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// erase/redraw box whenever it - not a pixel write - ends up
 		// deciding the merged rectangle's bounds, producing exactly the
 		// "stale pointer image / delayed position update" seen live.
+		// Converted per-rect, not via rb2_dirty's own aggregate x0()/y0()/
+		// x1()/y1() - task #109's N-rect upgrade (2026-09-25) means
+		// rb2_dirty can hold multiple disjoint regions (e.g. wave's own
+		// window plus an unrelated desktop element drawing elsewhere at
+		// the same time); converting the AGGREGATE bbox instead of each
+		// rect individually would re-coalesce them right back into one
+		// wide box here, throwing away exactly the precision the N-rect
+		// list exists to keep.
 		const newport_dirty_rect &rb2_dirty = m_rb2->dirty();
-		if (rb2_dirty.valid())
+		for (int i = 0; i < rb2_dirty.count(); i++)
 		{
-			frame_dirty.add_rect(
-					rb2_dirty.x0(), std::max(rb2_dirty.y0() - top_scanline, 0),
-					rb2_dirty.x1(), rb2_dirty.y1() - top_scanline);
+			const auto &r = rb2_dirty.rect(i);
+			frame_dirty.add_rect(r.x0, std::max(r.y0 - top_scanline, 0), r.x1, r.y1 - top_scanline);
 		}
 		frame_dirty.add_rect(m_vc2->dirty());
 		m_rb2->clear_dirty();
@@ -1843,15 +1875,92 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// rectangle), and the vc2/cursor-sourced contribution was bitmap-
 	// relative from the start. No further conversion needed - used
 	// directly as bitmap-row bounds.
-	int row_start_y = cliprect.min_y;
-	int row_end_y = cliprect.max_y;
+	// Row ranges to walk this recompute - one per disjoint dirty rect
+	// (task #109's N-rect upgrade, 2026-09-25: m_pending_dirty can now
+	// hold up to newport_dirty_rect::MAX_RECTS separate regions instead
+	// of always coalescing into one bounding box), each intersected with
+	// cliprect. Gaps between ranges (e.g. an unrelated desktop element
+	// updating far from the app actually being redrawn) are skipped
+	// entirely rather than walked and thrown away.
+	struct row_range_t { int y0, y1; };
+	row_range_t row_ranges[newport_dirty_rect::MAX_RECTS];
+	int num_row_ranges = 0;
 #ifndef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
 	if (m_pending_dirty.valid())
 	{
-		if (m_pending_dirty.y0() > row_start_y) row_start_y = m_pending_dirty.y0();
-		if (m_pending_dirty.y1() < row_end_y) row_end_y = m_pending_dirty.y1();
+		for (int i = 0; i < m_pending_dirty.count(); i++)
+		{
+			const auto &r = m_pending_dirty.rect(i);
+			const int ry0 = std::max(r.y0, cliprect.min_y);
+			const int ry1 = std::min(r.y1, cliprect.max_y);
+			if (ry0 <= ry1)
+				row_ranges[num_row_ranges++] = { ry0, ry1 };
+		}
+	}
+	else
+	{
+		row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y };
+	}
+#else
+	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y };
+#endif
+#ifdef MAME_SGI_RECT_COUNT_STATS_DIAG
+	{
+		static uint64_t g_mame_sgi_rect_count_histogram[newport_dirty_rect::MAX_RECTS + 1] = {};
+		static std::chrono::steady_clock::time_point g_mame_sgi_rect_count_next_print{};
+		const int bucket = m_pending_dirty.valid() ? std::min(m_pending_dirty.count(), newport_dirty_rect::MAX_RECTS) : 0;
+		g_mame_sgi_rect_count_histogram[bucket]++;
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= g_mame_sgi_rect_count_next_print)
+		{
+			g_mame_sgi_rect_count_next_print = now + std::chrono::seconds(1);
+			osd_printf_info("MAME_SGI_RECT_COUNT_STATS_DIAG histogram[fallback=0,1,2,3,4]=[%llu,%llu,%llu,%llu,%llu]\n",
+					(unsigned long long)g_mame_sgi_rect_count_histogram[0],
+					(unsigned long long)g_mame_sgi_rect_count_histogram[1],
+					(unsigned long long)g_mame_sgi_rect_count_histogram[2],
+					(unsigned long long)g_mame_sgi_rect_count_histogram[3],
+					(unsigned long long)g_mame_sgi_rect_count_histogram[4]);
+		}
 	}
 #endif
+#ifdef MAME_SGI_ROW_RANGE_USED_DIAG
+	// TEMPORARY diagnostic (task #109, 2026-09-25) - NOT a real fix, just
+	// visibility. Prints the ACTUAL row range(s) this recompute is about
+	// to walk, once/second throughout the whole run (matching
+	// MAME_SGI_RECT_COUNT_STATS_DIAG's own time-throttled design) - NOT a
+	// "first N prints from boot" count. That was this diagnostic's first
+	// version's real bug (2026-09-25): screen_update() runs continuously
+	// from early boot, so a "first 40 real recomputes" budget could be
+	// entirely exhausted during login-screen rendering, desktop/toolchest
+	// icons appearing, or the app's own window being created - all
+	// legitimately-broad transient activity - well before the actual
+	// steady-state swap this diagnostic meant to characterize ever
+	// started. Sampling continuously across the whole run instead avoids
+	// front-loading on whatever happens to occur first.
+	{
+		static std::chrono::steady_clock::time_point g_mame_sgi_row_range_used_diag_next_print{};
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= g_mame_sgi_row_range_used_diag_next_print)
+		{
+			g_mame_sgi_row_range_used_diag_next_print = now + std::chrono::seconds(1);
+			for (int i = 0; i < num_row_ranges; i++)
+			{
+				osd_printf_info("MAME_SGI_ROW_RANGE_USED_DIAG rect=%d/%d row_start_y=%d row_end_y=%d span=%d cliprect=[%d,%d]\n",
+						i, num_row_ranges, row_ranges[i].y0, row_ranges[i].y1,
+						row_ranges[i].y1 - row_ranges[i].y0 + 1, cliprect.min_y, cliprect.max_y);
+			}
+		}
+	}
+#endif
+
+	// Deliberately NOT re-indenting the row loop's own (large) body below
+	// for this outer wrap - keeps this change's diff reviewable. The
+	// outer loop just repeats the same per-row work for each disjoint
+	// range instead of one contiguous sweep.
+	for (int range_idx = 0; range_idx < num_row_ranges; range_idx++)
+	{
+	const int row_start_y = row_ranges[range_idx].y0;
+	const int row_end_y = row_ranges[range_idx].y1;
 	const int sy_offset = row_start_y - cliprect.min_y;
 
 	/* loop over rows and copy to the destination */
@@ -2141,6 +2250,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		if (y >= 0 && y < 1088)
 			m_row_xmap_slot_mask[y] = row_xmap_mask;
 	}
+	} // end of "for (int range_idx ...)" - see its own opening comment
 
 	if (mame_sgi_last_held_frame)
 		m_pending_dirty.clear();
