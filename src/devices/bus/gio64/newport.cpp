@@ -75,6 +75,7 @@
 // info dump further below - off by default, unrelated to whether the
 // counters themselves are maintained (they always are now).
 #include <chrono>
+// #define MAME_SGI_PENDING_RECTS_DIAG
 namespace {
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	// Per-frame counters for the OPTIONAL MAME_SGI_DIRTY_SOURCE_DIAG print
@@ -97,6 +98,10 @@ namespace {
 	// count via `perf` can't separate out. See mark_dirty_for_xmap_slot()/
 	// screen_update()'s own row-range-building code for where these
 	// increment.
+#ifdef MAME_SGI_PENDING_RECTS_DIAG
+	bool g_pr_print = false;
+	std::chrono::steady_clock::time_point g_pr_next{};
+#endif
 	uint64_t g_mame_sgi_stat_pixel_writes = 0;
 	uint64_t g_mame_sgi_stat_cursor_calls = 0;
 	uint64_t g_mame_sgi_stat_rows_walked = 0;
@@ -1619,6 +1624,10 @@ void newport_base_device::device_start()
 	save_item(NAME(m_ramdac_lut_index));
 }
 
+//-------------------------------------------------
+//  device_reset - device-specific reset
+//-------------------------------------------------
+
 void newport_base_device::mark_full_dirty()
 {
 	g_mame_sgi_stat_mark_full_dirty_calls++;
@@ -1627,7 +1636,6 @@ void newport_base_device::mark_full_dirty()
 #else
 	m_pending_dirty.add_rect(0, 0, 1280 + 64 - 1, 1024 + 64 - 1);
 #endif
-	m_dirty_hold_frames = 2;
 }
 
 void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
@@ -1672,7 +1680,6 @@ void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
 	if (y0 >= 0)
 	{
 		m_pending_dirty.add_rect(0, y0, 1280 + 64 - 1, y1);
-		m_dirty_hold_frames = 2;
 	}
 }
 
@@ -1699,10 +1706,6 @@ void newport_base_device::sgistat_command(const std::vector<std::string_view> &p
 	}
 }
 
-//-------------------------------------------------
-//  device_reset - device-specific reset
-//-------------------------------------------------
-
 void newport_base_device::device_reset()
 {
 	memset(&m_rex3, 0, sizeof(rex3_t));
@@ -1724,7 +1727,7 @@ void newport_base_device::device_reset()
 	// settled yet at reset time.
 	m_pending_dirty.clear();
 	m_pending_dirty.add_rect(0, 0, 1280 + 64 - 1, 1024 + 64 - 1);
-	m_dirty_hold_frames = 2;
+	m_prev_dirty.clear();
 
 #if ENABLE_NEWVIEW_LOG
 	m_newview_log = nullptr;
@@ -1836,6 +1839,18 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// wide box here, throwing away exactly the precision the N-rect
 		// list exists to keep.
 		const newport_dirty_rect &rb2_dirty = m_rb2->dirty();
+#ifdef MAME_SGI_PENDING_RECTS_DIAG
+		g_pr_print = false;
+		if (rb2_dirty.valid() && std::chrono::steady_clock::now() >= g_pr_next)
+		{
+			g_pr_next = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+			g_pr_print = true;
+			osd_printf_info("PENDING_RECTS_DIAG top_scanline=%d rb2 raw n=%d:", top_scanline, rb2_dirty.count());
+			for (int i = 0; i < rb2_dirty.count(); i++)
+				osd_printf_info(" (%d,%d)-(%d,%d)", rb2_dirty.rect(i).x0, rb2_dirty.rect(i).y0, rb2_dirty.rect(i).x1, rb2_dirty.rect(i).y1);
+			osd_printf_info(" vc2=%s\n", m_vc2->dirty().valid() ? "valid" : "none");
+		}
+#endif
 		for (int i = 0; i < rb2_dirty.count(); i++)
 		{
 			const auto &r = rb2_dirty.rect(i);
@@ -1848,10 +1863,9 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		if (frame_dirty.valid())
 		{
 #ifdef MAME_SGI_MOUSEFOCUS_DIAG
-			osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() frame_dirty.valid()=true, setting m_dirty_hold_frames=2\n");
+			osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() frame_dirty.valid()=true\n");
 #endif
 			m_pending_dirty.add_rect(frame_dirty);
-			m_dirty_hold_frames = 2;
 		}
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 		if (frame_dirty.valid())
@@ -1885,7 +1899,16 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 #else
 	constexpr bool mame_sgi_force_full_recompute = false;
 #endif
-	if (!mame_sgi_force_full_recompute && m_dirty_hold_frames <= 0)
+	// This frame's region to refresh: fresh dirt plus what the previous
+	// call consumed (see m_prev_dirty's comment). Consumed here, before
+	// the skip decision, so a skipped frame correctly leaves nothing
+	// carried over.
+	newport_dirty_rect walk_dirty = m_pending_dirty;
+	walk_dirty.add_rect(m_prev_dirty);
+	m_prev_dirty = m_pending_dirty;
+	m_pending_dirty.clear();
+
+	if (!mame_sgi_force_full_recompute && !walk_dirty.valid())
 	{
 		// Nothing pending, both buffers already in sync - tell MAME's own
 		// frame_update()/finish_screen_updates() machinery this call
@@ -1895,22 +1918,8 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		goto mame_sgi_composite_done;
 	}
 	g_mame_sgi_stat_screen_update_recomputes++;
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-	osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() proceeding with recompute, m_dirty_hold_frames=%d\n", m_dirty_hold_frames);
-#endif
-	m_dirty_hold_frames--;
 
 	{
-	// Once this was the last held frame, m_pending_dirty must be cleared
-	// (below, after actually using it for this recompute) rather than
-	// left sitting around - otherwise a later, completely unrelated dirty
-	// episode would union onto this stale, already-fully-resolved
-	// rectangle instead of starting fresh, and the tracked region would
-	// only ever grow across the whole session instead of staying tight.
-	// Declared inside this block (not right after the decrement above)
-	// so the early-exit goto above it never jumps over its initialization.
-	const bool mame_sgi_last_held_frame = (m_dirty_hold_frames == 0);
-
 	const uint16_t cursor_msb = (uint16_t)m_xmap[0]->cursor_cmap() << 5;
 	const uint16_t popup_msb = (uint16_t)m_xmap[0]->popup_cmap() << 5;
 	const uint32_t *palette = m_cmap[0]->palette_base();
@@ -1980,11 +1989,11 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	row_range_t row_ranges[newport_dirty_rect::MAX_RECTS];
 	int num_row_ranges = 0;
 #ifndef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
-	if (m_pending_dirty.valid())
+	if (walk_dirty.valid())
 	{
-		for (int i = 0; i < m_pending_dirty.count(); i++)
+		for (int i = 0; i < walk_dirty.count(); i++)
 		{
-			const auto &r = m_pending_dirty.rect(i);
+			const auto &r = walk_dirty.rect(i);
 			const int ry0 = std::max(r.y0, cliprect.min_y);
 			const int ry1 = std::min(r.y1, cliprect.max_y);
 			if (ry0 <= ry1)
@@ -1998,11 +2007,21 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 #else
 	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y };
 #endif
+#ifdef MAME_SGI_PENDING_RECTS_DIAG
+	if (g_pr_print)
+	{
+		g_pr_print = false;
+		osd_printf_info("PENDING_RECTS_DIAG pending valid=%d n=%d:", walk_dirty.valid(), walk_dirty.count());
+		for (int i = 0; i < walk_dirty.count(); i++)
+			osd_printf_info(" (%d,%d)-(%d,%d)", walk_dirty.rect(i).x0, walk_dirty.rect(i).y0, walk_dirty.rect(i).x1, walk_dirty.rect(i).y1);
+		osd_printf_info("\n");
+	}
+#endif
 #ifdef MAME_SGI_RECT_COUNT_STATS_DIAG
 	{
 		static uint64_t g_mame_sgi_rect_count_histogram[newport_dirty_rect::MAX_RECTS + 1] = {};
 		static std::chrono::steady_clock::time_point g_mame_sgi_rect_count_next_print{};
-		const int bucket = m_pending_dirty.valid() ? std::min(m_pending_dirty.count(), newport_dirty_rect::MAX_RECTS) : 0;
+		const int bucket = walk_dirty.valid() ? std::min(walk_dirty.count(), newport_dirty_rect::MAX_RECTS) : 0;
 		g_mame_sgi_rect_count_histogram[bucket]++;
 		const auto now = std::chrono::steady_clock::now();
 		if (now >= g_mame_sgi_rect_count_next_print)
@@ -2047,6 +2066,21 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	}
 #endif
 
+	// X range deliberately stays the full cliprect width for now: the DID
+	// mode-table walk below (begin_did_line()/next_did_line_entry()) can
+	// only be walked forward from a row's start, not seeked to an
+	// arbitrary starting column, so a real per-row x-clip needs that
+	// walker extended first - left for task #4, which already wants to
+	// restructure this loop around DID runs.
+	//
+	// m_pending_dirty is already bitmap-relative by this point - the
+	// rb2-sourced contribution was converted from raw VRAM rows at the
+	// point it was merged in above (see that block's own comment for why
+	// that has to happen before the merge, not here on the combined
+	// rectangle), and the vc2/cursor-sourced contribution was bitmap-
+	// relative from the start. No further conversion needed - used
+	// directly as bitmap-row bounds.
+	//
 	// Deliberately NOT re-indenting the row loop's own (large) body below
 	// for this outer wrap - keeps this change's diff reviewable. The
 	// outer loop just repeats the same per-row work for each disjoint
@@ -2347,8 +2381,6 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	}
 	} // end of "for (int range_idx ...)" - see its own opening comment
 
-	if (mame_sgi_last_held_frame)
-		m_pending_dirty.clear();
 	}
 
 mame_sgi_composite_done:

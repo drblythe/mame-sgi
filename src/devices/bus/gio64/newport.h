@@ -730,8 +730,8 @@ protected:
 
 	void ramdac_remap(uint32_t *dest);
 
-	// Marks the whole visible framebuffer region dirty and resets the
-	// hold-frame counter (see m_pending_dirty/m_dirty_hold_frames below).
+	// Marks the whole visible framebuffer region dirty (see
+	// m_pending_dirty below).
 	// Used for register-level state changes that alter how already-
 	// resident VRAM data gets interpreted/displayed without themselves
 	// going through store_pixel(), the only other source of dirty-rect
@@ -775,18 +775,21 @@ protected:
 	uint8_t m_ramdac_lut_index;
 
 	// Dirty-region tracking for screen_update() (see newport_dirty_rect).
-	// m_pending_dirty is the region actually applied on the current
-	// recompute; m_dirty_hold_frames requires 2 consecutive real
-	// recomputes before a skip is allowed, so MAME's own screen_device
-	// double buffering (m_bitmap[2], toggled every frame regardless of
-	// skip status) gets both buffers refreshed before going idle - the
-	// same fix the earlier crude whole-board experiment needed for the
-	// same reason, just applied to a real rectangle instead of a bool.
-	// Starts dirty (full screen, 2 held frames) so the first frames
-	// after boot/reset always do a real recompute rather than assuming
-	// unknown initial framebuffer content matches a blank bitmap.
+	// m_pending_dirty accumulates everything dirtied since the previous
+	// screen_update() call (register-level marks plus each frame's
+	// framebuffer/cursor contributions); m_prev_dirty is what the
+	// previous call itself consumed. MAME's screen_device double-buffers
+	// its bitmap (m_bitmap[2], toggled every frame regardless of skip
+	// status), so the buffer being drawn into this frame is two frames
+	// stale: the region to refresh is exactly this frame's fresh dirt
+	// unioned with the previous frame's. Nothing accumulates beyond
+	// those two frames, so continuous drawing stays as tight as the
+	// drawing itself rather than growing into a permanent union.
+	// Starts full-screen so the first frames after boot/reset always do
+	// a real recompute rather than assuming unknown initial framebuffer
+	// content matches a blank bitmap.
 	newport_dirty_rect m_pending_dirty;
-	int m_dirty_hold_frames = 2;
+	newport_dirty_rect m_prev_dirty;
 
 	// Bitmask (bit N = slot N) of which XMAP9 mode-table slots each
 	// bitmap row's DID chain referenced, as of the most recent
