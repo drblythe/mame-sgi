@@ -109,6 +109,21 @@ namespace {
 	uint64_t g_mame_sgi_stat_screen_update_skips = 0;
 	uint64_t g_mame_sgi_stat_mark_full_dirty_calls = 0;
 	uint64_t g_mame_sgi_stat_mark_xmap_slot_calls = 0;
+	// Added 2026-09-27 to check a specific hypothesis: does IRIX's real GL
+	// swap path wait on REX3's vertical-retrace interrupt (STATUS_VRINT),
+	// such that screen_update() recomputes already land in sync with real
+	// guest buffer swaps "for free", without MAME needing to do anything
+	// deliberate to synchronize them? vblank_events counts every emulated
+	// vblank (vc2_device::vblank_w(1), unconditional); vrint_asserts
+	// counts only the subset that actually reached the guest as a real
+	// interrupt (newport_base_device::vrint_w(1), gated on VC2's own
+	// per-guest VRINT-enable bit) - comparing the two tells us whether
+	// the guest has the interrupt enabled at all, and comparing
+	// vrint_asserts against screen_update_recomputes tells us whether
+	// they're actually correlated 1:1 (consistent with the guest waiting
+	// on it before swapping) or not. See wiki task #109/vsync discussion.
+	uint64_t g_mame_sgi_stat_vblank_events = 0;
+	uint64_t g_mame_sgi_stat_vrint_asserts = 0;
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	// Time-throttled (one print per real second), not count-capped - a
 	// flat count cap would exhaust itself during early boot's own
@@ -1203,6 +1218,7 @@ void vc2_device::vblank_w(int state)
 {
 	if (state)
 	{
+		g_mame_sgi_stat_vblank_events++;
 		if (BIT(m_display_ctrl, 0))
 		{
 			m_vert_int(1);
@@ -1521,6 +1537,8 @@ void newport_base_device::device_start()
 	mame_sgi_stat_registry::instance().register_counter("newport.screen_update_skips", &g_mame_sgi_stat_screen_update_skips);
 	mame_sgi_stat_registry::instance().register_counter("newport.mark_full_dirty_calls", &g_mame_sgi_stat_mark_full_dirty_calls);
 	mame_sgi_stat_registry::instance().register_counter("newport.mark_xmap_slot_calls", &g_mame_sgi_stat_mark_xmap_slot_calls);
+	mame_sgi_stat_registry::instance().register_counter("newport.vblank_events", &g_mame_sgi_stat_vblank_events);
+	mame_sgi_stat_registry::instance().register_counter("newport.vrint_asserts", &g_mame_sgi_stat_vrint_asserts);
 	if (machine().debug_flags & DEBUG_FLAG_ENABLED)
 	{
 		static bool s_sgistat_command_registered = false;
@@ -2585,6 +2603,7 @@ void newport_base_device::vrint_w(int state)
 {
 	if (state)
 	{
+		g_mame_sgi_stat_vrint_asserts++;
 		m_rex3.m_status |= STATUS_VRINT;
 		m_gio64->interrupt<2>(ASSERT_LINE);
 	}
