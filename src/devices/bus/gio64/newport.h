@@ -591,6 +591,35 @@ protected:
 
 	void ramdac_remap(uint32_t *dest);
 
+	// Marks the whole visible framebuffer region dirty and resets the
+	// hold-frame counter (see m_pending_dirty/m_dirty_hold_frames below).
+	// Used for register-level state changes that alter how already-
+	// resident VRAM data gets interpreted/displayed without themselves
+	// going through store_pixel(), the only other source of dirty-rect
+	// contributions - such a change is otherwise completely invisible to
+	// the compositor. Still used for the VC2 DID/VT-table RAM-word write
+	// case (see wiki task #108) and reset: a written RAM address could be
+	// a DID entry, a VT entry, or cursor data, and mapping it to the
+	// display rows it affects is a reverse lookup through two levels of
+	// indirection - harder, not yet precisely mapped (task #109). The
+	// XMAP mode-table case below no longer uses this - see
+	// mark_dirty_for_xmap_slot().
+	void mark_full_dirty();
+
+	// Companion to mark_full_dirty() above, for the case that IS
+	// precisely mappable: an XMAP9 mode-table slot write. Looks up which
+	// display rows the most recent screen_update() DID walk found
+	// referencing this slot (see m_row_xmap_slot_mask below) and marks
+	// only those dirty, instead of the whole screen. If the slot isn't
+	// currently referenced by any row, marks nothing - correct, not a
+	// missed update: with no row using this slot, the write has no
+	// visible effect until some future DID/VT change makes a row
+	// reference it, and any such change already forces a full-screen
+	// recompute via mark_full_dirty() (the VC2 RAM-word case above),
+	// which revisits every row and keeps m_row_xmap_slot_mask in sync
+	// before that new reference could ever be missed. See wiki task #109.
+	void mark_dirty_for_xmap_slot(uint8_t slot);
+
 	required_device<screen_device> m_screen;
 	required_device_array<xmap9_device, 2> m_xmap;
 	required_device_array<cmap_device, 2> m_cmap;
@@ -615,6 +644,19 @@ protected:
 	// unknown initial framebuffer content matches a blank bitmap.
 	newport_dirty_rect m_pending_dirty;
 	int m_dirty_hold_frames = 2;
+
+	// Bitmask (bit N = slot N) of which XMAP9 mode-table slots each
+	// bitmap row's DID chain referenced, as of the most recent
+	// screen_update() call that actually walked that row. Only rows in
+	// that call's row_start_y..row_end_y clipped range get overwritten
+	// (see screen_update()'s own comment on the row-range clip) - safe
+	// because a row's DID entries only change alongside a VC2 RAM write,
+	// which always forces a full-screen recompute (mark_full_dirty()'s
+	// VC2 call site), so every row gets revisited and this table fully
+	// resynced whenever it could have gone stale. Consumed by
+	// mark_dirty_for_xmap_slot(). Sized to the same 1088-row raw-buffer
+	// bound mark_full_dirty() uses.
+	uint32_t m_row_xmap_slot_mask[1088]{};
 
 	rex3_t m_rex3;
 	uint32_t m_global_mask;

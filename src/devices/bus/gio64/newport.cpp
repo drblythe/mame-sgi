@@ -100,6 +100,63 @@ namespace {
 // performance cost (full per-pixel recompute every frame instead of
 // only dirtied rows) - never leave this defined in a committed build.
 // #define MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
+
+// TEMPORARY diagnostic (task #109, 2026-09-22) - NOT a real fix. Task
+// #108's mark_full_dirty() always marks the whole 1344x1088 raw-buffer
+// region dirty, so screen_update()'s row-range clip (row_start_y/
+// row_end_y, below) does nothing while any double-buffered app is
+// actively swapping - every frame reprocesses all ~1088 rows through
+// the per-pixel DID/XMAP interpretation loop, not just the rows a
+// small app window actually occupies. Before building the real
+// precise DID/VT-mapped dirty rect (a nontrivial reverse-lookup
+// through two levels of indirection - see task #109's wiki scoping),
+// this substitutes a hardcoded, deliberately-wrong small rect
+// (roughly a single 300x300 GLUT window's footprint, generously
+// rounded) wherever mark_full_dirty() would normally use the full
+// screen bounds, purely to measure the *ceiling* on possible savings
+// via a perf stat A/B against an otherwise-identical run. Wrong for
+// any real content outside that rect (would show stale pixels) -
+// exists only to get a real before/after number before committing to
+// the real fix, per this file's own established measure-before-
+// touching discipline.
+// MEASUREMENT DONE (2026-09-22, see wiki task #109): n=5 perf stat A/B
+// under sustained test/wave.cpp -db swapping showed -24.4% instructions,
+// -17.4% cycles (both p<0.0001) versus the unmodified full-screen path -
+// a real, statistically significant ceiling, not noise. The real precise
+// DID/VT-mapped dirty rect is now approved to build; leave this #define
+// OFF (diagnostic-only, wrong for real content outside its hardcoded
+// box) - kept here only as the harness this measurement used, not a
+// fallback implementation.
+// #define MAME_SGI_DIRTY_RECT_SMALLRECT_EXPERIMENT
+
+// TEMPORARY diagnostic (task #109, 2026-09-22) - NOT a real fix, and NOT
+// the small-rect experiment above. That experiment measured the ceiling
+// on possible savings with a deliberately-wrong hardcoded rect; this one
+// measures the REAL XMAP-slot-precise fix (mark_dirty_for_xmap_slot(),
+// see newport.h) against the pre-fix baseline behavior it replaced
+// (mark_full_dirty() unconditionally on every XMAP mode-register write),
+// with everything else in the tree held constant - isolates this one
+// change's actual measured effect from the earlier ceiling estimate.
+// When defined, the three XMAP write call sites in rex3_w() fall back to
+// mark_full_dirty() instead of the real per-slot version, reproducing the
+// baseline this fix replaced. Built as binary A ("xmap_baseline") for a
+// dirtyrect_ab.sh run against an otherwise-identical binary B built with
+// this left undefined ("xmap_precise" - the real, currently-shipping
+// fix). Leave OFF in any committed build - this exists only as an A/B
+// measurement harness, not a real code path choice.
+// #define MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
+
+// TEMPORARY diagnostic (task #109, 2026-09-22) - NOT a real fix. Prints
+// the row range mark_dirty_for_xmap_slot() actually computes (see that
+// function's own comment) - directly answers whether the "precise" XMAP
+// fix produces a tight row band matching a real window's height, or
+// degenerates to near-full-screen for this system's real XMAP slot-
+// allocation pattern, rather than inferring it from write frequency
+// alone (which turned out to be an unreliable way to reason about this -
+// see wiki task #109's row for the write-frequency finding this is
+// following up on directly).
+// #define MAME_SGI_XMAP_SLOT_RANGE_DIAG
+
 #ifdef MAME_SGI_LOWRES_BOOT_DIAG
 #include <unordered_set>
 namespace {
@@ -119,6 +176,11 @@ namespace {
 #define LOG_REJECTS     (1U << 8)
 #define LOG_ALL         (LOG_UNKNOWN | LOG_VC2 | LOG_CMAP | LOG_XMAP | LOG_REX3 | LOG_RAMDAC | LOG_COMMANDS | LOG_REJECTS)
 
+// VERBOSE/LOG_VC2/LOG_XMAP diagnostic (task #109, 2026-09-22) used and
+// reverted: confirmed live during test/wave.cpp -db's steady swap that
+// XMAP mode-table writes fire frequently (~100/s, all to one shared
+// slot) while VC2 RAM-word writes never fire at all - see wiki task
+// #109's row for the finding. Left OFF (0) as the default.
 #define VERBOSE         (0)
 #include "logmacro.h"
 
@@ -1465,6 +1527,61 @@ void newport_base_device::device_start()
 	save_item(NAME(m_ramdac_lut_index));
 }
 
+void newport_base_device::mark_full_dirty()
+{
+#ifdef MAME_SGI_DIRTY_RECT_SMALLRECT_EXPERIMENT
+	m_pending_dirty.add_rect(0, 0, 400 - 1, 400 - 1);
+#else
+	m_pending_dirty.add_rect(0, 0, 1280 + 64 - 1, 1024 + 64 - 1);
+#endif
+	m_dirty_hold_frames = 2;
+}
+
+void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
+{
+	const uint32_t bit = 1u << (slot & 0x1f);
+	int y0 = -1, y1 = -1;
+	for (int y = 0; y < 1088; y++)
+	{
+		if (m_row_xmap_slot_mask[y] & bit)
+		{
+			if (y0 < 0)
+				y0 = y;
+			y1 = y;
+		}
+	}
+#ifdef MAME_SGI_XMAP_SLOT_RANGE_DIAG
+	// TEMPORARY diagnostic (task #109, 2026-09-22) - NOT a real fix, just
+	// visibility. Prints the actual row range computed for this slot,
+	// throttled to the first 40 INFORMATIVE prints (y0 >= 0, i.e. the
+	// slot was actually referenced by some row) - directly answers "is
+	// this precise (a tight band matching a window's real height) or
+	// does it degenerate to near-full-screen for this system's real XMAP
+	// slot-allocation pattern", rather than inferring it from write
+	// frequency/value patterns alone. First attempt at this (2026-09-22)
+	// counted EVERY call including uninformative y0=-1 ones (a slot
+	// written before screen_update() has ever populated the row mask for
+	// it, e.g. sequential mode-table setup at boot before the first
+	// frame renders) - that exhausted the whole budget on boot-time noise
+	// before wave.cpp ever launched, printing nothing useful. Revert once
+	// answered.
+	{
+		static int g_mame_sgi_xmap_slot_range_diag_prints = 0;
+		if (y0 >= 0 && g_mame_sgi_xmap_slot_range_diag_prints < 40)
+		{
+			g_mame_sgi_xmap_slot_range_diag_prints++;
+			osd_printf_info("MAME_SGI_XMAP_SLOT_RANGE_DIAG slot=%u y0=%d y1=%d span=%d\n",
+					slot, y0, y1, y1 - y0 + 1);
+		}
+	}
+#endif
+	if (y0 >= 0)
+	{
+		m_pending_dirty.add_rect(0, y0, 1280 + 64 - 1, y1);
+		m_dirty_hold_frames = 2;
+	}
+}
+
 //-------------------------------------------------
 //  device_reset - device-specific reset
 //-------------------------------------------------
@@ -1745,8 +1862,15 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		const uint32_t *src_rgbci = m_rb2->rgbci(vram_row);
 		const uint32_t *src_cidaux = m_rb2->cidaux(vram_row);
 
+		// Accumulates which XMAP mode-table slots (bit N = slot N) this
+		// row's DID chain references, as each entry is fetched below -
+		// written out to m_row_xmap_slot_mask[y] once the row is done.
+		// See that member's own comment and mark_dirty_for_xmap_slot().
+		uint32_t row_xmap_mask = 0;
+
 		// Fetch the initial DID entry
 		uint16_t curr_did_entry = m_vc2->begin_did_line(y);
+		row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
 		uint32_t table_entry = m_xmap[0]->mode_entry(curr_did_entry & 0x1f);
 		uint8_t pix_mode = (table_entry >> 8) & 3;
 		uint8_t pix_size = (table_entry >> 10) & 3;
@@ -1775,6 +1899,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 
 		// Prepare for the next DID entry
 		curr_did_entry = m_vc2->next_did_line_entry();
+		row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
 
 		// loop over columns
 		for (int x = cliprect.min_x; x < cliprect.max_x; x++)
@@ -1794,6 +1919,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 					case 3: ci_msb = 0x1f00; break;
 				}
 				curr_did_entry = m_vc2->next_did_line_entry();
+				row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
 			}
 
 			// Cursor pixels are NOT composited here anymore - background
@@ -2007,6 +2133,13 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				}
 			}
 		}
+
+		// Bounds-check rather than trust y is always in range - it comes
+		// from cliprect/m_pending_dirty, both guest/host-configurable, and
+		// an out-of-range write here would corrupt an adjacent member
+		// instead of just losing one row's XMAP-slot tracking.
+		if (y >= 0 && y < 1088)
+			m_row_xmap_slot_mask[y] = row_xmap_mask;
 	}
 
 	if (mame_sgi_last_held_frame)
@@ -4853,6 +4986,15 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			{
 			case DCB_ADDR_VC2:
 				m_vc2->write(m_rex3.m_dcb_reg_select, data32, m_rex3.m_dcb_mask);
+				// A RAM word write (mem_mask 0x0000ffff, reg-select 3) can
+				// modify the DID/VT tables vc2_device's own RAM also holds
+				// (see that write() case's own comment) - unlike a direct
+				// rb2 pixel write, its dirty marking only fires when the
+				// cursor happens to be enabled, and even then only covers
+				// the cursor's own small box, never the real display rows
+				// a DID/VT change affects. See wiki task #108.
+				if (m_rex3.m_dcb_mask == 0x0000ffff && m_rex3.m_dcb_reg_select == 3)
+					mark_full_dirty();
 				break;
 			case DCB_ADDR_CMAP01:
 				m_cmap[0]->write(m_rex3.m_dcb_reg_select, data32);
@@ -4867,12 +5009,36 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			case DCB_ADDR_XMAP01:
 				m_xmap[0]->write(m_rex3.m_dcb_reg_select, data32);
 				m_xmap[1]->write(m_rex3.m_dcb_reg_select, data32);
+				// Mode Register Write (reg-select 5) changes m_mode_table[],
+				// which screen_update()'s pixel loop reads to decide how to
+				// interpret/display already-resident VRAM data - xmap9_device
+				// itself does zero dirty-rect marking for this. See wiki
+				// task #108. Slot-precise, not whole-screen - see wiki
+				// task #109 and mark_dirty_for_xmap_slot()'s own comment.
+				if (m_rex3.m_dcb_reg_select == 5)
+#ifdef MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
+					mark_full_dirty();
+#else
+					mark_dirty_for_xmap_slot((uint8_t)(data32 >> 24));
+#endif
 				break;
 			case DCB_ADDR_XMAP0:
 				m_xmap[0]->write(m_rex3.m_dcb_reg_select, data32);
+				if (m_rex3.m_dcb_reg_select == 5)
+#ifdef MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
+					mark_full_dirty();
+#else
+					mark_dirty_for_xmap_slot((uint8_t)(data32 >> 24));
+#endif
 				break;
 			case DCB_ADDR_XMAP1:
 				m_xmap[1]->write(m_rex3.m_dcb_reg_select, data32);
+				if (m_rex3.m_dcb_reg_select == 5)
+#ifdef MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
+					mark_full_dirty();
+#else
+					mark_dirty_for_xmap_slot((uint8_t)(data32 >> 24));
+#endif
 				break;
 			case DCB_ADDR_RAMDAC:
 				ramdac_write(data32);
