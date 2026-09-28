@@ -6815,10 +6815,45 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
     exception handler for "out of code"
 -------------------------------------------------*/
 
+// MAME_SGI_NOCODE_REFRESH_FIX (task #97, 2026-09-16): static_dispatch_key()
+// bakes its resolved dispatch key as a compile-time constant at the jumping
+// instruction's own compile time. If the target page's writability
+// classification later changes (routine under ASID switches, since
+// dispatch_page_writable() is a per-page WRITE_ALLOWED check), that baked
+// key goes stale and the HASHJMP misses here even though valid code already
+// exists under the CURRENT resolved key - the shared nocode handler had no
+// way to tell "genuinely missing" apart from "stale key, code exists
+// elsewhere", so it unconditionally paid a full recompile either way.
+// Measured before this fix (MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG): 99.985%
+// of arrivals at one hot PC's compile were exactly this stale-key case.
+//
+// Fix, directly modeled on the already-shipped, already-proven
+// MAME_SGI_TLB_MISMATCH_REFRESH_FIX (same file, static_generate_tlb_
+// mismatch() - see its own comment for the full reasoning this mirrors):
+// before giving up, recompute the key LIVE (not the stale baked one) via
+// generate_select_dispatch_key() and try one more HASHJMP. If a valid
+// compile exists under the current key, this finds it and jumps away
+// without ever reaching the recompile below. Same two brakes as the
+// original: a one-shot per-PC retry guard (nocode_retry_pc) so a genuine
+// double-miss falls through to a real compile instead of looping, and an
+// icount charge with out_of_cycles bailout so no retry pattern can spin
+// without the guest clock advancing.
+#define MAME_SGI_NOCODE_REFRESH_FIX 1
+
 void mips3_device::static_generate_nocode_handler(drcuml_block &block, int &label)
 {
+#ifdef MAME_SGI_NOCODE_REFRESH_FIX
+	uml::code_label const no_retry = label++;
+#endif
+
 	/* generate a hash jump via the current mode and PC */
 	alloc_handle(*m_drcuml, m_nocode, "nocode");
+#ifdef MAME_SGI_NOCODE_REFRESH_FIX
+	// Forward reference - the retry path charges a cycle and can bail out
+	// to out_of_cycles, exactly as static_generate_tlb_mismatch()'s own
+	// retry tail does.
+	alloc_handle(*m_drcuml, m_out_of_cycles, "out_of_cycles");
+#endif
 	UML_HANDLE(block, *m_nocode);                                               // handle  nocode
 	UML_GETEXP(block, I0);                                                      // getexp  i0
 	UML_MOV(block, mem(&m_core->pc), I0);                                       // mov     [pc],i0
@@ -6852,6 +6887,28 @@ void mips3_device::static_generate_nocode_handler(drcuml_block &block, int &labe
 		UML_CALLC(block, cfunc_task84_window_trace_save, this);
 		UML_LABEL(block, trace_skip);
 	}
+#endif
+
+#ifdef MAME_SGI_NOCODE_REFRESH_FIX
+	UML_ADD(block, mem(&m_core->diag_nocode_skip_total), mem(&m_core->diag_nocode_skip_total), 1);
+
+	UML_CMP(block, I0, mem(&m_core->nocode_retry_pc));                          // cmp     i0,[nocode_retry_pc]
+	UML_JMPc(block, COND_E, no_retry);                                          // jmp     no_retry,e
+	UML_MOV(block, mem(&m_core->nocode_retry_pc), I0);                          // mov     [nocode_retry_pc],i0
+	UML_ADD(block, mem(&m_core->diag_nocode_refresh_hits), mem(&m_core->diag_nocode_refresh_hits), 1);
+	UML_SUB(block, mem(&m_core->icount), mem(&m_core->icount), 1);              // sub     [icount],[icount],1
+	UML_EXHc(block, COND_S, *m_out_of_cycles, I0);                              // exh     out_of_cycles,i0,s
+#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
+	generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
+	UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);                        // hashjmp <mode>,[pc],nocode
+#else
+	UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode); // hashjmp <mode>,[pc],nocode
+#endif
+
+	UML_LABEL(block, no_retry);                                                 // no_retry:
+	// Disarm, so a later, genuinely unrelated miss at this same PC gets its
+	// own retry rather than being permanently suppressed.
+	UML_MOV(block, mem(&m_core->nocode_retry_pc), 0xffffffff);                  // mov     [nocode_retry_pc],~0
 #endif
 	UML_EXIT(block, EXECUTE_MISSING_CODE);                                      // exit    EXECUTE_MISSING_CODE
 }

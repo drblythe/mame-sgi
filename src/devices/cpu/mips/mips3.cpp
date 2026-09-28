@@ -414,6 +414,19 @@ void mips3_device::device_stop()
 				100.0 * double(m_core->diag_tlb_mismatch_refresh_hits) / double(m_core->diag_tlb_mismatch_skip_total));
 	}
 
+	// Clean-exit summary for MAME_SGI_NOCODE_REFRESH_FIX (task #97) - see
+	// diag_nocode_skip_total's comment in mips3.h. Same shape as the
+	// TLB_MISMATCH_REFRESH_FIX summary above; the fix's own counters are
+	// incremented in static_generate_nocode_handler().
+	if (m_core->diag_nocode_skip_total != 0)
+	{
+		osd_printf_info(
+				"MAME_SGI_NOCODE_REFRESH_FIX summary: skip_total=%u redispatched=%u (%.2f%% avoided a recompile)\n",
+				m_core->diag_nocode_skip_total,
+				m_core->diag_nocode_refresh_hits,
+				100.0 * double(m_core->diag_nocode_refresh_hits) / double(m_core->diag_nocode_skip_total));
+	}
+
 	// Clean-exit summary for MAME_SGI_ERET_RACE_WINDOW_DIAG (task #69/#71,
 	// concluded - MIPS3DRC_STRICT_COP1 was the real fix) - see
 	// diag_eret_window_exception_count's comment in mips3.h. Detailed
@@ -730,6 +743,9 @@ void mips3_device::device_start()
 	// suppress the very first redispatch at PC 0. See the field's own
 	// comment in mips3.h.
 	m_core->tlb_mismatch_retry_pc = 0xffffffff;
+	// MAME_SGI_NOCODE_REFRESH_FIX - same reasoning as tlb_mismatch_retry_pc
+	// immediately above: memset() leaves this 0, a real guest PC.
+	m_core->nocode_retry_pc = 0xffffffff;
 
 	m_cpu_clock = clock();
 	m_program = &space(AS_PROGRAM);

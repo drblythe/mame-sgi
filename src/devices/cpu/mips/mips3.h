@@ -648,6 +648,29 @@ protected:
 		// word-aligned PC. See static_generate_tlb_mismatch().
 		uint32_t        tlb_mismatch_retry_pc;
 
+		// Standing counters (2026-09-16, task #97 investigation -
+		// MAME_SGI_NOCODE_REFRESH_FIX): the shared nocode handler
+		// (static_generate_nocode_handler) is the universal fallthrough for
+		// every UML_HASHJMP miss in this file, not just the tlb_mismatch
+		// path above - static_dispatch_key() bakes its resolved key as a
+		// compile-time constant, which goes stale whenever a page's
+		// writability classification changes after that jump was compiled
+		// (routine under ASID switches), producing a hash miss even though
+		// valid code already exists under the CURRENT resolved key.
+		// Measured before this fix (MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG,
+		// 2026-09-16): 99.985% of arrivals at pc=0x0fac5ffc's compile were
+		// exactly this - a "key_mismatch" (resolved-key code already
+		// present, raw/stale key missed). Same shape, same fix pattern as
+		// diag_tlb_mismatch_skip_total/refresh_hits above - see
+		// static_generate_nocode_handler() for the mechanism.
+		uint32_t        diag_nocode_skip_total;
+		uint32_t        diag_nocode_refresh_hits;
+
+		// Part of MAME_SGI_NOCODE_REFRESH_FIX - mirrors tlb_mismatch_retry_pc
+		// above, one-shot loop guard for the nocode handler's own redispatch
+		// attempt. Initialised to ~0 (never a valid word-aligned PC).
+		uint32_t        nocode_retry_pc;
+
 		// TEMPORARY diagnostic (2026-08-07) - real compiled-sequence
 		// length distribution (seqhead-to-seqlast, in guest instructions),
 		// for characterizing DRC dispatch fragments after the interpreter-
