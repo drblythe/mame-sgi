@@ -1033,6 +1033,22 @@ protected:
 	// finds - see code_compile_block() for where this is consulted/updated.
 	std::unordered_set<offs_t> m_checkints_addrs;
 
+	// TEMPORARY diagnostic (2026-09-17, task #100 scoping) - what fraction
+	// of all distinct compiled PCs actually end up in m_checkints_addrs
+	// above? Answers the open scoping question directly rather than
+	// guessing between "bound growth via clear-on-flush" (sound if this is
+	// a modest minority - the sticky-set granularity is doing real work)
+	// and "question the whole mechanism" (if it's a large majority,
+	// per-PC tracking is solving the wrong problem and checkints should
+	// probably be closer to unconditional instead). Tracks the same
+	// seqhead->pc key, at the same call site, unconditionally (regardless
+	// of whether checkints ends up armed) - see code_compile_block() for
+	// where this is populated. Reserved generously up front (mirroring
+	// this session's own m_diag_usermode_recompile_counts fix) so this
+	// diagnostic doesn't introduce a new rehash-driven stall while
+	// measuring one.
+	std::unordered_set<offs_t> m_diag_checkints_all_compiled_pcs;
+
 	// TEMPORARY diagnostic (2026-07-28): the literal `pc` argument passed to
 	// the currently-executing code_compile_block() call - the address that
 	// genuinely caused an EXECUTE_MISSING_CODE miss. Set at the top of every

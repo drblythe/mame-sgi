@@ -211,6 +211,16 @@
 // MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
+// TEMPORARY diagnostic (2026-09-17, task #100 scoping) - see
+// m_diag_checkints_all_compiled_pcs's comment in mips3.h. Answers whether
+// m_checkints_addrs's per-PC sticky-set design is even the right shape:
+// if most compiled PCs end up armed anyway, tracking membership precisely
+// isn't buying much over just being closer to unconditional. Cheap
+// (reserved up front, same fix already applied to m_checkints_addrs
+// itself and to m_diag_usermode_recompile_counts this session) - safe to
+// leave on for a normal test run while this scoping question is open.
+#define MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
+
 // Originally a temporary diagnostic (2026-09-17, task #101 Phase 0) -
 // see diag_entry_reentry_count's comment in mips3.h. Real wall-clock
 // frequency of static_generate_entry_point()'s per-re-entry interrupt
@@ -2590,6 +2600,15 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					goto task84_checkints_forced;
 				}
 #endif
+#ifdef MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
+				// See m_diag_checkints_all_compiled_pcs's comment in mips3.h -
+				// unconditional, tracks every seqhead this call site sees
+				// regardless of checkints outcome, for later comparison
+				// against m_checkints_addrs.size() at clean exit.
+				if (m_diag_checkints_all_compiled_pcs.empty())
+					m_diag_checkints_all_compiled_pcs.reserve(1'000'000);
+				m_diag_checkints_all_compiled_pcs.insert(seqhead->pc);
+#endif
 // Disables the self-loop/backward-branch/branch-target heuristic below
 // in its entirety (everything that feeds the sticky m_checkints_addrs
 // set, including the 2026-07-27 is_branch_target() defensive fallback
@@ -2688,8 +2707,24 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				// future compiles of this same address, under whatever
 				// window happens to trigger them, consult this instead of
 				// re-deriving it from scratch and sometimes missing it.
+				//
+				// Fix (2026-09-17, task #100 scoping step 1) - reserve a
+				// large bucket count on first insert, same mitigation
+				// already proven on m_diag_usermode_recompile_counts this
+				// session: converts periodic incremental-rehash stalls
+				// (confirmed via live gdb backtrace: this exact insert call
+				// rehashing to 351,061 buckets mid-boot) into one
+				// predictable upfront allocation. 1,000,000 is headroom
+				// above that observed mid-boot count, not a proven bound
+				// for arbitrarily long real sessions - see wiki/tasks.md
+				// task #100 for why a fixed reserve is a stopgap, not a
+				// full fix, and what would be needed for one.
 				if (compiler.checkints)
+				{
+					if (m_checkints_addrs.empty())
+						m_checkints_addrs.reserve(1'000'000);
 					m_checkints_addrs.insert(seqhead->pc);
+				}
 
 #if defined(MAME_SGI_TASK84_FORCE_CHECKINTS_ON) || defined(MAME_SGI_TASK84_FORCE_CHECKINTS_OFF)
 				task84_checkints_forced:;

@@ -388,6 +388,20 @@ void mips3_device::device_stop()
 		}
 	}
 
+	// Clean-exit summary for MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
+	// (mips3drc.cpp) - see m_diag_checkints_all_compiled_pcs's comment in
+	// mips3.h. Unconditionally safe when empty - only ever populated if
+	// that macro was defined in mips3drc.cpp at compile time.
+	if (!m_diag_checkints_all_compiled_pcs.empty())
+	{
+		osd_printf_info(
+				"MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG summary: armed=%u total_distinct_pcs=%u armed_fraction=%.2f%%\n",
+				unsigned(m_checkints_addrs.size()),
+				unsigned(m_diag_checkints_all_compiled_pcs.size()),
+				m_diag_checkints_all_compiled_pcs.empty() ? 0.0
+						: 100.0 * double(m_checkints_addrs.size()) / double(m_diag_checkints_all_compiled_pcs.size()));
+	}
+
 	// Clean-exit summary for MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - see
 	// diag_cop1_trap_count's comment in mips3.h. Unconditionally safe when
 	// zero (only ever incremented if the diagnostic is compiled in).
