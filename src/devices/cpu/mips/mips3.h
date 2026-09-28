@@ -615,6 +615,46 @@ protected:
 		// play once a per-event trace is no longer needed.
 		uint32_t        diag_cop1_trap_count;
 
+		// TEMPORARY diagnostic (2026-09-17, task #101 Phase 0) - real
+		// host wall-clock frequency of the two mechanisms that can deliver
+		// an interrupt under DRC: static_generate_entry_point()'s
+		// unconditional per-re-entry check, and static_generate_out_of_
+		// cycles() (which doesn't check interrupts itself, but re-entering
+		// through entry_point almost always follows it - see this diag's
+		// own comment in mips3drc.cpp for the full motivation). Answers a
+		// question this project's own 2026-07-26 investigation
+		// (wiki/assets.md, the mrupdatef livelock) left unexplained: given
+		// entry-point's check was already active then and still missed a
+		// real interrupt for 10 real wall-clock seconds, how often does
+		// host C++ actually regain control in practice? Lightweight
+		// in-memory counters + running interval stats only - no per-event
+		// log, per this project's own hard-won lesson about unfiltered
+		// diagnostics (the MAME_SGI_TASK84_WINDOW_TRACE incident - 20
+		// iterations, 2.3M+ events, 367MB log). Reported once as a
+		// clean-exit summary, same convention as every other *_DIAG in
+		// this file.
+		uint64_t        diag_entry_reentry_count;
+		uint64_t        diag_entry_last_timestamp_ns;   // 0 means "no prior sample yet"
+		uint64_t        diag_entry_interval_total_ns;
+		uint64_t        diag_entry_interval_max_ns;
+		uint64_t        diag_entry_interval_min_ns;      // starts at UINT64_MAX, see reset in device_start()
+		uint64_t        diag_out_of_cycles_count;
+
+		// Added 2026-09-17 (task #101, fasthz A/B) - alongside the wall-
+		// clock interval above, also snapshot device_execute_interface::
+		// total_cycles() (real guest cycles executed, cumulative) at every
+		// re-entry, and remember the guest-cycle delta specifically for
+		// whichever interval turned out to be the longest in wall-clock
+		// terms. Lets the longest gap be read two ways: a "legitimately
+		// large guest-time quantum" (many guest cycles - consistent with
+		// scheduler behavior, schedule.cpp's own target computation) shows
+		// a large delta here; a "host execution stalled" gap (DRC compile
+		// storm, I/O, etc.) shows a small delta despite the long wall
+		// time. Distinguishes the two explanations directly instead of
+		// guessing from the wall-clock number alone.
+		uint64_t        diag_entry_last_total_cycles;
+		uint64_t        diag_entry_max_interval_guest_cycles;
+
 		// MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG (mips3drc.cpp) - how often
 		// code_compile_block()'s null-seqlast fallback fires (the
 		// permanent fix itself is unconditional, see its own comment) and
@@ -1289,6 +1329,8 @@ public:
 	void func_task84_entry_irq_diag();
 	void func_task84_saveload_bracket_entry();
 	void func_task84_saveload_bracket_exit();
+	void func_task101_entry_reentry_diag();
+	void func_task101_out_of_cycles_diag();
 private:
 	/* internal compiler state */
 	struct compiler_state

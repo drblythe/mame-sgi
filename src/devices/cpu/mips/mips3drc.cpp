@@ -211,6 +211,40 @@
 // MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
+// Originally a temporary diagnostic (2026-09-17, task #101 Phase 0) -
+// see diag_entry_reentry_count's comment in mips3.h. Real wall-clock
+// frequency of static_generate_entry_point()'s per-re-entry interrupt
+// check and static_generate_out_of_cycles()'s exit, measured directly
+// rather than assumed. Kept permanently active (cheap - pure in-memory
+// counters, no per-event I/O below its 5ms outlier threshold) as the
+// standing canary for MAME_SGI_DISABLE_CHECKINTS_HEURISTIC_EXPERIMENT
+// below: any recurrence of a large re-entry gap at a call-stitched-
+// across-blocks loop shape (the pattern the heuristic exists to catch)
+// would show up here first.
+#define MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+
+// See the full rationale (test evidence, caveats) at the use site
+// (code_compile_block()'s checkints arming block) and in this project's
+// own task #101 tracking. Confirmed live: disabling the entire dynamic
+// checkints heuristic apparatus produced zero measurable interrupt-
+// latency/drift regression against indirect_loop.s (the heuristic's own
+// hardest case - an indirect-jump loop with no calls, so it gets none
+// of the front-end's own call-boundary sequence-ending protection
+// either), and an ordinary full boot produced no hang and nothing
+// beyond the already-explained, unrelated perform_dma() host stall.
+// One open gap: the original mrupdatef interrupt-starvation livelock
+// this mechanism was built to fix could not be directly re-triggered -
+// its code executes normally in a current boot, but the genuine multi-
+// reader lock contention that caused the original 10-real-second stall
+// doesn't occur under tested conditions, so this is "not yet observed
+// to recur," not "proven safe for that specific historical case."
+// Opt-in (kept toggleable, not made unconditional), currently enabled
+// by deliberate choice while broader, less-directed guest testing
+// (real applications, general system activity) continues -
+// MAME_SGI_TASK101_REENTRY_FREQ_DIAG above is the passive canary
+// watching for a recurrence.
+#define MAME_SGI_DISABLE_CHECKINTS_HEURISTIC_EXPERIMENT
+
 // TEMPORARY FIX, DISABLED BY DEFAULT (2026-08-01, refined 2026-08-02) -
 // see the full comment at its use site, generate_update_mode()
 // (mips3drc.cpp), and wiki/performance.md's "USER-mode cross-process
@@ -2556,6 +2590,22 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					goto task84_checkints_forced;
 				}
 #endif
+// Disables the self-loop/backward-branch/branch-target heuristic below
+// in its entirety (everything that feeds the sticky m_checkints_addrs
+// set, including the 2026-07-27 is_branch_target() defensive fallback
+// nested inside it) - the four deterministic MTC0-Status/Cause/Compare-
+// write and ERET arming sites elsewhere in this file
+// (generate_set_cop0_reg(), ERET handling) are untouched and stay fully
+// active, as does static_generate_entry_point()'s own unconditional
+// per-re-entry check (stock MAME code, not gated by this macro at all).
+// Originally built (task #101, 2026-09-17) to test whether the standing
+// entry-point recheck plus deterministic COP0-write arming is already
+// sufficient on its own, without this heuristic's extra in-sequence
+// checks. Tested and left enabled by deliberate choice - see this
+// macro's own top-of-file comment for the test evidence and the one
+// still-open caveat (the original mrupdatef livelock couldn't be
+// directly re-triggered to confirm this covers that specific case too).
+#ifndef MAME_SGI_DISABLE_CHECKINTS_HEURISTIC_EXPERIMENT
 				if (m_checkints_addrs.count(seqhead->pc))
 				{
 					compiler.checkints = true;
@@ -2633,6 +2683,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					compiler.checksoftints = true;
 				}
 #endif
+#endif // MAME_SGI_DISABLE_CHECKINTS_HEURISTIC_EXPERIMENT
 				// CLEANER ALTERNATIVE (2026-07-28): record the outcome so
 				// future compiles of this same address, under whatever
 				// window happens to trigger them, consult this instead of
@@ -6691,6 +6742,101 @@ static void cfunc_task84_saveload_bracket_exit(void *param)
 }
 #endif
 
+#ifdef MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+// See diag_entry_reentry_count's comment in mips3.h. Called via UML_CALLC
+// at the very top of static_generate_entry_point()'s generated code -
+// runs on every single re-entry into the DRC dispatch loop from host C++
+// (after a recompile, or a fresh scheduler call following EXECUTE_OUT_OF_
+// CYCLES), regardless of whether an interrupt is actually pending. Pure
+// in-memory counter/interval bookkeeping - no per-event I/O, so this
+// stays cheap even at very high call frequency.
+// Fires only when a gap exceeds MAME_SGI_TASK101_OUTLIER_THRESHOLD_NS -
+// per-event, printing host wall-clock time (matches console_live.log's
+// own timestamp convention, serial_driver.py --timestamps) so an
+// outlier here can be lined up directly against a host-level monitoring
+// log (e.g. /proc/stat steal time) captured over the same boot, same
+// correlation technique already used for the compile-duration outliers
+// earlier this session.
+//
+// Threshold history: originally 5ms for task #101 Phase 0's own
+// characterization work, where seeing every outlier in detail was the
+// point. That threshold is wrong now that this diagnostic has a second,
+// permanent job as the checkints-disabled-by-default canary (see this
+// macro's own top-of-file comment) - live-tested at 5ms during an
+// ordinary boot and produced 4,445 print lines in ~2.5 minutes, which
+// would flood every session's log indefinitely without helping spot a
+// real regression (max_interval_ns/mean tracking below is unconditional
+// regardless of this threshold, so nothing about the canary's actual
+// detection capability depended on printing routine noise live).
+// Raised to comfortably clear every already-characterized benign event
+// this project has found (ordinary DRC/scheduling noise up to ~40ms,
+// the known unrelated perform_dma() host stall at ~150ms) while still
+// firing immediately and unmistakably on anything resembling the actual
+// failure mode this canary watches for (the original mrupdatef
+// livelock was a full 10 real seconds with zero progress).
+#define MAME_SGI_TASK101_OUTLIER_THRESHOLD_NS 1'000'000'000ULL
+
+void mips3_device::func_task101_entry_reentry_diag()
+{
+	using namespace std::chrono;
+	uint64_t const now_ns = uint64_t(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+	uint64_t const now_cycles = total_cycles();
+	m_core->diag_entry_reentry_count++;
+	if (m_core->diag_entry_last_timestamp_ns != 0)
+	{
+		uint64_t const interval_ns = now_ns - m_core->diag_entry_last_timestamp_ns;
+		uint64_t const guest_cycles = now_cycles - m_core->diag_entry_last_total_cycles;
+		m_core->diag_entry_interval_total_ns += interval_ns;
+		if (interval_ns > m_core->diag_entry_interval_max_ns)
+		{
+			m_core->diag_entry_interval_max_ns = interval_ns;
+			// See diag_entry_max_interval_guest_cycles's comment in
+			// mips3.h - the whole point of tracking this alongside the
+			// wall-clock interval.
+			m_core->diag_entry_max_interval_guest_cycles = guest_cycles;
+		}
+		if (interval_ns < m_core->diag_entry_interval_min_ns)
+			m_core->diag_entry_interval_min_ns = interval_ns;
+		if (interval_ns > MAME_SGI_TASK101_OUTLIER_THRESHOLD_NS)
+		{
+			auto const now = system_clock::now();
+			auto const t = system_clock::to_time_t(now);
+			auto const us = duration_cast<microseconds>(now.time_since_epoch()) % 1'000'000;
+			std::tm tm_buf;
+			localtime_r(&t, &tm_buf);
+			char tsbuf[24];
+			std::snprintf(tsbuf, sizeof(tsbuf), "%02d:%02d:%02d.%06d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(us.count()));
+			osd_printf_info(
+					"MAME_SGI_TASK101_REENTRY_FREQ_DIAG outlier: wallclock=%s interval_ns=%llu guest_cycles=%llu pc=%08x\n",
+					tsbuf, (unsigned long long)interval_ns, (unsigned long long)guest_cycles, m_core->pc);
+		}
+	}
+	m_core->diag_entry_last_timestamp_ns = now_ns;
+	m_core->diag_entry_last_total_cycles = now_cycles;
+}
+
+static void cfunc_task101_entry_reentry_diag(void *param)
+{
+	((mips3_device *)param)->func_task101_entry_reentry_diag();
+}
+
+// Called via UML_CALLC at the top of static_generate_out_of_cycles() -
+// runs every time this CPU exhausts its icount budget and exits back to
+// host C++/the scheduler. No interval tracking needed here (this diag
+// only cares about entry_point's own re-entry cadence) - just a count,
+// to compare against diag_entry_reentry_count and see how tightly the
+// two are coupled in practice.
+void mips3_device::func_task101_out_of_cycles_diag()
+{
+	m_core->diag_out_of_cycles_count++;
+}
+
+static void cfunc_task101_out_of_cycles_diag(void *param)
+{
+	((mips3_device *)param)->func_task101_out_of_cycles_diag();
+}
+#endif
+
 /***************************************************************************
     STATIC CODEGEN
 ***************************************************************************/
@@ -6710,6 +6856,10 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 
 	alloc_handle(*m_drcuml, m_entry, "entry");
 	UML_HANDLE(block, *m_entry);                                                // handle  entry
+
+#ifdef MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+	UML_CALLC(block, cfunc_task101_entry_reentry_diag, this);
+#endif
 
 	/* reset the FPU mode */
 	UML_AND(block, I0, CCR132(31), 3);                                          // and     i0,ccr1[31],3
@@ -6924,6 +7074,9 @@ void mips3_device::static_generate_out_of_cycles(drcuml_block &block, int &label
 	/* generate a hash jump via the current mode and PC */
 	alloc_handle(*m_drcuml, m_out_of_cycles, "out_of_cycles");
 	UML_HANDLE(block, *m_out_of_cycles);                                        // handle  out_of_cycles
+#ifdef MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+	UML_CALLC(block, cfunc_task101_out_of_cycles_diag, this);
+#endif
 	UML_GETEXP(block, I0);                                                      // getexp  i0
 	UML_MOV(block, mem(&m_core->pc), I0);                                       // mov     <pc>,i0
 	save_fast_iregs(block);

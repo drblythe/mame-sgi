@@ -427,6 +427,39 @@ void mips3_device::device_stop()
 				100.0 * double(m_core->diag_nocode_refresh_hits) / double(m_core->diag_nocode_skip_total));
 	}
 
+	// Clean-exit summary for MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+	// (mips3drc.cpp) - see diag_entry_reentry_count's comment in mips3.h.
+	// Unconditionally safe when zero (only ever incremented if that macro
+	// was defined in mips3drc.cpp at compile time).
+	if (m_core->diag_entry_reentry_count != 0)
+	{
+		uint64_t const n_intervals = (m_core->diag_entry_reentry_count > 0) ? (m_core->diag_entry_reentry_count - 1) : 0;
+		double const mean_interval_ns = (n_intervals > 0) ? (double(m_core->diag_entry_interval_total_ns) / double(n_intervals)) : 0.0;
+		// See diag_entry_max_interval_guest_cycles's comment in mips3.h -
+		// this is the number that actually distinguishes "legitimately
+		// large guest-time quantum" from "host execution stalled" for the
+		// single longest gap. Effective guest MHz for that one interval,
+		// compared against m_cpu_clock, makes it directly readable: close
+		// to full clock rate means real guest cycles genuinely elapsed
+		// (large quantum); far below it means the same guest-cycle count
+		// took far longer in real time than it should have (host stall).
+		double const max_interval_effective_hz = (m_core->diag_entry_interval_max_ns > 0)
+				? (double(m_core->diag_entry_max_interval_guest_cycles) * 1e9 / double(m_core->diag_entry_interval_max_ns))
+				: 0.0;
+		osd_printf_info(
+				"MAME_SGI_TASK101_REENTRY_FREQ_DIAG summary: entry_reentries=%llu out_of_cycles_exits=%llu "
+				"mean_interval_ns=%.0f min_interval_ns=%llu max_interval_ns=%llu "
+				"max_interval_guest_cycles=%llu max_interval_effective_hz=%.0f cpu_clock_hz=%llu\n",
+				(unsigned long long)m_core->diag_entry_reentry_count,
+				(unsigned long long)m_core->diag_out_of_cycles_count,
+				mean_interval_ns,
+				(unsigned long long)(n_intervals > 0 ? m_core->diag_entry_interval_min_ns : 0),
+				(unsigned long long)m_core->diag_entry_interval_max_ns,
+				(unsigned long long)m_core->diag_entry_max_interval_guest_cycles,
+				max_interval_effective_hz,
+				(unsigned long long)m_cpu_clock);
+	}
+
 	// Clean-exit summary for MAME_SGI_ERET_RACE_WINDOW_DIAG (task #69/#71,
 	// concluded - MIPS3DRC_STRICT_COP1 was the real fix) - see
 	// diag_eret_window_exception_count's comment in mips3.h. Detailed
@@ -746,6 +779,9 @@ void mips3_device::device_start()
 	// MAME_SGI_NOCODE_REFRESH_FIX - same reasoning as tlb_mismatch_retry_pc
 	// immediately above: memset() leaves this 0, a real guest PC.
 	m_core->nocode_retry_pc = 0xffffffff;
+	// Task #101 Phase 0 diag - memset() leaves this 0, which would make
+	// the very first interval look like a 0ns minimum forever after.
+	m_core->diag_entry_interval_min_ns = ~uint64_t(0);
 
 	m_cpu_clock = clock();
 	m_program = &space(AS_PROGRAM);

@@ -508,6 +508,17 @@ DEVICE_INPUT_DEFAULTS_END
 
 void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 {
+// TEMPORARY experiment (task #101, 2026-09-17): tightens the scheduler's
+// standing quantum ceiling below the stock 60Hz default (schedule.cpp's
+// own machine().config().maximum_quantum(attotime::from_hz(60)) fallback)
+// to test whether bounding worst-case interrupt-check latency at the
+// scheduler level can substitute for mips3drc.cpp's compile-time
+// self-loop/backward-branch heuristic (see MAME_SGI_DISABLE_CHECKINTS_
+// HEURISTIC_EXPERIMENT in that file) - see wiki/drc-fault-redesign-
+// scoping.md. Throwaway: never leave this defined in a committed build.
+#ifdef MAME_SGI_QUANTUM_EXPERIMENT
+	config.set_maximum_quantum(attotime::from_hz(MAME_SGI_QUANTUM_EXPERIMENT));
+#endif
 	SGI_MC(config, m_mem_ctrl, m_maincpu, m_eeprom, system_clock);
 	m_mem_ctrl->int_dma_done_cb().set(m_ioc2, FUNC(ioc2_device::mc_dma_done_w));
 	m_mem_ctrl->eisa_present().set_constant(1);
