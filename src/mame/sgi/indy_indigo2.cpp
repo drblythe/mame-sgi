@@ -489,22 +489,101 @@ static DEVICE_INPUT_DEFAULTS_START(ip22_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x07)
 DEVICE_INPUT_DEFAULTS_END
 
+// Build-time guest DRAM size selector for the ip24 (Indy) memory
+// controller - pick exactly one of 32/64/128/256. This only changes
+// which SIMMS/VALID ioport defaults get compiled in (what the emulated
+// PROM finds when it probes installed memory at boot); it does NOT
+// change mc.cpp's own host-side allocation, which always reserves its
+// full worst-case size (1GB across 4 banks) regardless of this setting
+// - see mc.cpp's own device_start() comment for why, and its
+// MAME_SGI_RAM_CALLOC_FIX comment for why that reservation no longer
+// costs real (resident) host memory beyond what's actually mapped here.
+// So this is purely a guest-RAM-size choice, not a host memory-
+// footprint knob.
+//
+// "SIMMS" packs four independent PORT_CONFNAME fields into one 16-bit
+// port (bank A at mask 0x000f, B at 0x00f0, C at 0x0f00, D at 0xf000 -
+// see mc.cpp's INPUT_PORTS_START(mc)); each nibble's low 3 bits pick a
+// chip density and bit 3 marks "dual rank" (memcfg_w() maps TWICE from
+// the same buffer when set, doubling the effective size - confirmed
+// live 2026-09-27 via direct instrumentation of memcfg_w()'s install
+// loop). "VALID" gates which bank CONFNAME fields even reach the
+// Machine Configuration menu (a real Indy model only had physical slots
+// for so many banks) - it does NOT affect what memcfg_w() itself
+// installs; that's governed entirely by SIMMS and the (real, dumped)
+// PROM firmware's own probing of it.
+//
+// IMPORTANT, found live 2026-09-27: NOT every raw SIMMS value the field's
+// bit-width can hold is a real, acceptable hardware configuration - only
+// the ones INPUT_PORTS_START(mc) actually names ("4x1M".."4x32M") are.
+// A first attempt at a 32MB preset used an unnamed raw value (0x0004,
+// single-rank field=4) reasoning purely from the bit-math - real (dumped)
+// PROM's own power-on memory diagnostic REJECTED it outright: "No usable
+// memory found. Make sure you have a full bank (4 SIMMs)." The single/
+// dual-rank bit apparently encodes a real single-sided-vs-double-sided
+// SIMM distinction, and the named table already alternates single/dual
+// rank exactly as needed to produce a valid part for each doubling step
+// (4x1M=4MB single, 4x2M=8MB DUAL, 4x4M=16MB single, 4x8M=32MB DUAL,
+// 4x16M=64MB single, 4x32M=128MB DUAL) - every preset below uses one of
+// these exact named raw values, never an invented one, specifically to
+// avoid hitting this same PROM-enforced hardware-validity check again.
+// Matches real Indy hardware documentation (confirmed independently,
+// not from this project's own testing alone): SIMMs must be installed
+// in groups of 4 identical modules per bank - the "4x" prefix names
+// this literally - and different banks may hold different capacities
+// from each other, which is exactly why the 256MB preset below is two
+// independently-sized full banks rather than one oversized bank.
+//
+// 128MB is this project's original, validated default - bit-for-bit the
+// same VALID/SIMMS values every regression_test.sh/disk_benchmark.sh run
+// this whole project has ever exercised. 32MB/64MB reuse the other
+// already-NAMED single-bank options (4x8M, 4x16M) - boot-tested
+// 2026-09-27 (see wiki/tasks.md), and passed PROM's own memory
+// diagnostic cleanly once the raw value was corrected to a named one.
+//
+// 256MB (banks A+B, each the proven 4x32M dual-rank pattern) is a real,
+// legitimate hardware configuration (confirmed independently: banks of
+// 4/8/16/32MB SIMMs are valid as long as each bank's own 4 SIMMs are
+// identical, and banks may differ from each other - 256MB, two full
+// 4x32M banks, is the documented maximum). The first attempt at it
+// (2026-09-27) DID fail boot-tested - `hinv` reported only "Main memory
+// size: 16 Mbytes" - but the root cause was a bug in this file, not a
+// PROM/hardware limitation: it set BOTH banks with one
+// `DEVICE_INPUT_DEFAULTS("SIMMS", 0x00ff, 0x00ee)` entry, and
+// DEVICE_INPUT_DEFAULTS matches a (port, mask) pair to exactly ONE
+// registered ioport field - 0x00ff matches neither bank A's own field
+// (mask 0x000f) nor bank B's (mask 0x00f0), so the override was almost
+// certainly silently discarded, the exact same failure mode this file's
+// own 2026-07-29 fix (above) already hit once with an all-banks mask of
+// 0xffff. Fixed by using two separate DEVICE_INPUT_DEFAULTS entries
+// below, one per bank's real mask - re-boot-tested 2026-09-28, confirmed
+// correct: `hinv` now reports "Main memory size: 256 Mbytes" exactly.
+#define MAME_SGI_RAM_SIZE_MB 128
+
+#if MAME_SGI_RAM_SIZE_MB == 32
+static DEVICE_INPUT_DEFAULTS_START(ip24_mc)
+	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x01)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000c) // bank A, "4x8M" (dual-rank), 32MB
+DEVICE_INPUT_DEFAULTS_END
+#elif MAME_SGI_RAM_SIZE_MB == 64
+static DEVICE_INPUT_DEFAULTS_START(ip24_mc)
+	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x01)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x0005) // bank A, "4x16M" (single-rank), 64MB
+DEVICE_INPUT_DEFAULTS_END
+#elif MAME_SGI_RAM_SIZE_MB == 128
 static DEVICE_INPUT_DEFAULTS_START(ip24_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x03)
-	// FIXED (2026-07-29): the earlier mask here, 0xffff, doesn't match any
-	// real ioport field - "SIMMS" is four separate PORT_CONFNAME fields
-	// packed into one port (bank A at mask 0x000f, B at 0x00f0, C at
-	// 0x0f00, D at 0xf000; see mc.cpp), and DEVICE_INPUT_DEFAULTS has to
-	// match one field's mask exactly. That's exactly why MAME's own
-	// validator logged "Default value specified for field with mask
-	// 0xffff... but no corresponding field found" on every driver load -
-	// the override was silently discarded, never actually applied. Confirmed
-	// directly via `hinv` on a booted guest: reported 16MB regardless of
-	// whether this override was present or reverted in source, all night.
-	// Targeting bank A's real mask (0x000f) instead - value 0x000e decodes
-	// to "4x32M" (128MB) per mc.cpp's own CONFSETTING table.
-	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e) // bank A, dual-rank, 128MB - this project's original/validated default
 DEVICE_INPUT_DEFAULTS_END
+#elif MAME_SGI_RAM_SIZE_MB == 256
+static DEVICE_INPUT_DEFAULTS_START(ip24_mc)
+	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x03)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e) // bank A, "4x32M" (dual-rank), 128MB
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x00f0, 0x00e0) // bank B, "4x32M" (dual-rank), 128MB - separate entry, separate mask (see comment above on why one combined entry silently failed)
+DEVICE_INPUT_DEFAULTS_END
+#else
+#error "MAME_SGI_RAM_SIZE_MB must be one of 32, 64, 128, 256"
+#endif
 
 void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 {
