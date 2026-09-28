@@ -615,6 +615,133 @@ protected:
 		// play once a per-event trace is no longer needed.
 		uint32_t        diag_cop1_trap_count;
 
+		// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - real
+		// host wall-clock (not guest-cycle) duration of each
+		// code_compile_block()/code_flush_cache() call from execute_run().
+		// Motivation: this project's scheduler is purely cycle-count-driven
+		// (device_scheduler::timeslice() advances every device's clock from
+		// icount alone, never host time - confirmed task84.md 2026-09-xx),
+		// so a compile/flush event doesn't distort the GUEST's own notion
+		// of elapsed time, but it does freeze the entire single emulation
+		// thread in REAL time - already measured once, ad hoc, as a 373.9ms
+		// freeze directly correlated with a full drc_cache flush (task #75
+		// "Bug B", console.md) via two separate indirect diagnostics
+		// (MAME_SGI_KBD_SCAN_RATE_DIAG + MAME_SGI_DRC_COMPILE_RATE_DIAG)
+		// matched by timestamp after the fact - no direct instrument existed
+		// for this until now. This is a genuinely different axis from
+		// perf_ab_stats.sh's aggregate instructions/cycles comparison, which
+		// can't distinguish "374ms in one lump" from "374ms spread across
+		// many small pieces" - only a real wall-clock stall-duration measure
+		// can see that difference, which is exactly what task #81
+		// (segmented DRC cache) would need to demonstrate its value.
+		// _over_threshold_count counts events exceeding
+		// MAME_SGI_STALL_DIAG_THRESHOLD_NS (mips3.cpp) - the DoS-relevant
+		// bucket a human would perceive as a stutter/dropped input, as
+		// opposed to routine sub-millisecond compiles.
+		uint64_t        diag_compile_stall_total_ns;
+		uint64_t        diag_compile_stall_max_ns;
+		uint32_t        diag_compile_stall_over_threshold_count;
+		uint32_t        diag_compile_stall_event_count;
+		uint64_t        diag_flush_stall_total_ns;
+		uint64_t        diag_flush_stall_max_ns;
+		uint32_t        diag_flush_stall_over_threshold_count;
+		uint32_t        diag_flush_stall_event_count;
+
+		// MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG (2026-09-16, task #97 QoS
+		// follow-up) - is a long compile a function of how far describe_code()
+		// had to traverse (window_limit/branch-driven sequence length), or
+		// something else? code_compile_block() (mips3drc.cpp) counts the total
+		// opcode_desc nodes in this call's desclist (every instruction in
+		// every sequence describe_code() returned, not just one sequence -
+		// a single call can batch several) into diag_last_compile_instruction_
+		// count right after describe_code() returns; execute_run() (mips3.cpp)
+		// reads it back alongside the same wall-clock duration already being
+		// measured, accumulating the running sums needed for a Pearson
+		// correlation coefficient (computed once, at clean exit, from these
+		// sums - no per-event log needed for the aggregate answer). The two
+		// outlier fields capture the single longest event's own PC/count/
+		// duration directly, since with only ~2 events/boot over the 10ms
+		// threshold, individually inspecting them is cheap and more concrete
+		// than a coefficient alone.
+		uint32_t        diag_last_compile_instruction_count;
+
+		// Fix (2026-09-17, task #97 QoS follow-up, found while interpreting
+		// stall_ab_stats.sh's pearson_r/outlier output): code_compile_block()
+		// (mips3drc.cpp) has a third code_flush_cache() call site - the
+		// abort_compilation catch block inside its own while(!succeeded)
+		// retry loop, hit whenever the near/permanent cache runs out mid-
+		// codegen - that isn't one of the two call sites execute_run()
+		// (mips3.cpp) times as "flush". That call regenerates the ENTIRE
+		// static handler set (entry point, nocode/out_of_cycles/tlb_mismatch,
+		// ~14 exception handlers, memory accessors for 3 modes - ~50+ real
+		// codegen blocks) every time, but its cost was previously silently
+		// folded into whatever compile call happened to trigger it -
+		// producing outliers like "instructions=1, ns=13ms" and diluting
+		// diag_compile_corr_*'s correlation, while diag_flush_stall_* stayed
+		// near-zero despite drc_cache's own flush_count() reaching ~10-11/
+		// boot. code_compile_block() now times this call site itself (same
+		// MAME_SGI_STALL_DURATION_DIAG chrono pattern as execute_run()'s two
+		// sites) and accumulates the result here; execute_run() reads it
+		// back right after code_compile_block() returns and subtracts it
+		// from that call's own elapsed time before feeding diag_compile_
+		// stall_*/diag_compile_corr_*, so "compile" reflects only describe_
+		// code()+codegen cost and "flush" finally captures this dominant,
+		// previously-invisible mechanism. Reset to 0 by execute_run() after
+		// each read; accumulates (rather than overwrites) in case the retry
+		// loop hits abort_compilation more than once in a single call.
+		uint64_t        diag_last_compile_flush_ns;
+
+		// TEMPORARY diagnostic (2026-09-17, task #97 QoS follow-up,
+		// continuing the investigation once the flush-attribution fix
+		// above ruled out the internal-flush mechanism as the cause of
+		// the ~10-13ms "long compile" outliers still seen after that fix).
+		// Narrows the still-open question this diagnostic's own original
+		// comment posed ("is a long compile a function of how far
+		// describe_code() had to traverse... or something else?") by
+		// timing describe_code() (mips3drc.cpp's call into it) separately
+		// from the rest of code_compile_block() - the front-end decode/
+		// window-walk pass (drcfe.ipp's build_sequence(), called twice per
+		// describe_code() - once forward, once backward from startpc - up
+		// to m_max_sequence or a window/branch-target boundary) is a
+		// plausible source of cost NOT reflected in diag_last_compile_
+		// instruction_count, which only counts what survives into the
+		// final compiled desclist, not how far the walk had to probe to
+		// get there. Set unconditionally each call, right after describe_
+		// code() returns (mirrors diag_last_compile_instruction_count's
+		// own placement/lifetime - no separate reset needed, always
+		// overwritten before use).
+		uint64_t        diag_last_describe_code_ns;
+		uint64_t        diag_compile_corr_n;
+		double          diag_compile_corr_sum_x;   // instruction counts
+		double          diag_compile_corr_sum_y;   // durations (ns)
+		double          diag_compile_corr_sum_xy;
+		double          diag_compile_corr_sum_x2;
+		double          diag_compile_corr_sum_y2;
+		uint64_t        diag_compile_longest_ns;
+		uint32_t        diag_compile_longest_pc;
+		uint32_t        diag_compile_longest_instruction_count;
+		// describe_code()-share tracking (2026-09-17) alongside the above -
+		// see diag_last_describe_code_ns's comment above for what this is
+		// isolating. Running total lets execute_run() report describe_
+		// code()'s mean share of total compile time at clean exit;
+		// longest-event's own describe_ns is captured alongside its
+		// existing pc/ns/instruction_count fields so a single outlier can
+		// be read as "how much of this was describe_code()?" directly.
+		uint64_t        diag_describe_code_total_ns;
+		uint64_t        diag_compile_longest_describe_ns;
+
+		// Duration histogram (2026-09-17, task #97 QoS follow-up) - added
+		// after describe_code() was directly measured and ruled out as the
+		// outlier cause (0.01-0.16% share of the ~11-14ms events), to
+		// answer a prior question before drilling further: are these truly
+		// 2 sharp, isolated outliers per boot, or the visible tail of a
+		// smoother distribution the single "longest event" field can't
+		// show? Log-scale buckets, boundaries in nanoseconds: [0]<1000ns,
+		// [1]<10,000ns, [2]<100,000ns, [3]<1,000,000ns, [4]<10,000,000ns,
+		// [5]>=10,000,000ns. Indexed by the same corrected (flush-
+		// subtracted) per-event ns already fed to diag_compile_corr_*.
+		uint64_t        diag_compile_duration_histogram[6];
+
 		// TEMPORARY diagnostic (2026-09-17, task #101 Phase 0) - real
 		// host wall-clock frequency of the two mechanisms that can deliver
 		// an interrupt under DRC: static_generate_entry_point()'s

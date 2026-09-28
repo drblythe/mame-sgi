@@ -204,11 +204,32 @@
 // operation - see mips3.h's comment on m_diag_usermode_recompile_counts
 // for the full mechanism/hypothesis. Counts recompile events per
 // (mode, pc), USER mode only, dumped at clean exit from mips3.cpp's
-// device_stop(). Cheap (one hash-map insert per compile, USER mode
-// only - never fires during kernel-mode-only boot phases at all), safe
-// to leave on for a normal test run.
-// RESTORED (2026-08-17) - task #69/#71 concluded, see
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above.
+// device_stop(). RESTORED (2026-08-17) - task #69/#71 concluded, see
+// MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above - at the
+// time judged "cheap... safe to leave on for a normal test run" on an
+// amortized-cost basis (one hash-map insert per compile).
+// DISABLED, THEN RE-ENABLED WITH A FIX (2026-09-17, task #97 QoS
+// follow-up) - that "cheap" judgment used the wrong success metric for
+// what this investigation actually needs. Amortized-O(1) insert cost is
+// real in aggregate, but says nothing about the periodic O(n) rehash
+// spikes that same unbounded growth causes - exactly the tail-latency
+// question this diagnostic's own caller (execute_run()'s MAME_SGI_
+// STALL_DURATION_DIAG) exists to catch, not something perf_ab_stats.sh's
+// aggregate instructions/cycles view would ever surface. Caught directly
+// via a gdb conditional breakpoint on mmap(~2.7MB) during a live boot:
+// m_diag_usermode_recompile_counts (an unordered_map<uint64_t,uint32_t>,
+// never cleared, growing for the whole session) rehashing to 351,061
+// buckets was one of two real causes found for MAME_SGI_COMPILE_LENGTH_
+// CORRELATION_DIAG's ~11-13ms "long compile" outliers - see wiki/
+// performance.md's "Root cause found" subsection, describe_code()/
+// histogram/gdb-backtrace follow-up, for the other (m_checkints_addrs,
+// mips3.h - unconditional production code, not diagnostic-gated, spun
+// off as its own task since it needs a real fix, not just a toggle).
+// Re-enabled after adding a one-time reserve() at the insert site (see
+// its own comment below) that converts the periodic rehash stalls into
+// one predictable upfront allocation - verified via boot test that
+// MAME_SGI_STALL_DURATION_DIAG's over_10ms_threshold stays at 0 with
+// this diagnostic active again.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
 // TEMPORARY diagnostic (2026-09-17, task #100 scoping) - see
@@ -1268,6 +1289,29 @@
 // again.
 // #define MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG
 
+// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - see
+// diag_last_compile_instruction_count's comment in mips3.h. Self-defined
+// here too (not just mips3.cpp) since this file compiles as part of the
+// shared "optional" project, not the mame_sgi project sgi.lua's defines{}
+// block scopes to - the two translation units don't share preprocessor
+// state (see build-verify skill's own note on this exact gotcha). Must be
+// defined identically in both files or one side's struct writes go to a
+// field the other side never reads.
+// #define MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
+
+// Fix (2026-09-17, task #97 QoS follow-up) - same cross-TU gotcha as
+// above, needed here too now: code_compile_block()'s own abort_compilation
+// catch block (below) times its internal code_flush_cache() call using
+// this file's own MAME_SGI_STALL_DURATION_DIAG/MAME_SGI_STALL_DIAG_
+// THRESHOLD_NS, mirroring mips3.cpp's two call sites exactly (same
+// threshold value, same counter fields in internal_mips3_state) so this
+// third, previously-unattributed flush mechanism reports through the same
+// diag_flush_stall_* bucket instead of hiding inside diag_compile_stall_*/
+// diag_compile_corr_*. See diag_last_compile_flush_ns's comment in
+// mips3.h for the full mechanism this fixes.
+// #define MAME_SGI_STALL_DURATION_DIAG
+#define MAME_SGI_STALL_DIAG_THRESHOLD_NS 10'000'000ULL
+
 // THE FIX (2026-08-22, task #8; reworked 2026-08-23) -
 // static_generate_tlb_mismatch()'s "skip" branch, reached when the live
 // TLB entry for this PC's page is mapped again by the time the handler
@@ -1989,7 +2033,26 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// caught by the diagnostic dump being unexpectedly empty, not by a
 	// build/runtime failure.
 	if (((mode >> 2) != 0) && ((mode & 0x02) != 0))
+	{
+		// Fix (2026-09-17, task #97 QoS follow-up) - see this macro's own
+		// enable comment above for the full story: this map's incremental
+		// rehashing (libstdc++ growing its bucket array, observed reaching
+		// 351,061 buckets mid-boot via a live gdb backtrace) was the exact
+		// mechanism causing this diagnostic's real ~11-13ms tail-latency
+		// cost, despite genuinely being cheap on an amortized-per-insert
+		// basis. Reserving a large bucket count on first use converts that
+		// into one upfront, predictable allocation instead of several
+		// scattered, unpredictable rehash stalls through the boot - same
+		// total work, but paid once instead of as periodic surprises.
+		// 500,000 is comfortably above the observed 351,061-bucket rehash
+		// point, with headroom for a heavier session; if a given boot still
+		// exceeds it, this just falls back to ordinary (rarer) rehashing,
+		// same as before this fix - reserve() is a mitigation of frequency/
+		// predictability, not a hard cap.
+		if (m_diag_usermode_recompile_counts.empty())
+			m_diag_usermode_recompile_counts.reserve(500'000);
 		m_diag_usermode_recompile_counts[(uint64_t(mode) << 32) | uint32_t(pc)]++;
+	}
 	if ((mode >> 2) == 0)
 		m_diag_kernel_dispatch_mode_values.insert(mode);
 #endif
@@ -2283,9 +2346,28 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	auto profile = g_profiler.start(PROFILER_DRC_COMPILE);
 
 	/* get a description of this sequence */
+#ifdef MAME_SGI_STALL_DURATION_DIAG
+	auto const describe_code_start = std::chrono::steady_clock::now();
+#endif
 	desclist = m_drcfe->describe_code(pc);
+#ifdef MAME_SGI_STALL_DURATION_DIAG
+	// See diag_last_describe_code_ns's comment in mips3.h.
+	m_core->diag_last_describe_code_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - describe_code_start).count();
+#endif
 	/* get last instruction of the code (potentially used in generate_checksum) */
 	codelast = m_drcfe->get_last();
+#ifdef MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
+	// See diag_last_compile_instruction_count's comment in mips3.h. Total
+	// opcode_desc nodes in this call's window - every instruction in every
+	// sequence describe_code() just returned, read back by execute_run()
+	// right after this function returns.
+	{
+		uint32_t count = 0;
+		for (const opcode_desc *d = desclist; d != nullptr; d = d->next())
+			count++;
+		m_core->diag_last_compile_instruction_count = count;
+	}
+#endif
 #ifdef MAME_SGI_RODATA_SEQUENCE_OVERRUN_DIAG
 	// See this define's own comment above. Target range is cc1's
 	// .rodata section (guest VA 0x10328000, size 0x73f902, established
@@ -3044,7 +3126,27 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 		}
 		catch (drcuml_block::abort_compilation &)
 		{
+#ifdef MAME_SGI_STALL_DURATION_DIAG
+			auto const internal_flush_start = std::chrono::steady_clock::now();
+#endif
 			code_flush_cache();
+#ifdef MAME_SGI_STALL_DURATION_DIAG
+			{
+				uint64_t const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - internal_flush_start).count();
+				m_core->diag_flush_stall_total_ns += ns;
+				m_core->diag_flush_stall_event_count++;
+				if (ns > m_core->diag_flush_stall_max_ns)
+					m_core->diag_flush_stall_max_ns = ns;
+				if (ns > MAME_SGI_STALL_DIAG_THRESHOLD_NS)
+					m_core->diag_flush_stall_over_threshold_count++;
+				// See diag_last_compile_flush_ns's comment in mips3.h -
+				// execute_run() (mips3.cpp) reads this back and subtracts
+				// it from the enclosing code_compile_block() call's own
+				// elapsed time, so this cost is attributed here (flush)
+				// and not double-counted as compile time too.
+				m_core->diag_last_compile_flush_ns += ns;
+			}
+#endif
 		}
 	}
 }
