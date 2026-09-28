@@ -15,6 +15,28 @@
 #include <cstdio>
 #include <iostream>
 
+// Candidate fix: dynamically request a temporary scheduling quantum
+// matching the guest's own just-programmed COMPARE interval, instead of
+// relying solely on the standing 60Hz default
+// (machine().config().maximum_quantum(), schedule.cpp) to bound how long
+// a single CPU execution burst can run before the scheduler gets another
+// chance to let a pending interrupt be noticed. device_scheduler::
+// add_quantum() (distinct from the config-time-only set_maximum_quantum())
+// is a genuine runtime call: it inserts an auto-expiring tightened bound,
+// so this self-adapts to whatever tick rate the guest actually configures
+// and decays on its own if the guest stops reprogramming for a while,
+// rather than permanently over-constraining the scheduler like a static
+// constant would. Under test - not yet confirmed safe/beneficial enough
+// to enable unconditionally.
+// #define MAME_SGI_COMPARE_QUANTUM_BOOST
+#ifdef MAME_SGI_COMPARE_QUANTUM_BOOST
+#include <chrono>
+namespace {
+	uint64_t g_mame_sgi_compare_quantum_boost_calls = 0;
+	std::chrono::steady_clock::time_point g_mame_sgi_compare_quantum_boost_next_print{};
+}
+#endif
+
 // dispatch_page_writable() (mips3.h) hardcodes this shift as a literal
 // since MIPS3_MIN_PAGE_SHIFT isn't visible from that header's own
 // include order - catch drift here, where both are visible.
@@ -113,6 +135,26 @@ void mips3_device::mips3com_update_cycle_counting()
 		m_core->compare_armed = 0;
 		attotime newtime = cycles_to_attotime((uint64_t)delta * 2);
 		m_compare_int_timer->adjust(newtime);
+#ifdef MAME_SGI_COMPARE_QUANTUM_BOOST
+		// add_quantum() asserts quantum.seconds() == 0 - skip the boost for
+		// an unusually large interval (e.g. the kernel deliberately parking
+		// the timer far in the future) rather than trip that assert; there's
+		// no responsiveness case to help there anyway.
+		if (newtime.seconds() == 0)
+		{
+			machine().scheduler().add_quantum(newtime, newtime);
+			g_mame_sgi_compare_quantum_boost_calls++;
+			auto const mame_sgi_now = std::chrono::steady_clock::now();
+			if (mame_sgi_now >= g_mame_sgi_compare_quantum_boost_next_print)
+			{
+				g_mame_sgi_compare_quantum_boost_next_print = mame_sgi_now + std::chrono::seconds(1);
+				osd_printf_info(
+						"MAME_SGI_COMPARE_QUANTUM_BOOST calls=%llu last_interval_attoseconds=%lld\n",
+						(unsigned long long)g_mame_sgi_compare_quantum_boost_calls,
+						(long long)newtime.attoseconds());
+			}
+		}
+#endif
 		return;
 	}
 }
