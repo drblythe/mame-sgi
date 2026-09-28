@@ -63,6 +63,19 @@ namespace {
 //  GLOBAL VARIABLES
 //**************************************************************************
 
+// Always-on (not gated behind a diagnostic #define - the cost is one
+// global add per throttle_until_ticks() call, a handful of times a
+// second, not a hot per-byte/per-instruction path) accumulator of real
+// ticks spent deliberately idling in throttle_until_ticks() to pace
+// emulation at real-time speed. External linkage so any raw wall-clock
+// timer-callback diagnostic elsewhere (e.g. schedule.cpp's
+// MAME_SGI_TIMER_CALLBACK_STATS_DIAG) can read a before/after delta and
+// subtract genuine idle time from a callback's measured duration,
+// instead of conflating "deliberately sleeping" with real work - see
+// throttle_until_ticks()'s own comment for the full rationale and the
+// wiki/drc-fault-redesign-scoping.md investigation this generalizes.
+osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
+
 // frameskipping tables
 const bool video_manager::s_skiptable[FRAMESKIP_LEVELS][FRAMESKIP_LEVELS] =
 {
@@ -854,7 +867,8 @@ osd_ticks_t video_manager::throttle_until_ticks(osd_ticks_t target_ticks)
 
 	// loop until we reach our target
 	auto profile = g_profiler.start(PROFILER_IDLE);
-	osd_ticks_t current_ticks = osd_ticks();
+	osd_ticks_t const mame_sgi_throttle_entry_ticks = osd_ticks();
+	osd_ticks_t current_ticks = mame_sgi_throttle_entry_ticks;
 	while (current_ticks < target_ticks)
 	{
 		// compute how much time to sleep for, taking into account the average oversleep
@@ -889,6 +903,22 @@ osd_ticks_t video_manager::throttle_until_ticks(osd_ticks_t target_ticks)
 		}
 		current_ticks = new_ticks;
 	}
+
+	// Always-on, near-zero-cost accumulator (one global add per call, no
+	// branching, no allocation) of real time spent deliberately idling/
+	// sleeping here to pace emulation at real-time speed - independent of
+	// g_profiler's own PROFILER_IDLE bucket, which requires a PROFILER=1
+	// build (dummy_profiler_state in normal builds discards all g_profiler
+	// data, and even the real one has no public accessor for it). Exists
+	// so a raw wall-clock timer-callback diagnostic (e.g.
+	// MAME_SGI_TIMER_CALLBACK_STATS_DIAG in schedule.cpp) can subtract
+	// genuine idle time from a callback's measured duration instead of
+	// conflating "deliberately sleeping to pace 60Hz" with real work -
+	// exactly the confusion documented in
+	// wiki/drc-fault-redesign-scoping.md's screen_device::vblank_begin
+	// investigation, generalized here so it can't recur for any other
+	// callback that happens to trigger throttling.
+	mame_sgi_throttle_idle_ticks += (current_ticks - mame_sgi_throttle_entry_ticks);
 
 	return current_ticks;
 }

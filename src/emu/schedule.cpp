@@ -128,8 +128,19 @@ inline void sched_mxcsr_diag_check(const char *checkpoint) { mame_sgi_mxcsr_diag
 // measurement, never left on across a commit.
 // #define MAME_SGI_TIMER_CALLBACK_STATS_DIAG
 #ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
+// Defined in video.cpp, always-on (not gated behind a diagnostic define -
+// negligible cost, see its own comment): real ticks accumulated inside
+// throttle_until_ticks()'s deliberate pacing sleep/spin. A raw wall-clock
+// bracket around a whole callback (like this diagnostic's own) can't
+// distinguish "the callback genuinely did work" from "the callback
+// happened to call into the throttle path and spent most of its measured
+// time asleep" - confirmed to matter in practice for
+// screen_device::vblank_begin (see wiki/drc-fault-redesign-scoping.md).
+// Reading a before/after delta of this counter and subtracting it below
+// fixes that conflation generally, for any callback, not just vblank.
+extern osd_ticks_t mame_sgi_throttle_idle_ticks;
 namespace {
-	struct mame_sgi_timer_callback_stat { uint64_t count = 0; osd_ticks_t ticks = 0; };
+	struct mame_sgi_timer_callback_stat { uint64_t count = 0; osd_ticks_t ticks = 0; osd_ticks_t idle_ticks = 0; };
 	std::unordered_map<std::string, mame_sgi_timer_callback_stat> s_mame_sgi_timer_callback_stats;
 	osd_ticks_t s_mame_sgi_timer_callback_stats_next_dump = 0;
 
@@ -137,23 +148,54 @@ namespace {
 	{
 		std::vector<std::pair<std::string, mame_sgi_timer_callback_stat>> sorted(
 			s_mame_sgi_timer_callback_stats.begin(), s_mame_sgi_timer_callback_stats.end());
+		// Rank by BUSY ticks (ticks - idle_ticks), not raw ticks - a
+		// callback that mostly slept in throttle_until_ticks() (vblank_
+		// begin, historically) would otherwise misleadingly rank above
+		// callbacks doing genuine work. See this block's own comment.
 		std::sort(sorted.begin(), sorted.end(),
-			[](auto const &a, auto const &b) { return a.second.ticks > b.second.ticks; });
-		osd_ticks_t total_ticks = 0;
+			[](auto const &a, auto const &b) {
+				return (a.second.ticks - a.second.idle_ticks) > (b.second.ticks - b.second.idle_ticks);
+			});
+		osd_ticks_t total_busy_ticks = 0;
 		for (auto const &entry : sorted)
-			total_ticks += entry.second.ticks;
+			total_busy_ticks += (entry.second.ticks - entry.second.idle_ticks);
 		osd_printf_info("MAME_SGI_TIMER_CALLBACK_STATS_DIAG: --- snapshot (%d distinct callbacks) ---\n", int(sorted.size()));
 		for (size_t i = 0; i < sorted.size() && i < 10; i++)
 		{
-			double pct = total_ticks ? (100.0 * double(sorted[i].second.ticks) / double(total_ticks)) : 0.0;
-			osd_printf_info("MAME_SGI_TIMER_CALLBACK_STATS_DIAG: %-40s calls=%12llu ticks=%12llu (%.2f%%)\n",
+			osd_ticks_t const busy_ticks = sorted[i].second.ticks - sorted[i].second.idle_ticks;
+			double pct = total_busy_ticks ? (100.0 * double(busy_ticks) / double(total_busy_ticks)) : 0.0;
+			osd_printf_info("MAME_SGI_TIMER_CALLBACK_STATS_DIAG: %-40s calls=%12llu busy_ticks=%12llu idle_ticks=%12llu (%.2f%% of busy)\n",
 				sorted[i].first.c_str(),
 				(unsigned long long)sorted[i].second.count,
-				(unsigned long long)sorted[i].second.ticks,
+				(unsigned long long)busy_ticks,
+				(unsigned long long)sorted[i].second.idle_ticks,
 				pct);
 		}
 		s_mame_sgi_timer_callback_stats.clear();
 	}
+}
+#endif
+
+// TEMPORARY diagnostic (task #101, 2026-09-17) - isolating which specific
+// timer callback (video vblank, audio stream update, DMA completion, and
+// so on) is responsible for a deterministic early-boot ~150ms gap between
+// a CPU device_execute_interface's own successive re-entries, already
+// ruled out (by strace correlation) as a blocking syscall or a slow DRC
+// recompile - the remaining candidate is time spent inside
+// execute_timers() running some other device's own callback before this
+// CPU gets its next turn. Deliberately NOT built like
+// MAME_SGI_TIMER_CALLBACK_STATS_DIAG above - that diagnostic's own
+// comment documents a real incident where a per-call std::string-keyed
+// hashmap insert on this same hot path quietly dominated a night's worth
+// of boot timing measurements. This one only takes two clock readings and
+// compares against a threshold per call - no allocation, no hashing - and
+// resolves the callback's name only on the rare event that actually
+// crosses the threshold.
+// #define MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
+#ifdef MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
+#include <chrono>
+namespace {
+	constexpr uint64_t MAME_SGI_TIMER_CALLBACK_OUTLIER_THRESHOLD_NS = 2'000'000ULL; // 2ms
 }
 #endif
 
@@ -1117,8 +1159,34 @@ inline void device_scheduler::execute_timers()
 #endif
 #ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
 				osd_ticks_t mame_sgi_t0 = osd_ticks();
+				osd_ticks_t mame_sgi_idle_t0 = mame_sgi_throttle_idle_ticks;
+#endif
+#ifdef MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
+				auto const mame_sgi_outlier_t0 = std::chrono::steady_clock::now();
 #endif
 				timer.m_callback(timer.m_param);
+#ifdef MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
+				{
+					auto const mame_sgi_outlier_t1 = std::chrono::steady_clock::now();
+					uint64_t const mame_sgi_outlier_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(mame_sgi_outlier_t1 - mame_sgi_outlier_t0).count());
+					if (mame_sgi_outlier_ns > MAME_SGI_TIMER_CALLBACK_OUTLIER_THRESHOLD_NS)
+					{
+						char const *mame_sgi_outlier_cbname = timer.m_callback.name();
+						auto const mame_sgi_outlier_wall = std::chrono::system_clock::now();
+						auto const mame_sgi_outlier_t = std::chrono::system_clock::to_time_t(mame_sgi_outlier_wall);
+						auto const mame_sgi_outlier_us = std::chrono::duration_cast<std::chrono::microseconds>(mame_sgi_outlier_wall.time_since_epoch()) % 1'000'000;
+						std::tm mame_sgi_outlier_tm{};
+						localtime_r(&mame_sgi_outlier_t, &mame_sgi_outlier_tm);
+						char mame_sgi_outlier_tsbuf[24];
+						std::snprintf(mame_sgi_outlier_tsbuf, sizeof(mame_sgi_outlier_tsbuf), "%02d:%02d:%02d.%06d",
+							mame_sgi_outlier_tm.tm_hour, mame_sgi_outlier_tm.tm_min, mame_sgi_outlier_tm.tm_sec, int(mame_sgi_outlier_us.count()));
+						osd_printf_info(
+								"MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG outlier: wallclock=%s duration_ns=%llu callback=%s\n",
+								mame_sgi_outlier_tsbuf, (unsigned long long)mame_sgi_outlier_ns,
+								mame_sgi_outlier_cbname ? mame_sgi_outlier_cbname : "<unnamed>");
+					}
+				}
+#endif
 #ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
 				{
 					char const *mame_sgi_diag_cbname = timer.m_callback.name();
@@ -1134,6 +1202,7 @@ inline void device_scheduler::execute_timers()
 				auto &mame_sgi_stat = s_mame_sgi_timer_callback_stats[mame_sgi_cb_name ? mame_sgi_cb_name : "<unnamed>"];
 				mame_sgi_stat.count++;
 				mame_sgi_stat.ticks += (mame_sgi_t1 - mame_sgi_t0);
+				mame_sgi_stat.idle_ticks += (mame_sgi_throttle_idle_ticks - mame_sgi_idle_t0);
 				if (mame_sgi_t1 >= s_mame_sgi_timer_callback_stats_next_dump)
 				{
 					mame_sgi_dump_and_reset_timer_callback_stats();
