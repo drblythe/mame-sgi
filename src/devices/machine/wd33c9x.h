@@ -11,6 +11,31 @@
 
 #include "machine/nscsi_bus.h"
 
+// Coarser scheduling for bulk DATA_IN/DATA_OUT byte transfers: the
+// per-byte REQ/ACK settle wait normally arms a real host-scheduler timer
+// once for every single transferred byte, which dominates host CPU time
+// during large disk transfers even though the guest driver never
+// actually observes anything about the individual bytes going by (it
+// only sees the final completion interrupt and register state). When
+// enabled and only while a transfer is in progress in demand-mode DMA
+// (never plain-polled I/O, which does depend on real per-byte register
+// visibility), this skips arming that timer for most bytes and instead
+// resumes the transfer state machine immediately, accumulating the
+// total elapsed-cycle count until the run either leaves that narrow
+// condition or hits a safety cap, at which point one real timer is
+// armed for the accumulated total. Every REQ/ACK/FIFO/DRQ/IRQ side
+// effect the guest can actually observe still happens once per byte,
+// identically either way - only how the "wait, then resume" step
+// between bytes is driven changes. Enabled by default as of 2026-09-19
+// after validation (real-world data-integrity and throughput testing,
+// see wiki/scsi-coarse-schedule-scoping.md): read determinism confirmed,
+// ~2x real disk throughput measured, boot-to-login regression clean.
+// The plain one-real-timer-per-byte path below remains the permanent
+// fallback and is what runs whenever this is undefined - a reversible,
+// side-by-side toggle, not a replacement, so it can still be disabled
+// here if a future regression is ever suspected.
+#define MAME_SGI_SCSI_COARSE_SCHEDULE
+
 class wd33c9x_base_device : public device_t, public nscsi_device_interface
 {
 public:
@@ -62,6 +87,18 @@ private:
 
 	void start_command();
 
+	// Every genuinely external entry point into the state machine (a
+	// real timer firing, a SCSI bus line changing, a register access,
+	// a freshly dispatched command) must call step_entry(), never step()
+	// directly - it's the one place that knows how to keep resuming the
+	// machine immediately when MAME_SGI_SCSI_COARSE_SCHEDULE decides to
+	// skip arming a real timer (see delay()), so a coarsening decision
+	// made deep inside any of those call paths can't get silently
+	// dropped. step() calling itself internally (its own same-call-stack
+	// cascades that don't need a real wait) is unaffected and keeps
+	// calling step() directly, not step_entry() - only entry from
+	// outside step()'s own body needs the wrapper.
+	void step_entry(bool timeout);
 	void step(bool timeout);
 	void set_scsi_state(uint16_t state);
 	void set_scsi_state_sub(uint8_t sub);
@@ -107,6 +144,26 @@ private:
 	void delay_arb_poll();
 	void delay_cycles(uint32_t cycles);
 	emu_timer *m_timer;
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	bool coarse_schedule_eligible() const;
+	bool m_coarse_continue;
+	uint32_t m_coarse_cycle_debt;
+	uint32_t m_coarse_iterations;
+	// Counts concurrently-nested step_entry() calls on the current call
+	// stack. nscsi_bus_device::regen_ctrl() dispatches SCSI control-line
+	// changes to other devices synchronously (same call stack, not a
+	// scheduled event) - any m_scsi_bus->ctrl_w() call below can
+	// therefore synchronously trigger another device's own reaction,
+	// which can synchronously call back into this device's own
+	// scsi_ctrl_changed() before the call that made the original
+	// ctrl_w() has returned. Only the outermost (depth-0) step_entry()
+	// call may run its coarse-mode resume loop; any call reentered while
+	// that depth is already nonzero must behave like the plain fine-mode
+	// passthrough (call step() once, don't loop) - see step_entry()'s
+	// own comment for why looping there too would grow this stack
+	// without bound over a large transfer.
+	uint32_t m_step_entry_depth;
+#endif
 
 	bool set_command_length(const uint8_t cc);
 	uint8_t get_msg_out() const;

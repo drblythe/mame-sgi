@@ -67,6 +67,17 @@
 static constexpr uint32_t MAME_SGI_SCSI_DELAY_SCALE = 500;
 #endif
 
+// See MAME_SGI_SCSI_COARSE_SCHEDULE's own definition in the header for
+// what this toggle does. Cap on how many bytes' worth of cycles can be
+// accumulated before a real timer is forced regardless of eligibility -
+// a safety valve bounding the worst case to a small, fixed number of
+// real timer round-trips per transfer rather than exactly one, in case
+// some not-yet-considered transfer shape would otherwise never stop
+// being "eligible" on its own.
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+static constexpr uint32_t MAME_SGI_SCSI_COARSE_MAX_ITERATIONS = 65536;
+#endif
+
 #define LOG_READS       (1U << 1)
 #define LOG_WRITES      (1U << 2)
 #define LOG_COMMANDS    (1U << 3)
@@ -100,6 +111,59 @@ namespace {
 	uint64_t s_mame_sgi_update_step_calls = 0;
 	osd_ticks_t s_mame_sgi_update_step_ticks = 0;
 	osd_ticks_t s_mame_sgi_update_step_next_dump = 0;
+}
+#endif
+
+// TEMPORARY DIAGNOSTIC (2026-09-19), disabled by default. wiki task #7's
+// own stated prerequisite - never previously answered - is whether IRIX's
+// real disk driver ever observes intermediate per-byte SCSI transfer
+// state, or only start/completion. Neither of that question's two real
+// signals was actually being logged anywhere in this file (checked
+// directly: LOG_WRITES/LOG_READS/LOG_REGS exist but are only ever used on
+// already-covered error paths, e.g. "write to read-only register" -
+// normal CONTROL writes and AUXILIARY_STATUS reads fall through
+// indir_reg_w()/indir_reg_r()'s silent default: cases with no logging at
+// all). This adds exactly the two counters needed to answer it, without
+// touching any behavior:
+//   - every CONTROL register write logs its DMA-mode bits (CONTROL_DM) -
+//     rare (at most a handful of times per SCSI command, not per-byte),
+//     safe to log unconditionally.
+//   - AUXILIARY_STATUS reads are counted, not logged individually - a
+//     real per-byte-polling driver would read this at a frequency high
+//     enough that logging each one would both flood the log and (per
+//     this file's own MAME_SGI_SCSI_DELAY_EXPERIMENT/MAME_SGI_UPDATE_
+//     STEP_TIMING_DIAG comments above) risk perturbing the very timing
+//     being characterized - periodic count dumps (same 5-second
+//     snapshot-and-reset cadence as MAME_SGI_UPDATE_STEP_TIMING_DIAG)
+//     answer "how often" without either problem.
+//
+// ANSWER (2026-09-19, against tools/disk_benchmark.sh's raw-disk-read
+// workload): CONTROL is written a handful of times per boot+session
+// (3 times in one full run), every single time with DM=BURST (demand-
+// mode DMA) - never POLLED. AUXILIARY_STATUS's read-count dump never
+// fired even once across the whole run - not "rare", genuinely zero.
+// Traced why: this register also has a real hardware direct-read path
+// (status_r(), bypassing the address-pointer indirection entirely) but
+// it's provably unreachable here - HPC3 only wires 2 bytes of I/O space
+// to this chip (hd_rd_cb<0>/hd_wr_cb<0> -> indir_r()/indir_w(), whose
+// own switch has just offset 0 = address pointer, offset 1 = indirect
+// data - see indir_r()/indir_w() above), so status_r() is dead code for
+// this specific board regardless. Conclusion: IRIX's real driver does
+// NOT observe intermediate per-byte SCSI transfer state through this
+// controller at all in BURST mode - it relies entirely on the DRQ line
+// (already an automatic HPC3-side pump, see hpc3.cpp's do_scsi_dma())
+// and the final completion IRQ, never re-checking controller state
+// mid-transfer. This directly answers this task's own long-standing
+// open prerequisite: a coarser schedule for the per-byte REQ/ACK
+// settle-timing simulation inside step() would not break any observed
+// driver behavior, as far as this evidence shows - see wiki/tasks.md's
+// task #7 row for the fuller writeup and what's still not covered by
+// this single (BURST-mode, disk-read) workload.
+// #define MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
+#ifdef MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
+namespace {
+	uint64_t s_mame_sgi_auxstat_read_count = 0;
+	osd_ticks_t s_mame_sgi_auxstat_next_dump = 0;
 }
 #endif
 
@@ -449,6 +513,12 @@ wd33c9x_base_device::wd33c9x_base_device(const machine_config &mconfig, device_t
 	, m_drq_cb{ *this }
 	, m_drq_state{ false }
 	, m_timer{ nullptr }
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	, m_coarse_continue{ false }
+	, m_coarse_cycle_debt{ 0 }
+	, m_coarse_iterations{ 0 }
+	, m_step_entry_depth{ 0 }
+#endif
 {
 }
 
@@ -475,6 +545,12 @@ void wd33c9x_base_device::device_start()
 	save_item(NAME(m_irq_fifo_pos));
 	save_item(NAME(m_irq_fifo_size));
 	save_item(NAME(m_drq_state));
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	save_item(NAME(m_coarse_continue));
+	save_item(NAME(m_coarse_cycle_debt));
+	save_item(NAME(m_coarse_iterations));
+	save_item(NAME(m_step_entry_depth));
+#endif
 }
 
 
@@ -504,6 +580,12 @@ void wd33c9x_base_device::device_reset()
 	m_irq_cb(CLEAR_LINE);
 	m_drq_cb(CLEAR_LINE);
 	m_drq_state = false;
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	m_coarse_continue = false;
+	m_coarse_cycle_debt = 0;
+	m_coarse_iterations = 0;
+	m_step_entry_depth = 0;
+#endif
 
 	// Hardware reset triggers a SCSI_STATUS_RESET interrupt.
 	irq_fifo_push(SCSI_STATUS_RESET);
@@ -520,7 +602,7 @@ TIMER_CALLBACK_MEMBER(wd33c9x_base_device::update_step)
 #ifdef MAME_SGI_UPDATE_STEP_TIMING_DIAG
 	osd_ticks_t mame_sgi_update_step_t0 = osd_ticks();
 #endif
-	step(true);
+	step_entry(true);
 #ifdef MAME_SGI_UPDATE_STEP_TIMING_DIAG
 	osd_ticks_t mame_sgi_update_step_t1 = osd_ticks();
 	s_mame_sgi_update_step_calls++;
@@ -551,7 +633,7 @@ void wd33c9x_base_device::scsi_ctrl_changed()
 		// FIXME - Do something...
 		return;
 	}
-	step(false);
+	step_entry(false);
 }
 
 
@@ -673,7 +755,7 @@ uint8_t wd33c9x_base_device::indir_reg_r()
 		if (data_fifo_empty())
 			m_regs[AUXILIARY_STATUS] &= ~AUXILIARY_STATUS_DBR;
 		if (was_full)
-			step(false);
+			step_entry(false);
 		break;
 	}
 
@@ -684,6 +766,19 @@ uint8_t wd33c9x_base_device::indir_reg_r()
 		else {
 			ret = m_regs[m_addr];
 		}
+
+#ifdef MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
+		if (m_addr == AUXILIARY_STATUS) {
+			s_mame_sgi_auxstat_read_count++;
+			osd_ticks_t now = osd_ticks();
+			if (now >= s_mame_sgi_auxstat_next_dump) {
+				printf("MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG: AUXILIARY_STATUS reads in last ~5s: %llu\n",
+					(unsigned long long)s_mame_sgi_auxstat_read_count);
+				s_mame_sgi_auxstat_read_count = 0;
+				s_mame_sgi_auxstat_next_dump = now + osd_ticks_per_second() * 5;
+			}
+		}
+#endif
 
 		// Clear IRQ when the SCSI Status Register is read
 		if (m_addr == SCSI_STATUS) {
@@ -744,7 +839,7 @@ void wd33c9x_base_device::indir_reg_w(uint8_t data)
 		m_regs[AUXILIARY_STATUS] &= ~AUXILIARY_STATUS_DBR;
 		data_fifo_push(data);
 		decrement_transfer_count();
-		step(false);
+		step_entry(false);
 		break;
 
 	default:
@@ -754,6 +849,15 @@ void wd33c9x_base_device::indir_reg_w(uint8_t data)
 		else {
 			m_regs[m_addr] = data;
 		}
+#ifdef MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
+		if (m_addr == CONTROL) {
+			printf("MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG: CONTROL write data=%02x DM=%s\n",
+				data,
+				(data & CONTROL_DM) == CONTROL_DM_POLLED ? "POLLED" :
+				(data & CONTROL_DM) == CONTROL_DM_BURST ? "BURST" :
+				(data & CONTROL_DM) == CONTROL_DM_BUS ? "BUS" : "DMA");
+		}
+#endif
 		m_addr = (m_addr + 1) & REGS_MASK;
 		break;
 	}
@@ -839,7 +943,7 @@ void wd33c9x_base_device::start_command()
 		set_scsi_state(FINISHED);
 		irq_fifo_push((m_regs[OWN_ID] & OWN_ID_EAF) ? SCSI_STATUS_RESET_EAF : SCSI_STATUS_RESET);
 		m_scsi_id = (m_regs[OWN_ID] & OWN_ID_M_SCSI_ID);
-		step(false);
+		step_entry(false);
 		break;
 
 	case COMMAND_CC_ABORT:
@@ -886,7 +990,7 @@ void wd33c9x_base_device::start_command()
 			fatalerror("Select commands only valid in the Disconnected state.");
 		}
 		set_scsi_state((ARB_WAIT_BUS_FREE << SUB_SHIFT) | DISC_SEL_ARBITRATION);
-		step(false);
+		step_entry(false);
 		break;
 
 	case COMMAND_CC_SELECT_TRANSFER:
@@ -904,7 +1008,7 @@ void wd33c9x_base_device::start_command()
 		}
 		set_command_length(cc);
 		load_transfer_count();
-		step(false);
+		step_entry(false);
 		break;
 
 	case COMMAND_CC_TRANSLATE_ADDRESS:
@@ -949,7 +1053,7 @@ void wd33c9x_base_device::start_command()
 		set_command_length(COMMAND_CC_TRANSFER_INFO);
 		load_transfer_count();
 		m_xfr_phase = (m_scsi_bus->ctrl_r() & S_PHASE_MASK);
-		step(false);
+		step_entry(false);
 		return;
 
 	default:
@@ -969,6 +1073,88 @@ static const char * phase_strings[8] = {
 	"MSG_OUT",
 	"MSG_IN",
 };
+
+
+//-------------------------------------------------
+//  step_entry - the only correct way to (re-)enter the state machine
+//  from outside step()'s own body (a real timer firing, a SCSI bus line
+//  changing, a register access, a freshly dispatched command all reach
+//  step() only through here).
+//-------------------------------------------------
+
+// TEMPORARY validation diagnostic for the step_entry() reentrancy-depth
+// guard fix - logs new maximums of m_step_entry_depth to confirm it
+// actually stays bounded across a real large transfer, not just "didn't
+// crash." Remove once the fix is confirmed and this doc's Status
+// section is updated.
+// #define MAME_SGI_SCSI_COARSE_SCHEDULE_DEPTH_DIAG
+
+void wd33c9x_base_device::step_entry(bool timeout)
+{
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	// step_entry() can be re-entered before its own loop below returns:
+	// any m_scsi_bus->ctrl_w() call inside step() can synchronously
+	// trigger another device's own reaction (nscsi_bus_device::
+	// regen_ctrl() dispatches control-line changes to every waiting
+	// device on the same call stack, not via a scheduled event), which
+	// can synchronously call back into this device's own
+	// scsi_ctrl_changed() - reentering step_entry() from a completely
+	// different point in the call stack than the one this call's own
+	// loop is tracking. Only the outermost (depth-0) call may run that
+	// loop; a reentrant call must behave like the plain fine-mode
+	// passthrough below (call step() once, don't loop) - if it looped
+	// too, each byte of a transfer would add one more stack frame that
+	// never unwinds until the whole transfer finishes, which is exactly
+	// what caused a real stack overflow (see this file's own history/
+	// wiki/scsi-coarse-schedule-scoping.md's Status section). delay()
+	// needs no special handling for this: whether it's called from the
+	// outermost frame or a reentrant one, it just accumulates cycle
+	// debt and returns - m_coarse_continue and m_coarse_cycle_debt are
+	// plain member state, so the outermost call's own loop below picks
+	// up exactly where any nested reentrant call left off, once the
+	// whole nested chain unwinds back to it.
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE_DEPTH_DIAG
+	static thread_local uint32_t s_max_depth_seen = 0;
+	if (m_step_entry_depth > s_max_depth_seen) {
+		s_max_depth_seen = m_step_entry_depth;
+		fprintf(stderr, "STEP_ENTRY_DEPTH_FIXED max=%u\n", s_max_depth_seen);
+	}
+#endif
+	if (m_step_entry_depth > 0) {
+		// Sanity cap against any future reentrancy shape this analysis
+		// didn't anticipate - turn it into an immediate, diagnosable
+		// failure instead of another silent stack overflow.
+		if (m_step_entry_depth > 100) {
+			fatalerror("%s: step_entry() reentrancy depth exceeded 100 - unexpected nesting shape, not the known cross-device ctrl_w() reentrancy this guard was written for.\n", shortname());
+		}
+		++m_step_entry_depth;
+		step(timeout);
+		--m_step_entry_depth;
+		return;
+	}
+
+	++m_step_entry_depth;
+	// delay() may decide, deep inside the step() call below, to skip
+	// arming a real timer and instead resume immediately (see delay()'s
+	// own comment) - when it does, it sets m_coarse_continue instead of
+	// returning normally, and this loop keeps calling step() itself
+	// rather than returning to a caller that has no real timer left to
+	// wake it up again. Looping here - rather than delay() recursing
+	// into step() directly - keeps stack depth O(1) regardless of
+	// transfer size. Every call after the first represents a "the wait
+	// just elapsed" event exactly like a real timer firing would, so it
+	// always passes timeout=true regardless of what this entry's own
+	// first call used.
+	do {
+		m_coarse_continue = false;
+		step(timeout);
+		timeout = true;
+	} while (m_coarse_continue);
+	--m_step_entry_depth;
+#else
+	step(timeout);
+#endif
+}
 
 
 //-------------------------------------------------
@@ -1812,8 +1998,54 @@ void wd33c9x_base_device::clear_drq()
 void wd33c9x_base_device::delay(uint32_t cycles)
 {
 	// FIXME - This should take Own ID Frequency Scale into account.
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+	// Fold this call's cycles into the running debt unconditionally
+	// first, whether or not this specific call turns out to be eligible
+	// to continue - that way the flush path below (taken either because
+	// this call isn't eligible, or because the iteration cap was just
+	// reached) always accounts for every cycle exactly once, with no
+	// separate bookkeeping needed for "this call's own cycles" versus
+	// "previously accumulated debt".
+	m_coarse_cycle_debt += cycles;
+	if (coarse_schedule_eligible() && (++m_coarse_iterations < MAME_SGI_SCSI_COARSE_MAX_ITERATIONS)) {
+		// Resume immediately instead of arming a real timer - see
+		// update_step()'s own comment for why this is a loop there
+		// rather than a recursive call from here.
+		m_coarse_continue = true;
+		return;
+	}
+	cycles = m_coarse_cycle_debt;
+	m_coarse_cycle_debt = 0;
+	m_coarse_iterations = 0;
+#endif
 	delay_cycles(cycles);
 }
+
+
+#ifdef MAME_SGI_SCSI_COARSE_SCHEDULE
+//-------------------------------------------------
+//  coarse_schedule_eligible - true only while a transfer is in one of
+//  the two states real disk I/O actually uses (data in/out, demand-mode
+//  DMA) - re-checked on every delay() call, never assumed to still hold
+//  from a previous call. Deliberately excludes plain-polled I/O mode,
+//  which depends on the host CPU observing this chip's real per-byte
+//  register state directly rather than being driven by the DRQ line,
+//  and excludes every non-data phase (command/message/status), which
+//  transfers far too little data for the real per-byte timer cost to
+//  matter and haven't been characterized under this scheme at all.
+//-------------------------------------------------
+
+bool wd33c9x_base_device::coarse_schedule_eligible() const
+{
+	if (m_xfr_phase != S_PHASE_DATA_IN && m_xfr_phase != S_PHASE_DATA_OUT)
+		return false;
+	if ((m_regs[CONTROL] & CONTROL_DM) != CONTROL_DM_BURST)
+		return false;
+	if (m_transfer_count == 0)
+		return false;
+	return true;
+}
+#endif
 
 
 //-------------------------------------------------

@@ -70,6 +70,7 @@
 #include "machine/nscsi_bus.h"
 #include "machine/saa7191.h"
 #include "machine/wd33c9x.h"
+#include "nwd33c9x.h"
 #include "sound/cdda.h"
 
 #include "emupal.h"
@@ -90,6 +91,21 @@
 // unconditional), currently enabled.
 #define MAME_SGI_RTC_HOST_RESYNC
 
+// Opt-in/toggleable test switch (task #7, wiki/tasks.md): swaps the boot-
+// disk SCSI controller from the stock WD33C93B+NSCSI_BUS+NSCSI_HARDDISK
+// setup for nwd33c9x_device (src/mame/sgi/nwd33c9x.h/.cpp), the flat
+// single-object reimplementation built to eliminate the per-byte cost
+// measured in nscsi_full_device::step() and nscsi_bus_device::regen_ctrl()
+// (wiki/performance.md's 2026-09-20 entry). Supports up to 8 embedded
+// disks (slot index == SCSI ID, zero per-byte dispatch overhead - the
+// actual performance target) and CD-ROMs via its own internal real
+// NSCSI_BUS bridge (100% of MAME's stock CD-ROM emulation, unmodified -
+// never the performance target, so not worth reimplementing - see
+// nwd33c9x.h's header comment). Enabled by default as of 2026-09-20 (the
+// validated ~2.9x real disk-throughput win over the stock device, task #7's
+// own row); comment out to A/B back against the stock device instead.
+#define MAME_SGI_USE_NWD33C9X
+
 namespace {
 
 class ip24_state : public driver_device
@@ -100,6 +116,9 @@ public:
 		, m_maincpu(*this, "maincpu")
 		, m_mem_ctrl(*this, "memctrl")
 		, m_scsi_ctrl(*this, "wd33c93")
+#ifdef MAME_SGI_USE_NWD33C9X
+		, m_nwd33c9x_ctrl(*this, "nwd33c9x")
+#endif
 		, m_edlc(*this, "edlc")
 		, m_eeprom(*this, "eeprom")
 		, m_hal2(*this, "hal2")
@@ -161,7 +180,13 @@ protected:
 
 	required_device<mips3_device> m_maincpu;
 	required_device<sgi_mc_device> m_mem_ctrl;
-	required_device<wd33c93b_device> m_scsi_ctrl;
+	// optional_device, not required_device: under MAME_SGI_USE_NWD33C9X
+	// this device is never instantiated at all (nwd33c9x_device replaces
+	// it entirely) - see ip24_base()'s scsi controller setup.
+	optional_device<wd33c93b_device> m_scsi_ctrl;
+#ifdef MAME_SGI_USE_NWD33C9X
+	optional_device<nwd33c9x_device> m_nwd33c9x_ctrl;
+#endif
 	required_device<seeq80c03_device> m_edlc;
 	required_device<eeprom_serial_93cxx_device> m_eeprom;
 	required_device<hal2_device> m_hal2;
@@ -487,6 +512,16 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	m_mem_ctrl->int_dma_done_cb().set(m_ioc2, FUNC(ioc2_device::mc_dma_done_w));
 	m_mem_ctrl->eisa_present().set_constant(1);
 
+#ifdef MAME_SGI_USE_NWD33C9X
+	// nwd33c9x_device owns its disk targets (up to 8, slot index == SCSI
+	// ID - mount the boot disk at its own "disk1" sub-tag, matching this
+	// project's existing ID-1 convention) and CD-ROMs (via its own
+	// internal aux bus, defaulting a CD-ROM at ID 6 same as the stock
+	// scsibus below) directly - see nwd33c9x.h's header comment.
+	NWD33C9X(config, m_nwd33c9x_ctrl, 10000000);
+	m_nwd33c9x_ctrl->irq_cb().set(m_ioc2, FUNC(ioc2_device::scsi0_int_w));
+	m_nwd33c9x_ctrl->drq_cb().set(m_hpc3, FUNC(hpc3_device::scsi0_drq));
+#else
 	auto &scsibus(NSCSI_BUS(config, "scsibus"));
 
 	WD33C93B(config, m_scsi_ctrl, 10000000);
@@ -501,6 +536,7 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	NSCSI_CONNECTOR(config, "scsibus:5", scsi_devices, nullptr, false);
 	NSCSI_CONNECTOR(config, "scsibus:6", scsi_devices, "cdrom", false);
 	NSCSI_CONNECTOR(config, "scsibus:7", scsi_devices, nullptr, false);
+#endif
 
 	// GIO64
 	GIO64(config, m_gio64, m_maincpu);
@@ -520,11 +556,19 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	m_hpc3->set_addrmap(hpc3_device::AS_PIO1, &ip24_state::pio1_map);
 	m_hpc3->set_addrmap(hpc3_device::AS_PIO2, &ip24_state::pio2_map);
 	m_hpc3->enet_intr_out_cb().set(m_ioc2, FUNC(ioc2_device::enet_int_w));
+#ifdef MAME_SGI_USE_NWD33C9X
+	m_hpc3->hd_rd_cb<0>().set(m_nwd33c9x_ctrl, FUNC(nwd33c9x_device::indir_r));
+	m_hpc3->hd_wr_cb<0>().set(m_nwd33c9x_ctrl, FUNC(nwd33c9x_device::indir_w));
+	m_hpc3->hd_dma_rd_cb<0>().set(m_nwd33c9x_ctrl, FUNC(nwd33c9x_device::dma_r));
+	m_hpc3->hd_dma_wr_cb<0>().set(m_nwd33c9x_ctrl, FUNC(nwd33c9x_device::dma_w));
+	m_hpc3->hd_reset_cb<0>().set(m_nwd33c9x_ctrl, FUNC(nwd33c9x_device::reset_w));
+#else
 	m_hpc3->hd_rd_cb<0>().set(m_scsi_ctrl, FUNC(wd33c93b_device::indir_r));
 	m_hpc3->hd_wr_cb<0>().set(m_scsi_ctrl, FUNC(wd33c93b_device::indir_w));
 	m_hpc3->hd_dma_rd_cb<0>().set(m_scsi_ctrl, FUNC(wd33c93b_device::dma_r));
 	m_hpc3->hd_dma_wr_cb<0>().set(m_scsi_ctrl, FUNC(wd33c93b_device::dma_w));
 	m_hpc3->hd_reset_cb<0>().set(m_scsi_ctrl, FUNC(wd33c93b_device::reset_w));
+#endif
 	m_hpc3->bbram_rd_cb().set(m_rtc, FUNC(ds1386_device::data_r));
 	m_hpc3->bbram_wr_cb().set(m_rtc, FUNC(ds1386_device::data_w));
 	m_hpc3->eeprom_dati_cb().set(m_eeprom, FUNC(eeprom_serial_93cxx_device::do_read));

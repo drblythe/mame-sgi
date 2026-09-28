@@ -273,6 +273,8 @@ files{
 	MAME_DIR .. "src/mame/sgi/hal2.h",
 	MAME_DIR .. "src/mame/sgi/hpc3.cpp",
 	MAME_DIR .. "src/mame/sgi/hpc3.h",
+	MAME_DIR .. "src/mame/sgi/nwd33c9x.cpp",
+	MAME_DIR .. "src/mame/sgi/nwd33c9x.h",
 	MAME_DIR .. "src/mame/sgi/ioc2.cpp",
 	MAME_DIR .. "src/mame/sgi/ioc2.h",
 	MAME_DIR .. "src/mame/sgi/mc.cpp",
