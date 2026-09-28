@@ -15,6 +15,8 @@
 
 #include "machine/eepromser.h"
 
+#include <cstdlib>
+
 class sgi_mc_device : public device_t
 {
 public:
@@ -116,7 +118,16 @@ private:
 	uint32_t m_eeprom_ctrl;
 	uint32_t m_semaphore[16];
 
-	std::unique_ptr<u8[]> m_ram[4];
+	// Paired with calloc()/free() rather than std::unique_ptr<u8[]>'s
+	// default new[]/delete[] - see device_start()'s own comment (mc.cpp)
+	// for why: make_unique<u8[]>'s value-initialization forces every
+	// page of these deliberately oversized (see that same comment)
+	// buffers resident immediately, whereas calloc() lets the kernel's
+	// already-zeroed-fresh-mmap optimization keep never-touched pages
+	// out of RSS entirely, with identical guest-visible (zeroed) content
+	// either way.
+	struct calloc_deleter { void operator()(u8 *p) const noexcept { std::free(p); } };
+	std::unique_ptr<u8[], calloc_deleter> m_ram[4];
 };
 
 DECLARE_DEVICE_TYPE(SGI_MC, sgi_mc_device)

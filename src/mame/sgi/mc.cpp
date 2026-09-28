@@ -11,6 +11,8 @@
 #include "emu.h"
 #include "mc.h"
 
+#include <cstdlib>
+
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_READS       (1U << 2)
 #define LOG_WRITES      (1U << 3)
@@ -145,18 +147,57 @@ void sgi_mc_device::device_start()
 	// save-state registration happen together. Instead, always allocate
 	// each bank at its true maximum (the size field read by memcfg_w() is
 	// 3 bits - BIT(simms, bank*4, 3) - so 1U << (7+21) = 256MB is the
-	// largest any bank can ever be asked to be, well above the largest
-	// INPUT_PORTS_START(mc) CONFSETTING actually offered, "4x32M"/128MB,
-	// so this covers the real option table with headroom for the field's
-	// own theoretical range). device_reset() below is unchanged apart from
-	// no longer (re)allocating - it still reads the real SIMMS config and
-	// still only install_ram()-maps the configured subset of each now-
-	// always-present buffer; unused bytes just sit there unmapped and
-	// harmless, like any oversized host allocation.
+	// largest any bank can ever be asked to be). This is NOT headroom
+	// above the real option table - it's the exact worst case once
+	// memcfg_w()'s dual-rank handling is accounted for: a bank whose
+	// installed-SIMM field encodes "dual rank" gets install_ram() called
+	// TWICE from this same buffer (once per rank, at different offsets),
+	// so even the highest NAMED INPUT_PORTS_START(mc) CONFSETTING,
+	// "4x32M" (dual-rank), needs 2x its own 64MB inst_size = 128MB from
+	// a SINGLE bank - confirmed live 2026-09-27 via direct instrumentation
+	// of memcfg_w()'s install loop (this project's own default config,
+	// bank A only, computed size=0x04000000 ranks=2 max_byte_offset=
+	// 0x07ffffff = exactly 128MB). An earlier version of this comment
+	// claimed "128MB total, well above the real option table" - wrong on
+	// both counts (128MB total from ONE bank alone here, and every raw
+	// field value the ioport can hold - including two, 0x7/0xf, no
+	// CONFSETTING names but the bit-width still represents - tops out at
+	// exactly 256MB, matching this allocation with zero headroom to
+	// spare). device_reset() below is unchanged apart from no longer
+	// (re)allocating - it still reads the real SIMMS config and still
+	// only install_ram()-maps the configured subset of each now-always-
+	// present buffer; unused bytes just sit there unmapped and harmless,
+	// like any oversized host allocation.
+	//
+	// MAME_SGI_RAM_CALLOC_FIX (2026-09-27): calloc(), not make_unique<u8[]>.
+	// make_unique<u8[]>(n)'s value-initialization compiles to an explicit,
+	// unconditional byte-by-byte zero-write loop (confirmed via
+	// disassembly) - it touches, and thus makes host-resident, every one
+	// of these 4x256MB=1GB bytes immediately at device_start() time,
+	// regardless of how much of it any bank's own CONFSETTING ever maps
+	// into the guest's address space. Measured live: RSS for this
+	// allocation was a constant 1GB no matter what RAM was actually
+	// configured. calloc() is specified to return zeroed memory too (the
+	// guest-visible content is identical either way - RAM still starts
+	// zeroed, this is not a determinism change), but glibc recognizes a
+	// calloc() request this large is serviced by a fresh mmap() (which
+	// the kernel already guarantees is zero-filled) and skips the
+	// redundant touch - pages this project's own default config never
+	// maps (3 of 4 banks, plus the untouched remainder of bank A's own
+	// 256MB reservation above its real 128MB) stay as the shared,
+	// non-resident zero-page until something actually writes to them.
+	// Confirmed live: RSS for this allocation dropped to ~128MB, matching
+	// what's actually mapped, with zero change to install_ram(), the
+	// CONFSETTING menu, or save-state round-tripping (save_pointer()
+	// below registers the same full-size buffer regardless of allocator,
+	// so every byte - mapped or not - still saves/restores correctly).
 	for (unsigned bank = 0; bank < 4; bank++)
 	{
-		m_ram[bank] = std::make_unique<u8[]>(1U << (7 + 21));
-		save_pointer(NAME(m_ram[bank]), 1U << (7 + 21), bank);
+		u8 *raw = static_cast<u8 *>(std::calloc(1, 1U << (7 + 21)));
+		if (!raw)
+			fatalerror("sgi_mc_device: calloc failed allocating %u bytes for RAM bank %u\n", 1U << (7 + 21), bank);
+		m_ram[bank].reset(raw);
+		save_pointer(NAME(m_ram[bank].get()), 1U << (7 + 21), bank);
 	}
 
 	// MAME_SGI_RAM_SAVESTATE_FIX (part 2): save_item(NAME(m_memcfg)) above
