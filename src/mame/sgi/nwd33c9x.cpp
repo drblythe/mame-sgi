@@ -527,7 +527,18 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 	// (its tag is fixed to "diskI" by the "disk%u" pattern below,
 	// regardless of which order HARDDISK() is actually called in) - only
 	// which CLI option number each slot answers to changes here.
-	static constexpr int creation_order[NUM_DISK_SLOTS] = { 1, 0, 2, 3, 4, 5, 6, 7 };
+	//
+	// Every slot after the first also keeps SCSI ID == CLI number
+	// directly (-hard2 -> ID 2, ..., -hard7 -> ID 7) - ID 0 is the only
+	// one that can't line up this way, since slot 1 has to be created
+	// first (above) and nothing else can occupy "-hard1". Put it LAST
+	// instead of second (2026-09-28: the previous order's -hard2->ID0/
+	// -hard3->ID2 mismatch was found live while attaching an auxiliary
+	// test disk at a specific SCSI ID by CLI number alone): "-hard2" is
+	// far likelier to get reached for than "-hard8", so this is the
+	// smaller-surprise placement for the one ID that has to be the
+	// exception.
+	static constexpr int creation_order[NUM_DISK_SLOTS] = { 1, 2, 3, 4, 5, 6, 7, 0 };
 	for (int i : creation_order)
 		HARDDISK(config, m_disk_image[i]).set_interface("scsi_hdd,hdd");
 
