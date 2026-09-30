@@ -3265,53 +3265,43 @@ void mips3_device::func_fastram_compare_diag()
 	uint32_t const masked = m_core->diag_fastram_masked;
 	uint64_t const value = m_core->diag_fastram_value;
 
-	// Restricted to the one hot byte this task is actively chasing, but
-	// watching every alias of it (0x00001014 via the low alias,
-	// 0x08001014/0x0c001014 via the two real ranges) - a write through
-	// a DIFFERENT alias than the one being read from would still land on
-	// the identical host byte and be invisible if only one literal
-	// address were watched. Unrestricted, this fires millions of times a
-	// second and floods any log file into the tens of gigabytes range
-	// within seconds - widen (or remove) once this byte's behavior is
-	// understood.
-	if (addr != 0x00001014 && addr != 0x08001014 && addr != 0x0c001014)
+	// Task #119, widened (2026-09-30): the address-restricted version above
+	// confirmed the ONE specific byte this task started with is now clean
+	// (zero mismatches, task #119/journal.md), but a NEW, further-
+	// downstream TLB-miss frozen loop appeared once that fix landed -
+	// plausibly a corrupted pointer/page-table-entry fed by a REMAINING,
+	// different fastram bug elsewhere, not the one already fixed. Widened
+	// to every address so the first genuine mismatch, wherever it is, gets
+	// caught - but only WRITE the dump file (and only fopen/fclose at all)
+	// on an actual mismatch, not on every matching read, so this can run
+	// through millions of legitimate accesses cheaply (just the register
+	// reads + one comparison) without the file-I/O-per-event cost that
+	// made the address-restricted version safe to leave logging
+	// unconditionally. Stops on the FIRST mismatch found (not a fixed
+	// count) - that address/size is the actionable lead.
+	if (iswrite)
 		return;
 
-	static uint64_t s_count = 0;
-	s_count++;
+	uint64_t slow_value = 0;
+	switch (size)
+	{
+		case 1: slow_value = m_program->read_byte(addr); break;
+		case 2: slow_value = m_program->read_word(addr); break;
+		case 4: slow_value = m_program->read_dword(addr); break;
+		case 8: slow_value = m_program->read_qword(addr); break;
+	}
+	if (slow_value == value)
+		return;
 
 	FILE *f = fopen("/tmp/mame_sgi_fastram_dump.txt", "a");
-	if (!f)
-		return;
-
-	if (iswrite)
+	if (f)
 	{
-		fprintf(f, "[MAME_SGI_FASTRAM_COMPARE_DIAG] #%llu WRITE addr=0x%08x size=%u masked=%u value=0x%016llx\n",
-			(unsigned long long)s_count, addr, size, masked, (unsigned long long)value);
+		fprintf(f, "[MAME_SGI_FASTRAM_COMPARE_DIAG] MISMATCH addr=0x%08x size=%u masked=%u fast=0x%016llx slow=0x%016llx\n",
+			addr, size, masked, (unsigned long long)value, (unsigned long long)slow_value);
+		fclose(f);
 	}
-	else
-	{
-		uint64_t slow_value = 0;
-		switch (size)
-		{
-			case 1: slow_value = m_program->read_byte(addr); break;
-			case 2: slow_value = m_program->read_word(addr); break;
-			case 4: slow_value = m_program->read_dword(addr); break;
-			case 8: slow_value = m_program->read_qword(addr); break;
-		}
-		fprintf(f, "[MAME_SGI_FASTRAM_COMPARE_DIAG] #%llu READ  addr=0x%08x size=%u masked=%u fast=0x%016llx slow=0x%016llx%s\n",
-			(unsigned long long)s_count, addr, size, masked, (unsigned long long)value, (unsigned long long)slow_value,
-			(slow_value != value) ? " <-- MISMATCH" : "");
-	}
-	fclose(f);
-
-	// Stop after a bounded number of events regardless of read/write mix
-	// - enough to see the write-then-read ordering around the first
-	// mismatch without risking another runaway multi-gigabyte log if
-	// this address turns out to be hotter than expected once writes are
-	// included too.
-	if (s_count >= 500)
-		fatalerror("%s: MAME_SGI_FASTRAM_COMPARE_DIAG - 200 events at addr=0x%08x logged, stopping here for inspection.\n", tag(), addr);
+	fatalerror("%s: MAME_SGI_FASTRAM_COMPARE_DIAG - first mismatch at addr=0x%08x size=%u fast=0x%016llx slow=0x%016llx\n",
+		tag(), addr, size, (unsigned long long)value, (unsigned long long)slow_value);
 }
 
 static void cfunc_fastram_compare_diag(void *param)
@@ -7789,6 +7779,16 @@ void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::
 
 void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &label, int size, bool iswrite, bool ismasked)
 {
+	// Task #119: this function is shared MIPS3-core code, used by every
+	// driver that calls add_fastram() (not just this one) - its
+	// byte-lane-swizzle math (below) must match the CPU's ACTUAL program
+	// address space width, not assume either 32-bit or 64-bit unilaterally.
+	// A 32-bit-native mips3_device (the more common MIPS3 configuration)
+	// needs the original scale (no swizzle at size==4, a half-swap DROR at
+	// size==8); this SGI driver's genuinely 64-bit-native space needs the
+	// opposite (see the per-size comments below, and task #119/journal.md
+	// 2026-09-30 for the live mismatch that found this).
+	bool const native64 = m_program->data_width() == 64;
 	if (!debugger_enabled())
 	{
 		for (int ramnum = 0; ramnum < m_fastram_select; ramnum++)
@@ -7841,25 +7841,49 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					// original fast/slow mismatch.
 					if (size == 1)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? BYTE8_XOR_BE(0) : BYTE8_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? (native64 ? BYTE8_XOR_BE(0) : BYTE4_XOR_BE(0))
+															: (native64 ? BYTE8_XOR_LE(0) : BYTE4_XOR_LE(0)));
 																					// xor     i0,i0,bytexor
 						UML_LOAD(block, I0, fastbase, I0, SIZE_BYTE, SCALE_x1);     // load    i0,fastbase,i0,byte
 					}
 					else if (size == 2)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? WORD2_XOR_BE(0) : WORD2_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? (native64 ? WORD2_XOR_BE(0) : WORD_XOR_BE(0))
+															: (native64 ? WORD2_XOR_LE(0) : WORD_XOR_LE(0)));
 																					// xor     i0,i0,wordxor
 						UML_LOAD(block, I0, fastbase, I0, SIZE_WORD, SCALE_x1);     // load    i0,fastbase,i0,word_x1
 					}
 					else if (size == 4)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
+						// A dword access exactly matches the native width of
+						// a 32-bit-native space (no lane to select - the
+						// original, untouched behavior below), but is only
+						// HALF the native width of this SGI driver's
+						// genuinely 64-bit-native one, needing the
+						// DWORD_XOR_BE/LE lane swizzle task #119 added.
+						if (native64)
+							UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
 						UML_LOAD(block, I0, fastbase, I0, SIZE_DWORD, SCALE_x1);    // load    i0,fastbase,i0,dword_x1
 					}
 					else if (size == 8)
 					{
+						// Task #119 (MAME_SGI_FASTRAM_COMPARE_DIAG, widened
+						// pass, 2026-09-30): confirmed via a live mismatch
+						// (addr=0x0832d8a8, size=8:
+						// fast=0xbfbb000bffffffff slow=0xffffffffbfbb000b)
+						// that for a 64-bit-native space, this DROR must NOT
+						// run - rotating fast's halves back (undoing the
+						// DROR by 32) gives exactly slow, i.e. the RAW host
+						// load already equals the correct value with no
+						// rotation at all. For a 32-bit-native space,
+						// though, a qword access is TWICE the native width
+						// - the original DROR-by-32 half-swap (combining
+						// two native 32-bit lanes into one 64-bit value) is
+						// still exactly what that case needs, so it's kept
+						// here rather than removed outright.
 						UML_DLOAD(block, I0, fastbase, I0, SIZE_QWORD, SCALE_x1);   // dload   i0,fastbase,i0,qword_x1
-						UML_DROR(block, I0, I0, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
+						if (!native64)
+							UML_DROR(block, I0, I0, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
 																					// dror    i0,i0,32*bytexor
 					}
 #ifdef MAME_SGI_FASTRAM_COMPARE_DIAG
@@ -7905,10 +7929,10 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					// Same reasoning as the read side's own comment: I0
 					// is still the plain physical address here, before
 					// any of the size-specific branches touch it. I1 is
-					// the value about to be stored, still in its
-					// original (pre-swizzle) form for every size except
-					// 8 (which DRORs it below) - stashed as a 64-bit
-					// field regardless so one field covers every width.
+					// the value about to be stored, in its original
+					// (pre-swizzle) form for every size - stashed as a
+					// 64-bit field regardless so one field covers every
+					// width.
 					UML_MOV(block, mem(&m_core->diag_fastram_addr), I0);
 					UML_MOV(block, mem(&m_core->diag_fastram_size), size);
 					UML_MOV(block, mem(&m_core->diag_fastram_iswrite), 1);
@@ -7916,31 +7940,34 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					UML_DMOV(block, mem(&m_core->diag_fastram_value), I1);
 					UML_CALLC(block, cfunc_fastram_compare_diag, this);
 #endif
-					// Task #119 - same "...to a 64-bit space" correction as
-					// the read side's own comment above: this buffer is
-					// natively 64-bit, so size==1/2 need BYTE8_XOR_BE/
-					// WORD2_XOR_BE, not the 32-bit-space BYTE4_XOR_BE/
-					// WORD_XOR_BE previously used here.
+					// Task #119 - same width-conditional correction as the
+					// read side's own comments above: choose the "...to a
+					// 32-bit space" or "...to a 64-bit space" swizzle
+					// variant per size based on `native64`, matching this
+					// specific mips3_device's actual address space width
+					// rather than assuming either one for every caller of
+					// this shared function.
 					if (size == 1)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? BYTE8_XOR_BE(0) : BYTE8_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? (native64 ? BYTE8_XOR_BE(0) : BYTE4_XOR_BE(0))
+															: (native64 ? BYTE8_XOR_LE(0) : BYTE4_XOR_LE(0)));
 																					// xor     i0,i0,bytexor
 						UML_STORE(block, fastbase, I0, I1, SIZE_BYTE, SCALE_x1);    // store   fastbase,i0,i1,byte
 					}
 					else if (size == 2)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? WORD2_XOR_BE(0) : WORD2_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? (native64 ? WORD2_XOR_BE(0) : WORD_XOR_BE(0))
+															: (native64 ? WORD2_XOR_LE(0) : WORD_XOR_LE(0)));
 																					// xor     i0,i0,wordxor
 						UML_STORE(block, fastbase, I0, I1, SIZE_WORD, SCALE_x1);    // store   fastbase,i0,i1,word_x1
 					}
 					else if (size == 4)
 					{
-						// Task #119 - same missing swizzle as the read side's
-						// own size==4 branch above (see its comment): this
-						// fastram region is natively 64-bit, so I0 needs the
-						// DWORD_XOR_BE/LE lane adjustment before either the
-						// masked load/store or the plain store below.
-						UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
+						// See the read side's own size==4 comment: only a
+						// 64-bit-native space needs this swizzle (a dword
+						// exactly matches a 32-bit-native space's width).
+						if (native64)
+							UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
 						if (ismasked)
 						{
 							UML_LOAD(block, I3, fastbase, I0, SIZE_DWORD, SCALE_x1);    // load    i3,fastbase,i0,dword_x1
@@ -7952,12 +7979,23 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					}
 					else if (size == 8)
 					{
-						UML_DROR(block, I1, I1, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
+						// See the read side's own size==8 comment: a
+						// 64-bit-native space needs no rotation at all
+						// (confirmed via the live mismatch); a 32-bit-
+						// native space still needs the original half-swap
+						// DROR on I1 (the value) and, for a masked write,
+						// I2 (the mask) as well, to combine two native
+						// 32-bit lanes into one 64-bit value correctly.
+						if (!native64)
+						{
+							UML_DROR(block, I1, I1, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
 																						// dror    i1,i1,32*bytexor
+							if (ismasked)
+								UML_DROR(block, I2, I2, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
+																						// dror    i2,i2,32*bytexor
+						}
 						if (ismasked)
 						{
-							UML_DROR(block, I2, I2, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
-																						// dror    i2,i2,32*bytexor
 							UML_DLOAD(block, I3, fastbase, I0, SIZE_QWORD, SCALE_x1);   // dload   i3,fastbase,i0,qword_x1
 							UML_DROLINS(block, I3, I1, 0, I2);                          // drolins i3,i1,0,i2
 							UML_DSTORE(block, fastbase, I0, I3, SIZE_QWORD, SCALE_x1);  // dstore  fastbase,i0,i3,qword_x1
