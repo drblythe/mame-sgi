@@ -7821,20 +7821,39 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					UML_MOV(block, mem(&m_core->diag_fastram_iswrite), 0);
 					UML_MOV(block, mem(&m_core->diag_fastram_masked), ismasked ? 1 : 0);
 #endif
+					// Task #119 (MAME_SGI_FASTRAM_COMPARE_DIAG mismatch): this
+					// fastram region is natively 64-bit (Width=3 - confirmed
+					// via the read_dword() dispatch trace, task #119/
+					// journal.md 2026-09-30), not 32-bit. Every branch below
+					// needs the "...to a 64-bit space" XOR variant
+					// (BYTE8_XOR_BE/WORD2_XOR_BE/DWORD_XOR_BE in
+					// endianness.h) to pick the right byte lane within the
+					// native 8-byte unit - the size==1/2 branches previously
+					// used BYTE4_XOR_BE/WORD_XOR_BE (the "...to a 32-bit
+					// space" variants, wrong scale for this buffer), and
+					// size==4 had no swizzle at all. Getting size==1/2's
+					// scale wrong is self-consistent for a same-size
+					// write-then-read round trip (a fixed wrong permutation
+					// still round-trips with itself), which is why it never
+					// showed up as a correctness bug on its own - it only
+					// disagrees with a DIFFERENT access size/path touching
+					// the same bytes, exactly the shape of this task's
+					// original fast/slow mismatch.
 					if (size == 1)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? BYTE8_XOR_BE(0) : BYTE8_XOR_LE(0));
 																					// xor     i0,i0,bytexor
 						UML_LOAD(block, I0, fastbase, I0, SIZE_BYTE, SCALE_x1);     // load    i0,fastbase,i0,byte
 					}
 					else if (size == 2)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? WORD_XOR_BE(0) : WORD_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? WORD2_XOR_BE(0) : WORD2_XOR_LE(0));
 																					// xor     i0,i0,wordxor
 						UML_LOAD(block, I0, fastbase, I0, SIZE_WORD, SCALE_x1);     // load    i0,fastbase,i0,word_x1
 					}
 					else if (size == 4)
 					{
+						UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
 						UML_LOAD(block, I0, fastbase, I0, SIZE_DWORD, SCALE_x1);    // load    i0,fastbase,i0,dword_x1
 					}
 					else if (size == 8)
@@ -7897,20 +7916,31 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					UML_DMOV(block, mem(&m_core->diag_fastram_value), I1);
 					UML_CALLC(block, cfunc_fastram_compare_diag, this);
 #endif
+					// Task #119 - same "...to a 64-bit space" correction as
+					// the read side's own comment above: this buffer is
+					// natively 64-bit, so size==1/2 need BYTE8_XOR_BE/
+					// WORD2_XOR_BE, not the 32-bit-space BYTE4_XOR_BE/
+					// WORD_XOR_BE previously used here.
 					if (size == 1)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? BYTE8_XOR_BE(0) : BYTE8_XOR_LE(0));
 																					// xor     i0,i0,bytexor
 						UML_STORE(block, fastbase, I0, I1, SIZE_BYTE, SCALE_x1);    // store   fastbase,i0,i1,byte
 					}
 					else if (size == 2)
 					{
-						UML_XOR(block, I0, I0, m_bigendian ? WORD_XOR_BE(0) : WORD_XOR_LE(0));
+						UML_XOR(block, I0, I0, m_bigendian ? WORD2_XOR_BE(0) : WORD2_XOR_LE(0));
 																					// xor     i0,i0,wordxor
 						UML_STORE(block, fastbase, I0, I1, SIZE_WORD, SCALE_x1);    // store   fastbase,i0,i1,word_x1
 					}
 					else if (size == 4)
 					{
+						// Task #119 - same missing swizzle as the read side's
+						// own size==4 branch above (see its comment): this
+						// fastram region is natively 64-bit, so I0 needs the
+						// DWORD_XOR_BE/LE lane adjustment before either the
+						// masked load/store or the plain store below.
+						UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
 						if (ismasked)
 						{
 							UML_LOAD(block, I3, fastbase, I0, SIZE_DWORD, SCALE_x1);    // load    i3,fastbase,i0,dword_x1
