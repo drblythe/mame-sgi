@@ -11,6 +11,8 @@
 #include "emu.h"
 #include "mc.h"
 
+#include "cpu/mips/mips3.h"
+
 #include <cstdlib>
 
 #define LOG_UNKNOWN     (1U << 1)
@@ -26,6 +28,23 @@
 
 #define VERBOSE         (0)
 #include "logmacro.h"
+
+// Task #119, opt-in and OFF by default - matching this project's own
+// established pattern for exactly this situation (see nwd33c9x.h's
+// MAME_SGI_SCSI_COARSE_SCHEDULE: a real feature kept side-by-side in the
+// tree, switchable, not deleted, while a real regression is worked out).
+// Registers the MIPS3 DRC's add_fastram() fast path for main RAM once
+// PROM's boot-time autosizing settles - implemented, but two real
+// correctness bugs were found and fixed (stale JIT code after a runtime
+// fastram change; flushing synchronously from inside a device register
+// write), and while chasing a THIRD, the read side of the one hot
+// address under investigation was proven to never go through any of
+// handler_entry_read_memory's three exposed accessors at all - a
+// genuinely unresolved, surprising result, not yet root-caused. Left
+// disabled until that's settled; see wiki task #119 for the full
+// investigation trail and the suggested next step (a real GDB data
+// watchpoint on the host address, not more printf instrumentation).
+// #define MAME_SGI_RAM_FASTRAM
 
 DEFINE_DEVICE_TYPE(SGI_MC, sgi_mc_device, "sgi_mc", "SGI Memory Controller")
 
@@ -82,6 +101,10 @@ void sgi_mc_device::device_start()
 	m_sys_id |= m_eisa_present() << 4;
 
 	m_dma_timer = timer_alloc(FUNC(sgi_mc_device::perform_dma), this);
+#ifdef MAME_SGI_RAM_FASTRAM
+	m_fastram_settle_timer = timer_alloc(FUNC(sgi_mc_device::check_fastram_settle), this);
+	m_fastram_committed = false;
+#endif
 	m_dma_timer->adjust(attotime::never);
 
 	save_item(NAME(m_last_update_time));
@@ -861,6 +884,29 @@ void sgi_mc_device::write(offs_t offset, uint32_t data, uint32_t mem_mask)
  */
 void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 {
+#ifdef MAME_SGI_RAM_FASTRAM
+	// Permanent safety check, not gated behind VERBOSE - see task #119's
+	// wiki row. Skipped during machine_phase::RESET, where pc() reads 0
+	// (outside PROM ROM) before the CPU has resumed real execution.
+	if (machine().phase() != machine_phase::RESET)
+	{
+		offs_t const pc = m_maincpu->pc();
+		offs_t const pc_phys = pc & 0x1fff'ffffU;
+		if (pc_phys < 0x1fc0'0000U || pc_phys > 0x1fc7'ffffU)
+		{
+			logerror("%s: WARNING - memcfg%d written from outside PROM ROM (pc=0x%08x) - "
+				"this violates the assumption task #119's add_fastram() registration relies on.\n",
+				machine().describe_context(), offset, pc);
+		}
+	}
+
+	// This call proves PROM is (re-)running its own RAM autosizing right
+	// now - see check_fastram_settle()'s own header comment for why the
+	// real registration+flush happens there, not here.
+	m_fastram_committed = false;
+	m_fastram_settle_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
+#endif
+
 	LOGMASKED(LOG_MEMCFG, "memcfg%d 0x%08x\n", offset, data);
 
 	 // remove existing mapping
@@ -920,6 +966,79 @@ void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 			m_space->install_ram(0x0000'0000, 0x0007'ffff, &m_ram[offset * 2 + bank][0]);
 	}
 }
+
+#ifdef MAME_SGI_RAM_FASTRAM
+// Task #119. Deliberately NOT called from memcfg_w() itself - see this
+// task's wiki row for the two bugs found doing it there directly. This
+// timer is the only thing that ever touches fastram, and only fires
+// from a genuine scheduler callback, never nested inside guest code.
+TIMER_CALLBACK_MEMBER(sgi_mc_device::check_fastram_settle)
+{
+	if (machine().phase() == machine_phase::RESET)
+		return;
+
+	offs_t const pc_phys = m_maincpu->pc() & 0x1fff'ffffU;
+	if (pc_phys >= 0x1fc0'0000U && pc_phys <= 0x1fc7'ffffU)
+		return; // still inside PROM ROM - not settled yet, check again next tick
+
+	rebuild_fastram();
+	m_fastram_committed = true;
+	m_fastram_settle_timer->adjust(attotime::never);
+}
+
+// Registers add_fastram() for every region the install loop above has
+// ALREADY mapped via install_ram(). See task #119's wiki row for the
+// full rationale (why a full rebuild across both memcfg offsets, why
+// each region is bounded to its real backing bytes rather than any
+// mirrored window, why MIPS3_MAX_FASTRAM=3 silently degrading past its
+// limit is not a correctness issue) AND for the still-unresolved bug
+// this implementation hits (a hang shortly after PROM hands off to the
+// kernel - not yet root-caused; see the wiki row's full investigation
+// trail before re-enabling this).
+void sgi_mc_device::rebuild_fastram()
+{
+	mips3_device &cpu = downcast<mips3_device &>(*m_maincpu);
+	cpu.clear_fastram(0);
+
+	u16 const simms = m_simms->read();
+
+	for (unsigned cfg = 0; cfg < 2; cfg++)
+	{
+		for (unsigned bank = 0; bank < 2; bank++)
+		{
+			if (!BIT(m_memcfg[cfg], 29 - bank * 16))
+				continue;
+			if (!BIT(simms, (cfg * 2 + bank) * 4, 3))
+				continue;
+
+			u32 const conf_base = BIT(m_memcfg[cfg], 16 - bank * 16, 8) << 22;
+			unsigned const conf_rank = BIT(m_memcfg[cfg], 30 - bank * 16);
+			u32 const conf_size = (BIT(m_memcfg[cfg], 24 - bank * 16, 5) + 1) << (22 - conf_rank);
+
+			unsigned const inst_rank = BIT(simms, (cfg * 2 + bank) * 4 + 3);
+			u32 const inst_size = 1U << (BIT(simms, (cfg * 2 + bank) * 4, 3) + 21 - inst_rank);
+
+			unsigned const ranks = std::min(conf_rank, inst_rank) + 1;
+			u32 const size = std::min(conf_size, inst_size);
+
+			for (unsigned rank = 0; rank < ranks; rank++)
+			{
+				LOGMASKED(LOG_MEMCFG, "fastram bank %c rank %d from 0x%08x-0x%08x\n",
+					cfg * 2 + bank + 'A', rank, conf_base + conf_size * rank, conf_base + conf_size * rank + size - 1);
+				cpu.add_fastram(conf_base + conf_size * rank, conf_base + conf_size * rank + size - 1, false, &m_ram[cfg * 2 + bank][size * rank]);
+			}
+
+			if (conf_base == 0x0800'0000U)
+			{
+				LOGMASKED(LOG_MEMCFG, "fastram bank %c alias 0x00000000-0x0007ffff\n", cfg * 2 + bank + 'A');
+				cpu.add_fastram(0x0000'0000, 0x0007'ffff, false, &m_ram[cfg * 2 + bank][0]);
+			}
+		}
+	}
+
+	cpu.invalidate_fastram_cache();
+}
+#endif
 
 static INPUT_PORTS_START(mc)
 	PORT_START("VALID")

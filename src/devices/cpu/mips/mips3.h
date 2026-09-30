@@ -354,6 +354,20 @@ public:
 
 	void add_fastram(offs_t start, offs_t end, uint8_t readonly, void *base);
 	void clear_fastram(uint32_t select_start);
+	// Public wrapper for the otherwise-private code_flush_cache(), added
+	// for sgi/mc.cpp's task #119 use. Only ever called from a genuine
+	// scheduler-driven timer callback there (never synchronously from a
+	// device register write reached by the guest's own currently-
+	// executing JIT-compiled code), so this is safe by construction, not
+	// by timing luck - see mc.cpp's check_fastram_settle() for why that
+	// distinction mattered here.
+	void invalidate_fastram_cache() { code_flush_cache(); }
+	// Temporary, task #119: dumps the raw m_fastram[] table (every slot
+	// up to m_fastram_select) to stderr - start/end/base exactly as
+	// stored, not as re-derived from the caller's own registration
+	// arithmetic, to rule out "the table holds something other than
+	// what was asked for" as a hypothesis in its own right.
+	void dump_fastram_table();
 	void mips3drc_set_options(uint32_t options);
 	uint32_t mips3drc_get_options();
 	void mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cycles);
@@ -605,6 +619,22 @@ protected:
 		uint32_t        diag_rodata_addr;
 		uint32_t        diag_rodata_value;
 		uint32_t        diag_rodata_hit;
+
+		// MAME_SGI_FASTRAM_COMPARE_DIAG (mips3drc.cpp, task #119) - same
+		// RBP-relative-struct requirement as diag_rodata_* above, same
+		// reason (a free-standing global crashed the x64 DRC backend the
+		// same way). addr/size are stashed BEFORE static_generate_
+		// fastram_accessor()'s own address-swizzle+load sequence runs
+		// (see that function's own comment on why), so they hold the
+		// real physical address and access width being served - value
+		// holds what the fast path's own inline load just returned, for
+		// func_fastram_compare_diag() to check against a fresh read of
+		// the same address through the generic slow path.
+		uint32_t        diag_fastram_addr;
+		uint32_t        diag_fastram_size;
+		uint64_t        diag_fastram_value;
+		uint32_t        diag_fastram_iswrite;
+		uint32_t        diag_fastram_masked;
 
 		// MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - count of EXCEPTION_
 		// BADCOP deliveries for cop==1 specifically. Counted unconditionally
@@ -1438,6 +1468,7 @@ public:
 	void func_fpop_mxcsr_check_diag();
 	void func_nocode_0fac5ffc_diag();
 	void func_rodata_load_addr_diag();
+	void func_fastram_compare_diag();
 	void func_cop1_trap_diag();
 	void func_printf_probe();
 	void func_debug_break();

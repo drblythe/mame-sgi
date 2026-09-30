@@ -67,6 +67,8 @@ private:
 
 	void memcfg_w(offs_t offset, u32 data);
 	void mame_sgi_ram_remap_postload();
+	void rebuild_fastram();
+	TIMER_CALLBACK_MEMBER(check_fastram_settle);
 
 	required_device<cpu_device> m_maincpu;
 	required_device<eeprom_serial_93cxx_device> m_eeprom;
@@ -79,6 +81,8 @@ private:
 	address_space *m_space;
 
 	emu_timer *m_dma_timer;
+	emu_timer *m_fastram_settle_timer;
+	bool m_fastram_committed;
 
 	attotime m_last_update_time;
 

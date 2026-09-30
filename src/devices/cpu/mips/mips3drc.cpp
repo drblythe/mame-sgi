@@ -1138,6 +1138,25 @@
 // here. See wiki/console.md's task #84 section for the full writeup.
 // #define MAME_SGI_RODATA_LOAD_ADDR_DIAG
 
+// TEMPORARY DIAGNOSTIC (2026-09-30, task #119). sgi/mc.cpp registers
+// add_fastram() regions for main RAM once PROM's own boot-time RAM
+// autosizing settles - a hang was observed right after that handoff
+// (a TLB-miss exception looping forever), and rather than keep guessing
+// at the cause (segment/endianness/address-math edge cases), this hooks
+// static_generate_fastram_accessor()'s own read path directly: stash the
+// physical address+size BEFORE the fast path's address-swizzle+load
+// sequence runs (see that function's own comment on why it has to be
+// before, not after), then after the fast load completes, re-read the
+// SAME address through the generic slow path (m_program->read_*()) and
+// compare. Any mismatch means the fast and slow paths genuinely disagree
+// about what's at a given physical address - a real correctness bug in
+// the registration, not a red herring. Deliberately slow (a real C++
+// function call + a redundant slow-path read on every fastram-covered
+// load) - fine for a temporary diagnostic meant to run only across the
+// narrow window from PROM handoff to the first mismatch, not meant to be
+// left on.
+// #define MAME_SGI_FASTRAM_COMPARE_DIAG
+
 // DISABLED (2026-07-29): the COMPILETIME(elocore_exl_N)/RAWWORDS fprintf
 // pair below (generate_set_cop0_reg's COP0_Status case) was, like the
 // probe family above, never gated - it fires unconditionally at compile
@@ -1827,6 +1846,27 @@ void mips3_device::add_fastram(offs_t start, offs_t end, uint8_t readonly, void 
 		// Set cache to dirty so that re-mapping occurs
 		m_drc_cache_dirty = true;
 	}
+}
+
+// Temporary, task #119 - see this method's own declaration comment.
+// Writes to its own dedicated file rather than stderr - stderr is
+// shared with the flood of per-access MAME_SGI_FASTRAM_COMPARE_DIAG
+// output when that diagnostic is also active, and this one-time dump
+// needs to be findable without grepping through tens of millions of
+// those lines first.
+void mips3_device::dump_fastram_table()
+{
+	FILE *f = fopen("/tmp/mame_sgi_fastram_dump.txt", "a");
+	if (!f)
+		return;
+	fprintf(f, "[MAME_SGI_FASTRAM_TABLE_DUMP] m_fastram_select=%u\n", m_fastram_select);
+	for (uint32_t i = 0; i < m_fastram_select; i++)
+	{
+		fprintf(f, "[MAME_SGI_FASTRAM_TABLE_DUMP]   [%u] start=0x%08x end=0x%08x readonly=%u base=%p offset_base8=%p\n",
+			i, m_fastram[i].start, m_fastram[i].end, (unsigned)m_fastram[i].readonly,
+			m_fastram[i].base, (void *)m_fastram[i].offset_base8);
+	}
+	fclose(f);
 }
 
 
@@ -3213,6 +3253,70 @@ void mips3_device::func_rodata_load_addr_diag()
 static void cfunc_rodata_load_addr_diag(void *param)
 {
 	((mips3_device *)param)->func_rodata_load_addr_diag();
+}
+#endif
+
+#ifdef MAME_SGI_FASTRAM_COMPARE_DIAG
+void mips3_device::func_fastram_compare_diag()
+{
+	uint32_t const addr = m_core->diag_fastram_addr;
+	uint32_t const size = m_core->diag_fastram_size;
+	uint32_t const iswrite = m_core->diag_fastram_iswrite;
+	uint32_t const masked = m_core->diag_fastram_masked;
+	uint64_t const value = m_core->diag_fastram_value;
+
+	// Restricted to the one hot byte this task is actively chasing, but
+	// watching every alias of it (0x00001014 via the low alias,
+	// 0x08001014/0x0c001014 via the two real ranges) - a write through
+	// a DIFFERENT alias than the one being read from would still land on
+	// the identical host byte and be invisible if only one literal
+	// address were watched. Unrestricted, this fires millions of times a
+	// second and floods any log file into the tens of gigabytes range
+	// within seconds - widen (or remove) once this byte's behavior is
+	// understood.
+	if (addr != 0x00001014 && addr != 0x08001014 && addr != 0x0c001014)
+		return;
+
+	static uint64_t s_count = 0;
+	s_count++;
+
+	FILE *f = fopen("/tmp/mame_sgi_fastram_dump.txt", "a");
+	if (!f)
+		return;
+
+	if (iswrite)
+	{
+		fprintf(f, "[MAME_SGI_FASTRAM_COMPARE_DIAG] #%llu WRITE addr=0x%08x size=%u masked=%u value=0x%016llx\n",
+			(unsigned long long)s_count, addr, size, masked, (unsigned long long)value);
+	}
+	else
+	{
+		uint64_t slow_value = 0;
+		switch (size)
+		{
+			case 1: slow_value = m_program->read_byte(addr); break;
+			case 2: slow_value = m_program->read_word(addr); break;
+			case 4: slow_value = m_program->read_dword(addr); break;
+			case 8: slow_value = m_program->read_qword(addr); break;
+		}
+		fprintf(f, "[MAME_SGI_FASTRAM_COMPARE_DIAG] #%llu READ  addr=0x%08x size=%u masked=%u fast=0x%016llx slow=0x%016llx%s\n",
+			(unsigned long long)s_count, addr, size, masked, (unsigned long long)value, (unsigned long long)slow_value,
+			(slow_value != value) ? " <-- MISMATCH" : "");
+	}
+	fclose(f);
+
+	// Stop after a bounded number of events regardless of read/write mix
+	// - enough to see the write-then-read ordering around the first
+	// mismatch without risking another runaway multi-gigabyte log if
+	// this address turns out to be hotter than expected once writes are
+	// included too.
+	if (s_count >= 500)
+		fatalerror("%s: MAME_SGI_FASTRAM_COMPARE_DIAG - 200 events at addr=0x%08x logged, stopping here for inspection.\n", tag(), addr);
+}
+
+static void cfunc_fastram_compare_diag(void *param)
+{
+	((mips3_device *)param)->func_fastram_compare_diag();
 }
 #endif
 
@@ -7705,6 +7809,18 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 				}
 				if (!iswrite)
 				{
+#ifdef MAME_SGI_FASTRAM_COMPARE_DIAG
+					// Stashed HERE, before any of the size-specific
+					// branches below - I0 is still the real physical
+					// address at this exact point. Every branch after
+					// this one overwrites I0 with either a swizzled
+					// address (mid-load) or the final loaded value, so
+					// this is the only place in the function where the
+					// plain address is available to save.
+					UML_MOV(block, mem(&m_core->diag_fastram_addr), I0);
+					UML_MOV(block, mem(&m_core->diag_fastram_iswrite), 0);
+					UML_MOV(block, mem(&m_core->diag_fastram_masked), ismasked ? 1 : 0);
+#endif
 					if (size == 1)
 					{
 						UML_XOR(block, I0, I0, m_bigendian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0));
@@ -7727,6 +7843,17 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 						UML_DROR(block, I0, I0, 32 * (m_bigendian ? BYTE_XOR_BE(0) : BYTE_XOR_LE(0)));
 																					// dror    i0,i0,32*bytexor
 					}
+#ifdef MAME_SGI_FASTRAM_COMPARE_DIAG
+					// I0 now holds the value the fast path just loaded
+					// (whatever width the branch above produced). size
+					// is a compile-time int here (an immediate, not a
+					// runtime register) - UML_MOV with an immediate
+					// source is the same pattern diag_rodata_hit's own
+					// reset (0) above uses.
+					UML_MOV(block, mem(&m_core->diag_fastram_size), size);
+					UML_DMOV(block, mem(&m_core->diag_fastram_value), I0);
+					UML_CALLC(block, cfunc_fastram_compare_diag, this);
+#endif
 #ifdef MAME_SGI_RODATA_LOAD_ADDR_DIAG
 					// See MAME_SGI_RODATA_LOAD_ADDR_DIAG's own comment
 					// (near the top of this file). The post-read check in
@@ -7755,6 +7882,21 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 				}
 				else
 				{
+#ifdef MAME_SGI_FASTRAM_COMPARE_DIAG
+					// Same reasoning as the read side's own comment: I0
+					// is still the plain physical address here, before
+					// any of the size-specific branches touch it. I1 is
+					// the value about to be stored, still in its
+					// original (pre-swizzle) form for every size except
+					// 8 (which DRORs it below) - stashed as a 64-bit
+					// field regardless so one field covers every width.
+					UML_MOV(block, mem(&m_core->diag_fastram_addr), I0);
+					UML_MOV(block, mem(&m_core->diag_fastram_size), size);
+					UML_MOV(block, mem(&m_core->diag_fastram_iswrite), 1);
+					UML_MOV(block, mem(&m_core->diag_fastram_masked), ismasked ? 1 : 0);
+					UML_DMOV(block, mem(&m_core->diag_fastram_value), I1);
+					UML_CALLC(block, cfunc_fastram_compare_diag, this);
+#endif
 					if (size == 1)
 					{
 						UML_XOR(block, I0, I0, m_bigendian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0));
