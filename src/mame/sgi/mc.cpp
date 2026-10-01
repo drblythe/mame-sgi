@@ -29,22 +29,33 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// Task #119, opt-in and OFF by default - matching this project's own
-// established pattern for exactly this situation (see nwd33c9x.h's
-// MAME_SGI_SCSI_COARSE_SCHEDULE: a real feature kept side-by-side in the
-// tree, switchable, not deleted, while a real regression is worked out).
-// Registers the MIPS3 DRC's add_fastram() fast path for main RAM once
-// PROM's boot-time autosizing settles - implemented, but two real
-// correctness bugs were found and fixed (stale JIT code after a runtime
-// fastram change; flushing synchronously from inside a device register
-// write), and while chasing a THIRD, the read side of the one hot
-// address under investigation was proven to never go through any of
-// handler_entry_read_memory's three exposed accessors at all - a
-// genuinely unresolved, surprising result, not yet root-caused. Left
-// disabled until that's settled; see wiki task #119 for the full
-// investigation trail and the suggested next step (a real GDB data
-// watchpoint on the host address, not more printf instrumentation).
-// #define MAME_SGI_RAM_FASTRAM
+// Task #119, ON by default since 2026-09-30. Registers the MIPS3 DRC's
+// add_fastram() fast path for main RAM once PROM's boot-time autosizing
+// settles. Four real correctness bugs were found and fixed along the
+// way (stale JIT code after a runtime fastram change; flushing
+// synchronously from inside a device register write; a missing/wrong
+// endianness byte-lane swizzle in mips3drc.cpp's fastram accessor for
+// sizes 1/2/4; the same bug's size==8 counterpart, which was the cause
+// of a TLB-miss infinite loop) - see wiki task #119 for the full
+// investigation trail. Re-measured end to end before flipping this on:
+// boot-to-login shows a real, statistically significant ~10% reduction
+// in total instructions and ~6% in cycles (n=5 each side, Welch's
+// t-test p<0.0001 on both) - a universal win, every boot. A steady-
+// state GL/REX3-heavy workload (test/wave.cpp -db) showed no
+// significant change either way in handler_entry_read/write_memory
+// <3,0>'s own share of samples (~7.2% both configurations, confirmed at
+// two different sample durations) - fastram doesn't regress that case,
+// it just doesn't move the needle on this specific metric for it either
+// (plausibly because that profiled window's <3,0> traffic is dominated
+// by concurrent background guest activity - X server, scheduler - not
+// wave's own already-JIT-compiled steady-state loop; not fully
+// confirmed). Net: a real, broad win with no observed downside -
+// matching this project's own established pattern (see nwd33c9x.h's
+// MAME_SGI_SCSI_COARSE_SCHEDULE) of keeping a feature like this
+// switchable rather than hardcoding it unconditionally, should a
+// regression turn up later that this specific re-measurement didn't
+// cover.
+#define MAME_SGI_RAM_FASTRAM
 
 DEFINE_DEVICE_TYPE(SGI_MC, sgi_mc_device, "sgi_mc", "SGI Memory Controller")
 
