@@ -17,6 +17,11 @@
 // manifests, making "negligible overhead" not the same guarantee as
 // "doesn't affect the bug." Re-enable only for a deliberate, isolated
 // measurement pass, not as a standing default.
+//
+// Re-enabled briefly 2026-09-30 to finally answer the question this
+// comment poses - see wiki/performance.md's "get_value() scan-distance"
+// section for the measured result (call-frequency-dominated, not
+// scan-distance-dominated) - then disabled again below, as intended.
 // #define MAME_SGI_GETVALUE_SCAN_DIAG
 
 #include "emu.h"
