@@ -67,6 +67,79 @@
 // machine/wd33c9x.h for the full rationale - unchanged here.
 #define MAME_SGI_SCSI_COARSE_SCHEDULE
 
+// Task #118 (wiki/tasks.md, scoped 2026-09-29, implemented 2026-09-30,
+// enabled by default 2026-10-01 after three real bugs were found and
+// fixed - see tasks.md's task #118 row for the full arc): fast path for
+// coarse-eligible BURST DATA_IN/DATA_OUT transfers - skips the per-byte
+// REQ/ACK state-machine walk (~7 switch-dispatch hops/byte, each a real
+// host function call) for the repetitive MIDDLE section of a transfer.
+// The first and last byte of each transfer always go through the real
+// dance unchanged, to keep phase-start/transfer-complete sequencing (and
+// any mid-transfer register inspection) byte-for-byte identical to the
+// unoptimized path. Justified by task #7's own BURST-mode visibility
+// diagnostic (IRIX's real driver never inspects intermediate REQ/ACK
+// state in this mode).
+//
+// Confirmed LIVE (host gdb backtrace, both directions) before writing
+// this: step()'s set_drq()/dma_r() and the DATA_OUT dma_w() call are
+// fully SYNCHRONOUS, nested in one call chain from update_step()'s timer
+// callback through hpc3_device::scsi0_drq() - not a separately-timed,
+// asynchronous host-CPU-driven event the way a naive reading of the
+// REQ/ACK dance suggests. This is what makes a tight, local fast-path
+// loop safe to reason about at all - see wiki/performance.md's task #118
+// section for the full trace.
+//
+// Restricted to SBUF_BLOCK (real disk sector reads/writes) only - the
+// task's own original scoping was about disk-read throughput, never
+// short command responses like INQUIRY/MODE_SENSE (SBUF_MAIN). PROM's own
+// power-on SCSI diagnostic issues a 36-byte INQUIRY in BURST mode, which
+// would otherwise also take the fast path; SBUF_BLOCK-only is both the
+// originally-intended scope and the fix for that. Revisit the SBUF_MAIN
+// case only with its own dedicated investigation, not as a side effect
+// of chasing the disk-read win.
+//
+// Three real bugs found and fixed before this was trustworthy (full
+// detail in tasks.md): (1) the fast loop must keep the initiator's own
+// per-byte bookkeeping (m_i_state parked at INIT_XFR_WAIT_REQ, its S_REQ
+// re-arm) live every iteration, not frozen; (2) t_target_send_buffer_byte()
+// (and the t_target_recv_byte() DATA_OUT mirror) must explicitly replicate
+// T_TARGET_WAIT_DATA_IN/OUT_BYTE's own m_t_state->T_TARGET_NEXT_CONTROL
+// transition before the final byte's real-dance tail call, since the fast
+// loop's self-recursion bypasses the t_step() dispatch that normally makes
+// that transition; (3) that same T_TARGET_NEXT_CONTROL guard must be
+// scoped to m_t_data_buffer_id==SBUF_BLOCK specifically - t_target_recv_byte()
+// is also used for CDB/message-byte reception, where m_t_data_buffer_size
+// is stale leftover from whatever SBUF_BLOCK transfer came before and has
+// no business deciding completion there at all.
+//
+// A/B validated (tasks.md task #118 row has the full numbers): boot-to-
+// marker instructions -23.15%, cycles -13.90%, branches -25.22% (all
+// p<0.0001, n=5 each, tools/perf_ab_stats.sh); disk_benchmark.sh
+// throughput ~3.1x. Boot-to-login wall-clock itself is flat, consistent
+// with every other SCSI-path optimization this project has measured -
+// boot is dominated by non-disk cost, not disk bandwidth.
+//
+// MAME_SGI_SCSI_BURST_FASTPATH_COMPARE_DIAG below was planned as a
+// standing byte-level validation companion but was never actually
+// implemented - see its own comment for why and what was used instead.
+#define MAME_SGI_SCSI_BURST_FASTPATH
+
+// Planned companion to MAME_SGI_SCSI_BURST_FASTPATH, matching task #119's
+// MAME_SGI_FASTRAM_COMPARE_DIAG in spirit (cross-check every fast-pathed
+// byte against what the real per-byte dance would have produced,
+// fatalerror() on the first mismatch) - declared here when the fast path
+// was first designed, but never actually implemented: all three real
+// bugs this task found were instead caught with ad hoc, targeted
+// osd_printf_info() instrumentation added and removed per-bug (cheaper
+// to write for a one-shot question than a standing comparison harness,
+// and in bug #3's case the mismatch was a live oscillation a byte-value
+// comparison wouldn't have characterized anyway - see tasks.md's task
+// #118 row). Left declared, still unimplemented, in case a future change
+// to this fast path specifically needs the byte-level comparison this
+// was meant to provide. Meaningless without the macro above also
+// defined. Disabled by default.
+// #define MAME_SGI_SCSI_BURST_FASTPATH_COMPARE_DIAG
+
 class nwd33c9x_device;
 
 // Multiple CD-ROMs (2026-09-20, task #7): CD-ROM support was never the

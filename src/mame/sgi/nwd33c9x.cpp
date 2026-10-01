@@ -2221,6 +2221,67 @@ void nwd33c9x_device::t_step(bool timeout)
 
 void nwd33c9x_device::t_target_recv_byte()
 {
+#ifdef MAME_SGI_SCSI_BURST_FASTPATH
+	// Task #118 fast path (DATA_OUT direction) - see nwd33c9x.h's own
+	// comment on MAME_SGI_SCSI_BURST_FASTPATH for the full rationale and
+	// the live-traced synchronous call chain this relies on. Only takes
+	// over once this function has already been reached normally at least
+	// once for the current chunk (m_t_data_buffer_pos > 0) - the FIRST
+	// byte of every transfer always goes through the real REQ/ACK dance
+	// below, same as the last byte (loop condition excludes it).
+	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
+		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
+			// See t_target_send_buffer_byte()'s identical fix (2026-10-01)
+			// for the full rationale - same two bugs, mirrored for this
+			// direction: (1) keep the initiator's own per-byte bookkeeping
+			// (its INIT_XFR_WAIT_REQ parked state and S_REQ re-arm) live
+			// instead of frozen, and (2) explicitly mirror
+			// T_TARGET_WAIT_DATA_OUT_BYTE's own m_t_state transition,
+			// which this loop's self-recursion bypasses the same way the
+			// DATA_IN direction's did. NOT independently boot-verified in
+			// this direction yet (the confirmed failure was a DATA_IN
+			// disk read) - same mechanism, applied for consistency rather
+			// than left asymmetric, but treat with the same caution until
+			// a real disk-write path exercises it.
+			if (data_fifo_full())
+				break;
+			// set_drq() synchronously drives dma_w() (confirmed live via
+			// host gdb backtrace - hpc3_device::scsi0_drq() calls back
+			// into dma_w() before this returns), filling the fifo with
+			// the host's next byte and decrementing m_transfer_count.
+			set_drq();
+			if (data_fifo_empty())
+				break; // host wasn't ready - fall through to the real dance for this byte rather than press on incorrectly
+			t_put_data(m_t_data_buffer_id, m_t_data_buffer_pos++, data_fifo_pop());
+			i_ctrl_wait(S_REQ, S_REQ);
+			set_i_state(INIT_XFR_WAIT_REQ);
+		}
+	}
+	// Mirrors T_TARGET_WAIT_DATA_OUT_BYTE's own check - see
+	// t_target_send_buffer_byte()'s identical fix for the full rationale.
+	//
+	// Root-caused 2026-10-01 (side-by-side arbitration/command-phase
+	// trace, after the first version of this guard caused a NEW bug):
+	// unlike t_target_send_buffer_byte() (only ever reached via T_BC_
+	// DATA_IN, where m_t_data_buffer_size is always genuinely set for
+	// whichever buffer that action named), this function is ALSO called
+	// for CDB and message-byte reception (T_TARGET_WAIT_CMD_BYTE/
+	// T_TARGET_WAIT_MSG_BYTE) - contexts that decide their own completion
+	// via t_command_done()/S_ATN, never via m_t_data_buffer_size, which
+	// sits stale there (left over from whatever SBUF_BLOCK transfer size
+	// came before). The unconditional version of this guard fired
+	// whenever a CDB byte position happened to coincide with that stale
+	// size-1 (observed live: a prior 8-byte transfer left size=8, and
+	// the very next command's CDB byte 7 triggered this mid-command),
+	// forcing T_TARGET_NEXT_CONTROL partway through CDB reception and
+	// corrupting it - visible as an infinite REQ/ACK oscillation between
+	// the initiator and target, never reaching the data phase at all.
+	// Scoping to SBUF_BLOCK (matching the fast path's own eligibility
+	// above, which is the only reason this guard needs to exist at all)
+	// fixes it.
+	if (m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos == m_t_data_buffer_size - 1)
+		m_t_state = T_TARGET_NEXT_CONTROL;
+#endif
 	t_ctrl_wait(S_ACK, S_ACK);
 	m_t_state = (m_t_state & T_STATE_MASK) | (T_RECV_BYTE_T_WAIT_ACK_1 << T_SUB_SHIFT);
 	t_ctrl_w(S_REQ, S_REQ);
@@ -2238,6 +2299,62 @@ void nwd33c9x_device::t_target_send_byte(uint8_t val)
 
 void nwd33c9x_device::t_target_send_buffer_byte()
 {
+#ifdef MAME_SGI_SCSI_BURST_FASTPATH
+	// Task #118 fast path (DATA_IN direction) - see nwd33c9x.h's own
+	// comment on MAME_SGI_SCSI_BURST_FASTPATH for the full rationale and
+	// the live-traced synchronous call chain this relies on. Only takes
+	// over once this function has already been reached normally at least
+	// once for the current chunk (m_t_data_buffer_pos > 0) - the FIRST
+	// byte of every transfer always goes through the real REQ/ACK dance
+	// below, same as the last byte (loop condition excludes it).
+	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
+		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
+			// Root-caused 2026-10-01 (single-command isolation, see
+			// wiki/performance.md task #118 section): the original version
+			// of this loop skipped the initiator-side per-byte bookkeeping
+			// entirely, not just the timer/scheduler overhead the already-
+			// shipped MAME_SGI_SCSI_COARSE_SCHEDULE feature already strips
+			// out - m_i_state froze at INIT_XFR_WAIT_REQ for the whole
+			// fast-tracked stretch. This version re-derives, directly, the
+			// exact net effect of the real per-byte walk's INIT_XFR guard
+			// (data_fifo_full()/m_drq_state check) and INIT_XFR_WAIT_REQ's
+			// own re-arm (i_ctrl_wait(S_REQ,S_REQ)) and parked destination
+			// state - the one piece of real per-byte work that can't be
+			// skipped - instead of walking RECV_WAIT_REQ_1/SETTLE/REQ_0 and
+			// INIT_XFR_RECV_BYTE_ACK one hop at a time to reach it.
+			if (data_fifo_full() || m_drq_state)
+				break; // mirrors INIT_XFR's own real guard - fall through to the real dance for this byte rather than press on incorrectly
+			data_fifo_push(t_get_data(m_t_data_buffer_id, m_t_data_buffer_pos++));
+			// set_drq() synchronously drives dma_r() (confirmed live via
+			// host gdb backtrace - hpc3_device::scsi0_drq() calls back
+			// into dma_r() before this returns), draining the fifo and
+			// decrementing m_transfer_count before the next iteration.
+			set_drq();
+			i_ctrl_wait(S_REQ, S_REQ);
+			set_i_state(INIT_XFR_WAIT_REQ);
+		}
+	}
+	// Root-caused 2026-10-01 (single-command isolation, see
+	// wiki/performance.md task #118 section): T_TARGET_WAIT_DATA_IN_BYTE's
+	// own dispatch in t_step() is normally the ONLY place that sets
+	// m_t_state to T_TARGET_NEXT_CONTROL once m_t_data_buffer_pos reaches
+	// the last index, and it does so BEFORE calling this function for the
+	// final byte. The fast loop above calls this function's own tail
+	// recursively from inside itself, bypassing that t_step() dispatch
+	// entirely for every fast-tracked byte - so without this, m_t_state
+	// is still T_TARGET_WAIT_DATA_IN_BYTE when the final byte's own real
+	// dance completes, t_step() re-enters T_TARGET_WAIT_DATA_IN_BYTE one
+	// more time, and sends a bogus extra byte one past the end of the
+	// buffer, still claiming S_PHASE_DATA_IN - the second, erroneous REQ
+	// pulse that was corrupting the exchange (confirmed directly: this
+	// pulse is what the initiator's INIT_XFR_WAIT_REQ decision sees with
+	// m_transfer_count already at 0, which is specifically what signals
+	// SCSI_STATUS_UNEXPECTED_PHASE). Mirrors T_TARGET_WAIT_DATA_IN_BYTE's
+	// own check exactly, run here instead since this function is what's
+	// now deciding when the current chunk is really finished.
+	if (m_t_data_buffer_pos == m_t_data_buffer_size - 1)
+		m_t_state = T_TARGET_NEXT_CONTROL;
+#endif
 	t_target_send_byte(t_get_data(m_t_data_buffer_id, m_t_data_buffer_pos++));
 }
 
