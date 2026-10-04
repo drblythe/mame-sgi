@@ -120,6 +120,7 @@ public:
 		, m_nwd33c9x_ctrl(*this, "nwd33c9x")
 #endif
 		, m_edlc(*this, "edlc")
+		, m_enet_config(*this, "ENET")
 		, m_eeprom(*this, "eeprom")
 		, m_hal2(*this, "hal2")
 		, m_hpc3(*this, "hpc3")
@@ -139,6 +140,8 @@ public:
 	void indy_5015(machine_config &config);
 	void indy_4613(machine_config &config);
 	void indy_4610(machine_config &config);
+
+	DECLARE_INPUT_CHANGED_MEMBER(enet_speed_changed);
 
 protected:
 	virtual void machine_start() override ATTR_COLD;
@@ -188,6 +191,7 @@ protected:
 	optional_device<nwd33c9x_device> m_nwd33c9x_ctrl;
 #endif
 	required_device<seeq80c03_device> m_edlc;
+	required_ioport m_enet_config;
 	required_device<eeprom_serial_93cxx_device> m_eeprom;
 	required_device<hal2_device> m_hal2;
 	required_device<hpc3_device> m_hpc3;
@@ -400,6 +404,8 @@ TIMER_CALLBACK_MEMBER(ip24_state::rtc_host_resync)
 
 void ip24_state::machine_reset()
 {
+	m_edlc->set_unthrottled(m_enet_config->read() & 1);
+
 	// MIPS3DRC_DISABLE_INTRABLOCK and MIPS3DRC_STRICT_VERIFY were each
 	// tested here as controlled experiments for a DRC memory-corruption
 	// bug (rmap_del panic / stuck LL-SC spin) - both ruled out (same hang,
@@ -475,7 +481,16 @@ void ip24_state::machine_reset()
 	}
 }
 
+INPUT_CHANGED_MEMBER(ip24_state::enet_speed_changed)
+{
+	m_edlc->set_unthrottled(newval & 1);
+}
+
 static INPUT_PORTS_START( ip24 )
+	PORT_START("ENET")
+	PORT_CONFNAME(0x01, 0x00, "Ethernet Link Speed") PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(ip24_state::enet_speed_changed), 0)
+	PORT_CONFSETTING(0x00, "10 Mbit/s")
+	PORT_CONFSETTING(0x01, "Unlimited")
 INPUT_PORTS_END
 
 void ip24_state::scsi_devices(device_slot_interface &device)

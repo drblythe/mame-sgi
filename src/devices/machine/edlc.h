@@ -44,6 +44,7 @@ protected:
 
 	// device_network_interface implementation
 	virtual int recv_start_cb(u8 *buf, int length) override;
+	virtual bool recv_busy() const override;
 	virtual void send_complete_cb(int result) override;
 
 	// register read handlers

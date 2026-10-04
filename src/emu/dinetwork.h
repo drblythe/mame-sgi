@@ -19,6 +19,11 @@ public:
 	void set_mac(const u8 *mac);
 	void set_loopback(bool loopback);
 
+	// unthrottled: no modeled transfer time (unlimited link bandwidth),
+	// with received frames held back rather than discarded while the
+	// device is busy
+	void set_unthrottled(bool unthrottled) { m_unthrottled = unthrottled; }
+
 	int get_interface() const { return m_intf; }
 
 	int send(u8 *buf, int len, int fcs = 0);
@@ -31,9 +36,18 @@ public:
 	virtual int recv_start_cb(u8 *buf, int len) { return 0; }
 	virtual void recv_complete_cb(int result) {}
 
+	// true while the device cannot take a received frame right now (as
+	// opposed to rejecting it, e.g. by address filtering); used to hold
+	// frames back rather than discard them when unthrottled
+	virtual bool recv_busy() const { return false; }
+
 protected:
 	bool has_net_device() const noexcept { return bool(m_dev); }
 	void log_bytes(const u8 *buf, int len);
+
+	// modeled transfer time for len bytes at m_bandwidth (zero when unthrottled)
+	attotime transfer_delay(int len) const;
+	bool unthrottled() const { return m_unthrottled; }
 
 	// bandwidth in bytes per second
 	u32 m_bandwidth;
@@ -41,11 +55,14 @@ protected:
 	u32 m_mtu;
 	int m_intf;
 	bool m_loopback_control;
+	bool m_unthrottled;
 
 private:
 	TIMER_CALLBACK_MEMBER(poll_device);
 	TIMER_CALLBACK_MEMBER(send_complete);
 	TIMER_CALLBACK_MEMBER(recv_complete);
+	TIMER_CALLBACK_MEMBER(recv_retry);
+	attotime recv_retry_interval() const;
 
 	void start_net_device();
 	void stop_net_device();
@@ -54,6 +71,8 @@ private:
 	emu_timer *m_poll_timer;
 	emu_timer *m_send_timer;
 	emu_timer *m_recv_timer;
+	emu_timer *m_retry_timer;
+	std::vector<u8> m_recv_pending;
 };
 
 

@@ -111,6 +111,17 @@ int seeq8003_device::recv_start_cb(u8 *buf, int length)
 	return 0;
 }
 
+bool seeq8003_device::recv_busy() const
+{
+	// unable to take a frame right now: in reset or receiver disabled (the
+	// driver does both briefly while servicing/re-arming), or the previous
+	// frame has not been read out of the fifo or its status has not been
+	// read yet (see receive()); frames rejected by the address filter are
+	// not affected
+	return !m_reset_state || ((m_rx_command & RXC_M) == RXC_M0) ||
+		!(m_rx_status & RXS_O) || !m_rx_fifo.empty();
+}
+
 void seeq8003_device::map(address_map &map)
 {
 	map(0, 5).rw(FUNC(seeq8003_device::unused_r), FUNC(seeq8003_device::station_address_w));
