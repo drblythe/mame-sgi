@@ -53,9 +53,12 @@ seeq8003_device::seeq8003_device(machine_config const &mconfig, char const *tag,
 void seeq8003_device::device_start()
 {
 	save_item(NAME(m_int_state));
+	save_item(NAME(m_int_ack));
+	save_item(NAME(m_tx_active));
 	save_item(NAME(m_reset_state));
 	save_item(NAME(m_station_address));
 	save_item(NAME(m_rx_status));
+	save_item(NAME(m_rx_status_next));
 	save_item(NAME(m_tx_status));
 	save_item(NAME(m_rx_command));
 	save_item(NAME(m_tx_command));
@@ -66,6 +69,8 @@ void seeq8003_device::device_start()
 	m_int_timer = timer_alloc(FUNC(seeq8003_device::interrupt), this);
 
 	m_int_state = 0;
+	m_int_ack = false;
+	m_tx_active = false;
 	m_reset_state = 1;
 }
 
@@ -146,6 +151,9 @@ void seeq8003_device::reset_w(int state)
 		// enter reset state
 		m_out_txrdy(0);
 
+		// abort any transmission in progress
+		m_tx_active = false;
+
 		// TODO: assert RxDC and TxRET
 	}
 	else if (!m_reset_state && state)
@@ -169,6 +177,9 @@ u8 seeq8003_device::fifo_r()
 
 	if (m_rx_fifo.empty())
 	{
+		// the frame has been read out: its status becomes visible now
+		m_rx_status = m_rx_status_next;
+
 		// disable rx fifo
 		m_out_rxrdy(0);
 
@@ -220,6 +231,7 @@ u8 seeq8003_device::rx_status_r()
 	if (m_reset_state && !machine().side_effects_disabled())
 	{
 		m_rx_status |= RXS_O;
+		m_int_ack = true;
 		m_int_timer->adjust(attotime::zero);
 	}
 
@@ -234,6 +246,7 @@ u8 seeq8003_device::tx_status_r()
 	if (m_reset_state && !machine().side_effects_disabled())
 	{
 		m_tx_status |= TXS_O;
+		m_int_ack = true;
 		m_int_timer->adjust(attotime::zero);
 	}
 
@@ -285,39 +298,67 @@ void seeq8003_device::transmit(s32 param)
 			log_bytes(buf, length);
 
 		// transmit the frame
+		m_tx_active = true;
 		send(buf, length, 4);
 
-		// TODO: transmit errors/TxRET
-
-		// update status
-		m_tx_status = TXS_S;
+		// The frame is now on the wire for the modeled transmission time.
+		// Status, txrdy and the interrupt are all deferred until
+		// send_complete_cb(): the transmit status must not report
+		// success (and so count as a pending interrupt cause) while the
+		// frame is still being sent, otherwise any interrupt evaluation
+		// in that window (e.g. a receive completing) reports the transmit
+		// as done early, and the DMA controller starts the next frame
+		// while this one is still in progress.
 	}
 	else
+	{
+		// nothing was queued - nothing to wait for, ready immediately.
 		m_tx_status = TXS_U;
 
-	// enable tx fifo
-	m_out_txrdy(1);
+		interrupt();
+		m_out_txrdy(1);
+	}
+}
 
+void seeq8003_device::send_complete_cb(int result)
+{
+	// ignore completion of a transmission aborted by reset
+	if (!m_tx_active)
+		return;
+	m_tx_active = false;
+
+	// TODO: transmit errors/TxRET
+	m_tx_status = TXS_S;
+
+	// Report completion before signalling ready for the next frame, so
+	// the status for this frame is serviced before the next transmit
+	// can begin.
 	interrupt();
+	m_out_txrdy(1);
 }
 
 int seeq8003_device::receive(u8 *buf, int length)
 {
-	// discard if rx status has not been read
+	// discard if the previous frame has not been read out, or its status
+	// has not been read
 	// TODO: RxDC
-	if (!(m_rx_status & RXS_O))
+	if (!(m_rx_status & RXS_O) || !m_rx_fifo.empty())
 		return 0;
 
-	m_rx_status = RXS_E;
+	// The status is held back until the frame has been read out of the
+	// fifo (see fifo_r()): otherwise an interrupt evaluated in between
+	// (e.g. for a transmit completion) would report a reception whose data
+	// the DMA controller has not transferred yet.
+	m_rx_status_next = RXS_E;
 
 	// check for errors
 	u32 const fcs = util::crc32_creator::simple(buf, length);
 	if (length < 64)
-		m_rx_status |= RXS_S;
+		m_rx_status_next |= RXS_S;
 	else if (~fcs != FCS_RESIDUE)
-		m_rx_status |= RXS_C;
+		m_rx_status_next |= RXS_C;
 	else
-		m_rx_status |= RXS_G;
+		m_rx_status_next |= RXS_G;
 
 	// enqueue from buffer
 	unsigned const fcs_bytes = mode_rx_crc() ? 0 : 4;
@@ -337,6 +378,21 @@ void seeq8003_device::interrupt(s32 param)
 		(!(m_rx_status & RXS_O) && (m_rx_status & m_rx_command & RXS_M));
 
 	// TODO: assert RxDC for masked rx crc or short frame errors
+
+	// Reading a status register deasserts the interrupt output at the
+	// time of the read; this re-evaluation is deferred, so if a new cause
+	// became pending in the meantime the output must still show a fresh
+	// edge rather than appear to have stayed asserted throughout.
+	if (m_int_ack)
+	{
+		m_int_ack = false;
+
+		if (m_int_state && state)
+		{
+			m_int_state = 0;
+			m_out_int(0);
+		}
+	}
 
 	if (state != m_int_state)
 	{
@@ -432,6 +488,8 @@ void seeq80c03_device::send_complete_cb(int result)
 		if ((m_control & CTL_TNC) && !has_net_device())
 			m_flags |= FLAGS_TNC;
 	}
+
+	seeq8003_device::send_complete_cb(result);
 }
 
 void seeq80c03_device::map(address_map &map)

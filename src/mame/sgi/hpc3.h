@@ -80,6 +80,7 @@ public:
 #endif
 
 	void enet_rxrdy_w(int state);
+	void enet_txrdy_w(int state);
 	void enet_intr_in_w(int state);
 
 	void scsi0_drq(int state);
@@ -149,6 +150,7 @@ protected:
 	//void scsi_dma(int channel);
 
 	void enet_transmit(int32_t param = 0);
+	void enet_receive();
 	void enet_misc_w(u32 data);
 	bool enet_rx_bc_dec(unsigned const count = 1);
 
@@ -322,6 +324,9 @@ private:
 	u32 m_enet_tx_nbdp = 0;   // next transmit buffer descriptor pointer
 	u32 m_enet_tx_bc = 0;     // transmit byte count
 	u32 m_enet_tx_ctrl = 0;   // transmit status
+	bool m_enet_tx_ready = false; // edlc txrdy output state
+	bool m_enet_tx_eox = false; // packet being transmitted ends the descriptor chain
+	bool m_enet_rx_ready = false; // edlc rxrdy output state
 	u32 m_enet_tx_gio = 0;    // transmit gio fifo pointer
 	u32 m_enet_tx_dev = 0;    // transmit device fifo pointer
 	u32 m_enet_rx_cbdp = 0;   // current receive buffer descriptor pointer

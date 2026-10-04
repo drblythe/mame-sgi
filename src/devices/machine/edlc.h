@@ -44,6 +44,7 @@ protected:
 
 	// device_network_interface implementation
 	virtual int recv_start_cb(u8 *buf, int length) override;
+	virtual void send_complete_cb(int result) override;
 
 	// register read handlers
 	u8 unused_r() { return 0xff; }
@@ -128,9 +129,12 @@ protected:
 	devcb_write_line m_out_txrdy;
 
 	int m_int_state;
+	bool m_int_ack; // status read since the interrupt output was last evaluated
+	bool m_tx_active; // frame handed to the network, completion pending
 	int m_reset_state;
 	u8 m_station_address[6];
 	u8 m_rx_status;
+	u8 m_rx_status_next; // status of the frame in the rx fifo, visible once read out
 	u8 m_tx_status;
 	u8 m_rx_command;
 	u8 m_tx_command;

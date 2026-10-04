@@ -671,6 +671,7 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	SEEQ80C03(config, m_edlc);
 	m_edlc->out_int_cb().set(m_hpc3, FUNC(hpc3_device::enet_intr_in_w));
 	m_edlc->out_rxrdy_cb().set(m_hpc3, FUNC(hpc3_device::enet_rxrdy_w));
+	m_edlc->out_txrdy_cb().set(m_hpc3, FUNC(hpc3_device::enet_txrdy_w));
 	m_hpc3->set_enet(m_edlc);
 
 	SGI_HAL2(config, m_hal2);

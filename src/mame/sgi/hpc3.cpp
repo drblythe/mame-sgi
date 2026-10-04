@@ -133,6 +133,9 @@ void hpc3_device::device_start()
 	save_item(NAME(m_enet_tx_nbdp));
 	save_item(NAME(m_enet_tx_bc));
 	save_item(NAME(m_enet_tx_ctrl));
+	save_item(NAME(m_enet_tx_ready));
+	save_item(NAME(m_enet_tx_eox));
+	save_item(NAME(m_enet_rx_ready));
 	save_item(NAME(m_enet_tx_gio));
 	save_item(NAME(m_enet_tx_dev));
 
@@ -577,6 +580,10 @@ void hpc3_device::hd_enet_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 			m_enet_rx_ctrl = (m_enet_rx_ctrl & (RXC_LC | RXC_ST)) | (data & ~(RXC_CA | RXC_LC | RXC_ST));
 		else
 			m_enet_rx_ctrl = (m_enet_rx_ctrl & (RXC_LC | RXC_ST)) | (data & ~((RXC_LC | RXC_ST)));
+
+		// if a frame is already waiting in the edlc, transfer it now
+		if ((m_enet_rx_ctrl & RXC_CA) && m_enet_rx_ready)
+			enet_receive();
 		break;
 	case 0x5008/4:
 		LOGMASKED(LOG_ETHERNET, "%s: HPC3 Ethernet Receiver GIO FIFO Pointer Write (ignored): %08x\n", machine().describe_context(), data);
@@ -613,7 +620,14 @@ void hpc3_device::hd_enet_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 		else
 			m_enet_tx_ctrl = (m_enet_tx_ctrl & (TXC_LC | TXC_ST)) | (data & ~((TXC_LC | TXC_ST)));
 
-		if ((m_enet_tx_ctrl & TXC_CA) && !m_enet_tx_timer->enabled())
+		// a software write starts a (new) chain, superseding any pending
+		// end-of-chain stop from the packet still being transmitted
+		if (m_enet_tx_ctrl & TXC_CA)
+			m_enet_tx_eox = false;
+
+		// only start the transmit dma if the edlc is ready for a frame,
+		// otherwise enet_txrdy_w() starts it once it is
+		if ((m_enet_tx_ctrl & TXC_CA) && m_enet_tx_ready && !m_enet_tx_timer->enabled())
 			m_enet_tx_timer->adjust(attotime::zero);
 		break;
 	case 0x7008/4:
@@ -643,29 +657,50 @@ void hpc3_device::hd_enet_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 
 void hpc3_device::enet_rxrdy_w(int state)
 {
+	// the edlc's rxrdy output: asserted while its receive fifo holds a frame
+	m_enet_rx_ready = bool(state);
+
 	// check receive dma enabled
 	if (state && (m_enet_rx_ctrl & RXC_CA))
+		enet_receive();
+}
+
+void hpc3_device::enet_receive()
+{
+	// next descriptor becomes current
+	m_enet_rx_cbdp = m_enet_rx_nbdp;
+
+	// fetch the current descriptor
+	m_enet_rx_cbp = m_gio64_space->read_dword(m_enet_rx_cbdp + 0);
+	m_enet_rx_bc = m_gio64_space->read_dword(m_enet_rx_cbdp + 4);
+	m_enet_rx_nbdp = m_gio64_space->read_dword(m_enet_rx_cbdp + 8);
+
+	LOGMASKED(LOG_ETHERNET, "enet rx dma chain 0x%08x cbp 0x%08x bc 0x%08x nbdp 0x%08x\n",
+		m_enet_rx_cbdp, m_enet_rx_cbp, m_enet_rx_bc, m_enet_rx_nbdp);
+
+	// skip buffer alignment bytes
+	if (enet_rx_bc_dec(2))
+		m_enet_rx_cbp += 2;
+
+	// transfer data from edlc fifo to memory; bytes beyond the end of the
+	// buffer are drained and discarded (enet_rx_bc_dec() flags the
+	// overflow), otherwise the fifo never empties and this never ends
+	while (!m_enet->rxeof_r())
 	{
-		// next descriptor becomes current
-		m_enet_rx_cbdp = m_enet_rx_nbdp;
-
-		// fetch the current descriptor
-		m_enet_rx_cbp = m_gio64_space->read_dword(m_enet_rx_cbdp + 0);
-		m_enet_rx_bc = m_gio64_space->read_dword(m_enet_rx_cbdp + 4);
-		m_enet_rx_nbdp = m_gio64_space->read_dword(m_enet_rx_cbdp + 8);
-
-		LOGMASKED(LOG_ETHERNET, "enet rx dma chain 0x%08x cbp 0x%08x bc 0x%08x nbdp 0x%08x\n",
-			m_enet_rx_cbdp, m_enet_rx_cbp, m_enet_rx_bc, m_enet_rx_nbdp);
-
-		// skip buffer alignment bytes
-		if (enet_rx_bc_dec(2))
-			m_enet_rx_cbp += 2;
-
-		// transfer data from edlc fifo to memory
-		while (!m_enet->rxeof_r())
-			if (enet_rx_bc_dec())
-				m_gio64_space->write_byte(m_enet_rx_cbp++, m_enet->fifo_r());
+		u8 const data = m_enet->fifo_r();
+		if (enet_rx_bc_dec())
+			m_gio64_space->write_byte(m_enet_rx_cbp++, data);
 	}
+}
+
+void hpc3_device::enet_txrdy_w(int state)
+{
+	// the edlc's txrdy output: asserted when its transmit fifo can accept
+	// a frame, i.e. after any previous frame has finished transmitting
+	m_enet_tx_ready = bool(state);
+
+	if (m_enet_tx_ready && (m_enet_tx_ctrl & TXC_CA) && !m_enet_tx_timer->enabled())
+		m_enet_tx_timer->adjust(attotime::zero);
 }
 
 void hpc3_device::enet_intr_in_w(int state)
@@ -691,17 +726,22 @@ void hpc3_device::enet_intr_in_w(int state)
 				m_gio64_space->write_word(m_enet_tx_cpfbdp + 6, BC_TXD);
 
 			// interrupt host if xie or error
-			if ((m_enet_tx_bc & BC_XIE) || (m_enet_tx_ctrl & (TXC_ST_U | TXC_ST_C | TXC_ST_R)))
-			{
-				// stop dma
-				// FIXME: do we always stop dma, or only on errors?
-				m_enet_tx_ctrl &= ~TXC_CA;
-
+			if (m_enet_tx_bc & BC_XIE)
 				interrupt = true;
-			}
 
-			// transmit next packet
-			if (m_enet_tx_ctrl & TXC_CA)
+			// the channel stays active until the packet ending the chain
+			// has actually been transmitted (or on error)
+			if (m_enet_tx_eox || (m_enet_tx_ctrl & (TXC_ST_U | TXC_ST_C | TXC_ST_R)))
+			{
+				m_enet_tx_eox = false;
+				m_enet_tx_ctrl &= ~TXC_CA;
+			}
+			if (m_enet_tx_ctrl & (TXC_ST_U | TXC_ST_C | TXC_ST_R))
+				interrupt = true;
+
+			// transmit next packet (otherwise enet_txrdy_w() starts it
+			// once the edlc is ready to accept it)
+			if ((m_enet_tx_ctrl & TXC_CA) && m_enet_tx_ready && !m_enet_tx_timer->enabled())
 				m_enet_tx_timer->adjust(attotime::zero);
 		}
 
@@ -1180,8 +1220,13 @@ void hpc3_device::eeprom_w(uint32_t data)
 
 void hpc3_device::enet_transmit(int32_t param)
 {
-	// save the first transmit buffer descriptor pointer
-	// TODO: not sure how cpfbdp and ppfbdp work, perhaps round-robin?
+	// the channel may have been deactivated since this was scheduled
+	if (!(m_enet_tx_ctrl & TXC_CA))
+		return;
+
+	// save the first transmit buffer descriptor pointer; the driver reads
+	// these as a ping-pong pair holding the current and previous packets
+	m_enet_tx_ppfbdp = m_enet_tx_cpfbdp;
 	m_enet_tx_cpfbdp = m_enet_tx_nbdp;
 
 	bool done = false;
@@ -1211,11 +1256,11 @@ void hpc3_device::enet_transmit(int32_t param)
 			done = true;
 		}
 
-		// check for end of chain
+		// check for end of chain: the channel stops once this packet has
+		// been transmitted (see enet_intr_in_w())
 		if (m_enet_tx_bc & BC_EOX)
 		{
-			// stop dma
-			m_enet_tx_ctrl &= ~TXC_CA;
+			m_enet_tx_eox = true;
 			done = true;
 		}
 	}
@@ -1224,8 +1269,37 @@ void hpc3_device::enet_transmit(int32_t param)
 void hpc3_device::enet_misc_w(u32 data)
 {
 	// channel reset
-	m_enet->reset_w(!(data & MISC_RESET));
-	// TODO: reset ethernet dma state
+	bool const entering_reset = bool(data & MISC_RESET);
+	m_enet->reset_w(!entering_reset);
+
+	if (entering_reset)
+	{
+		LOGMASKED(LOG_ETHERNET, "%s: HPC3 Ethernet channel reset (MISC=%08x)\n", machine().describe_context(), data);
+
+		// reset ethernet dma state
+		m_enet_rx_cbp = 0;
+		m_enet_rx_nbdp = 0;
+		m_enet_rx_bc = 0;
+		m_enet_rx_ctrl = 0;
+		m_enet_rx_gio = 0;
+		m_enet_rx_dev = 0;
+		m_enet_rx_cbdp = 0;
+
+		m_enet_tx_cbp = 0;
+		m_enet_tx_nbdp = 0;
+		m_enet_tx_bc = 0;
+		m_enet_tx_ctrl = 0;
+		m_enet_tx_gio = 0;
+		m_enet_tx_dev = 0;
+		m_enet_tx_cpfbdp = 0;
+		m_enet_tx_ppfbdp = 0;
+		m_enet_tx_eox = false;
+
+		// m_enet_tx_timer is deliberately left alone: with TXC_CA cleared,
+		// enet_transmit() does nothing if it is still pending, whereas
+		// adjust(attotime::never) would leave it marked enabled and block
+		// the "!enabled()" checks that start subsequent transmits.
+	}
 
 	// clear channel interrupt
 	if (data & MISC_INT)
