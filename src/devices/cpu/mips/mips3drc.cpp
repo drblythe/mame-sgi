@@ -1252,6 +1252,7 @@
 #include <unordered_map>
 #include <utility>
 
+
 // TEMPORARY debug toggle (2026-08-02): compiles this file's HOST C++
 // (the DRC compiler machinery itself - code_compile_block(),
 // generate_sequence_instruction(), etc.) without optimization, purely to
@@ -10906,23 +10907,22 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			}
 #endif
 #ifdef MAME_DRC_BUGFIXES
-			// Bug fix: generate_update_cycles (below) uses I0/I1 as scratch
-			// whenever compiler.checkints/checksoftints is already pending
-			// entering this instruction (set by an earlier Status/Cause/
-			// Compare write compiled into the same code_compile_block call -
-			// compiler_state is declared once per call, outside the loop
-			// over sequences, so this can carry across sequence/function
-			// boundaries), computing Cause & OldStatus & mask into I0
-			// unconditionally before branching. Calling it before this
-			// case's own store meant that scratch write could silently
-			// replace the guest's real MTC0 value with that unrelated AND
-			// result - confirmed live: real kernel restores of a saved
-			// Status (after a cache-flush or TLB critical section) landing
-			// as exact 0x00000000 instead of the intended value. Fix:
-			// finish every use of I0/I1 (the store itself, and the diff
-			// this case computes against the old value) before calling
-			// generate_update_cycles, so its scratch use has nothing left
-			// to clobber.
+			// The interrupt check for this instruction must happen before its
+			// store takes effect (with EPC = this instruction, it re-executes
+			// on return). generate_update_cycles uses I0/I1 as scratch, so
+			// preserve the value being stored across it.
+			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
+			// (An earlier version of this fix moved the store ahead of the
+			// interrupt check instead, to stop the check's I0/I1 scratch use
+			// clobbering the value being stored. That let the check see the
+			// NEW Status - e.g. EXL just cleared and IE set - and deliver an
+			// interrupt with EPC pointing back at this mtc0, which then
+			// re-executed on return with whatever the handler had left in its
+			// source register; IRIX's vec_tlbmiss elocore_exl_3 sequence uses
+			// $k0, which exception_exit does not preserve, storing an address
+			// into Status. Preserving I0 in memory avoids both problems.)
 			// TEMPORARY probe (2026-07-27): stash I0 (the value about to be
 			// stored, unmodified since this instruction's own RTREG read)
 			// and desc->pc into memory now (a plain MOV, doesn't touch I0) -
@@ -10969,7 +10969,6 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 #ifdef MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES
 			UML_CALLC(block, cfunc_status_store_probe, this);                  // callc   cfunc_status_store_probe
 #endif
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
 #else
 			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
 			UML_MOV(block, I1, CPR032(COP0_Status));                            // mov     i1,[Status]
@@ -10991,14 +10990,14 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			// boot of gauntdl, @BFC01A24
 			compiler.cycles--;
 #ifdef MAME_DRC_BUGFIXES
-			// Bug fix: same generate_update_cycles I0-clobber class as the
-			// COP0_Status case above - move the store ahead of the call that
-			// can trash I0 before it's consumed. cfunc_get_cycles below
-			// already treats I0 as disposable scratch immediately after the
-			// store for an unrelated purpose (count_zero_time bookkeeping),
-			// so moving the store earlier changes nothing else here.
-			UML_MOV(block, CPR032(COP0_Count), I0);                             // mov     [Count],i0
+			// The interrupt check for this instruction must happen before its
+			// store takes effect (with EPC = this instruction, it re-executes
+			// on return). generate_update_cycles uses I0/I1 as scratch, so
+			// preserve the value being stored across it.
+			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
 			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
+			UML_MOV(block, CPR032(COP0_Count), I0);                             // mov     [Count],i0
 #else
 			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
 			UML_MOV(block, CPR032(COP0_Count), I0);                             // mov     [Count],i0
@@ -11015,11 +11014,14 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 		case COP0_Compare:
 			UML_MOV(block, mem(&m_core->compare_armed), 1);                     // mov     [compare_armed],1
 #ifdef MAME_DRC_BUGFIXES
-			// Bug fix: same generate_update_cycles I0-clobber class as the
-			// COP0_Status case above. Nothing between the store and the end
-			// of this case reads I0, so this is a pure reordering.
-			UML_MOV(block, CPR032(COP0_Compare), I0);                           // mov     [Compare],i0
+			// The interrupt check for this instruction must happen before its
+			// store takes effect (with EPC = this instruction, it re-executes
+			// on return). generate_update_cycles uses I0/I1 as scratch, so
+			// preserve the value being stored across it.
+			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
 			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
+			UML_MOV(block, CPR032(COP0_Compare), I0);                           // mov     [Compare],i0
 #else
 			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
 			UML_MOV(block, CPR032(COP0_Compare), I0);                           // mov     [Compare],i0

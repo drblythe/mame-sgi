@@ -1014,6 +1014,7 @@ protected:
 		uint64_t        diag_tlbmiss_redispatch_s3;  /* TEMPORARY (2026-09-10): $s3 at the moment static_generate_tlb_mismatch redispatches back to 0x1007DFFC (mid-delay-slot TLB miss test) */
 		uint32_t        diag_tlbmiss_redispatch_firstpc; /* TEMPORARY (2026-09-10): first UML_RECOVER's (delay-slot-rounded-up) PC, for the same event */
 		uint32_t        diag_new_epc;                /* TEMPORARY (2026-07-27): stashed I0 value about to become EPC in static_generate_exception's EXCEPTION_INTERRUPT case, read by func_interrupt_delivery_probe */
+		uint64_t        cop0_store_value;            /* value being written by mtc0, preserved across the interrupt check that precedes the store */
 		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
 		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
 		uint64_t        diag_mtcz_i0_stash;          /* TEMPORARY (2026-07-27): I0 stashed/restored around func_mtcz_read_probe's CALLC so it can't clobber the value generate_set_cop0_reg consumes right after */
