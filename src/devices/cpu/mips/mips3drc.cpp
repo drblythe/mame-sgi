@@ -81,41 +81,6 @@
 // call site's argument-passing. See wiki/assets.md's root-cause writeup.
 #define MAME_IRIX_SPINLOCK_INIT_WORKAROUND
 
-// TEMPORARY WORKAROUND (2026-07-27), NOT a real fix - see the comment at its
-// actual use site (static_generate_memory_mode_checks's MODE_SUPER case) for
-// the full mechanism. Widens what the supervisor-mode memory accessor
-// tolerates so a real, unresolved DRC bug (a shared C function reached under
-// the wrong cached-compiled-mode instance) stops fatally crashing boot,
-// purely to unblock reaching the rmap_del investigation. Masks the real
-// KERNEL FAULT bug rather than fixing it.
-//
-// UPDATE (same night, later): the root mechanism behind the *value* this
-// masks (Status/EPC/$k0 all becoming elocore_exl_3's own address) was found
-// and is fully understood - see wiki/assets.md's "KERNEL FAULT root
-// mechanism found" writeup. It's a real eret-vs-pending-interrupt race
-// (architecturally possible on real MIPS hardware too, not a DRC-only
-// artifact), not an emulator bug to fix - so this stays a deliberate,
-// documented mask rather than being resolved into a real fix.
-#define MAME_IRIX_KERNEL_FAULT_WORKAROUND
-
-// TEMPORARY WORKAROUND (2026-07-27, later the same night), NOT a real fix -
-// masks the downstream symptom of the eret-vs-pending-interrupt race
-// documented at MAME_IRIX_KERNEL_FAULT_WORKAROUND above and in wiki/assets.md.
-// When elocore_exl_3's own mtc0 gets reached via its "direct-entry" compiled
-// instance (no fresh andi/ori setup - i.e. resumed into directly via eret
-// rather than fallthrough), $k0 can still hold a stale exception_exit-left
-// value instead of the freshly-intended Status value. See the use site
-// (generate_set_cop0_reg's COP0_Status case) for the actual substitution
-// logic. Deliberately conservative: only triggers when the value about to be
-// stored is obviously implausible as real Status (top byte 0x88, matching
-// kernel .text - never a real Status bit pattern), and simply no-ops the
-// store (keeps the prior, presumably-still-sane Status) rather than
-// attempting to reconstruct "the value that should have been written".
-// A real fix would need to prevent the race itself (or make elocore_exl_3's
-// direct-entry path independent of $k0's incidental prior value), not
-// silently drop a write - remove once that's pursued, if ever.
-#define MAME_IRIX_ERET_RACE_WORKAROUND
-
 // TEMPORARY diagnostic (2026-08-14): logs every COP0 exception delivery,
 // ERET execution, and COP0_Status store while total_cycles() falls inside
 // the eret-race onset window bisected via MAME_SGI_EARLY_SAVE_DIAG
@@ -7692,9 +7657,7 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	// memory before jumping into the vector, so any consumer that reads r[]
 	// directly - a differently-compiled instance of the interrupted code
 	// resumed later, or the exception vector itself - could see stale
-	// values instead of what the interrupted code actually had live. See
-	// MAME_IRIX_ERET_RACE_WORKAROUND's own comment for the specific guest
-	// symptom (elocore_exl_3's $k0) this general gap plausibly explains.
+	// values instead of what the interrupted code actually had live.
 	save_fast_iregs(block);
 #ifdef MAME_SGI_TASK84_WINDOW_TRACE
 	// See static_generate_nocode_handler's matching comment: unconditional now.
@@ -7732,36 +7695,6 @@ void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::
 	/* supervisor mode? generate address exception if not in user space or in $C0000000-DFFFFFFF */
 	if (mode == MODE_SUPER)
 	{
-#ifdef MAME_IRIX_KERNEL_FAULT_WORKAROUND
-		// TEMPORARY WORKAROUND (2026-07-27, widened further same day), NOT a
-		// real fix. Root cause still open (see wiki/assets.md's "KERNEL
-		// FAULT deep dive"): a shared C function (confirmed via real IRIX
-		// source, tlbmiss()/tlbmod()) gets compiled once per real mode it's
-		// ever reached under, and its own compiled instance's
-		// memory-accessor selection (static_generate_memory_accessor,
-		// m_read64/m_write64[mode>>1]) is permanently baked in - a
-		// legitimate kernel-mode call can end up stuck running through an
-		// already-cached supervisor-mode instance. The first cut of this
-		// workaround only widened the accepted range from 0xC0000000-
-		// 0xDFFFFFFF to 0xC0000000-0xFFFFFFFF, which fixed the originally-
-		// found SD/write fault (a KSEG2 kernel stack address,
-		// 0xffffc000-0xffffffff) but NOT a second, independently-confirmed
-		// instance of the exact same mechanism on the LD/read side, hitting
-		// a KSEG0 address instead (~0x8892b150, ep->ef_sr in the exception
-		// frame) - a completely different segment the widened range never
-		// covered either. Since mode-tracking is already known-unreliable
-		// at this cache boundary (that's the entire reason this workaround
-		// exists), guessing at further specific ranges one newly-discovered
-		// fault at a time doesn't converge - so this drops the range check
-		// for MODE_SUPER entirely, matching MODE_KERNEL's own already-
-		// zero-check behavior. A real supervisor-mode program legitimately
-		// referencing kseg0/kseg1/kseg2/kseg3 would now silently succeed
-		// instead of correctly faulting (real MIPS supervisor mode may only
-		// reach kuseg and ksseg) - remove once the real mode-selection bug
-		// (why a shared kernel function's cached instance's compile-time
-		// mode snapshot doesn't match the real privilege level it's later
-		// invoked under) is found and fixed.
-#else
 		int addrok;
 		UML_TEST(block, I0, 0x80000000);                                            // test    i0,0x80000000
 		UML_JMPc(block, COND_Z, addrok = label++);                                  // jz      addrok
@@ -7769,7 +7702,6 @@ void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::
 		UML_CMP(block, I3, 6);                                                      // cmp     i3,6
 		UML_EXHc(block, COND_NE, exception_addrerr, I0);                            // exh     addrerr,i0,ne
 		UML_LABEL(block, addrok);                                                   // addrok:
-#endif
 	}
 }
 
@@ -10939,25 +10871,10 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			// Hooked right after the stash above and before the real store
 			// below - COP0_Status in memory here is still the pre-store
 			// value, so func_eret_window_status_diag can report "old" vs
-			// "new" (diag_new_status) correctly. This reads diag_new_status
-			// as the guest's originally-requested value even if
-			// MAME_IRIX_ERET_RACE_WORKAROUND below ends up no-oping the
-			// actual store - deliberately, so a suppressed store is still
-			// visible in this window's log rather than silently missing.
+			// "new" (diag_new_status) correctly.
 			UML_CALLC(block, cfunc_eret_window_status_diag, this);             // callc   cfunc_eret_window_status_diag
 #endif
 			UML_MOV(block, I1, CPR032(COP0_Status));                            // mov     i1,[Status]
-#ifdef MAME_IRIX_ERET_RACE_WORKAROUND
-			// TEMPORARY WORKAROUND (2026-07-27): if the value about to be
-			// stored looks implausible as real Status (top byte 0x88,
-			// matching kernel .text - never a real Status bit pattern),
-			// substitute the prior value instead of storing garbage - see
-			// the macro's own comment near the top of this file for the
-			// full mechanism this masks.
-			UML_AND(block, I3, I0, 0xff000000);                                 // and     i3,i0,$ff000000
-			UML_CMP(block, I3, 0x88000000);                                     // cmp     i3,$88000000
-			UML_MOVc(block, COND_E, I0, I1);                                    // mov     i0,i1,e  (no-op the store)
-#endif
 			UML_MOV(block, CPR032(COP0_Status), I0);                            // mov     [Status],i0
 			generate_update_mode(block);                                        // <update mode>
 			UML_XOR(block, I0, I0, I1);                                         // xor     i0,i0,i1
