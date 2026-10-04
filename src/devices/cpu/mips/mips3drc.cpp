@@ -64,23 +64,6 @@
 // requires one of these again, rather than the whole macro at once.
 // #define MAME_DRC_DIAG
 
-// EXPERIMENTAL guest-kernel workaround (2026-07-26): NOT a MAME/DRC bug fix -
-// this patches around a genuine IRIX kernel defect (confirmed against real
-// IRIX 6.5.7m source, irix/kern/os/ksync/mutex.c: sv_timedwait's
-// `unlock_func = !mp ? NOLOCK : ospl ? SPINLOCK : MUTEX` treats a legitimately
-// -zero splhi() return value as "release via mutex_unlock", when it's really
-// just "interrupts were already fully enabled" for a plain spinlock caller).
-// spinlock_init() unconditionally writes the literal constant 2 into every
-// lock_t at init; that value is never read again by real splhi/splx-based
-// lock/unlock on this uniprocessor kernel, but mutex_unlock's tagged-word
-// convention happens to read "2" as "has waiters, no owner" and crashes on a
-// nonexistent `next` pointer if this ambiguity is ever hit. Overriding the
-// value spinlock_init actually writes, from 2 to 0, defangs that misread
-// kernel-wide (mutex_unlock's own flag check sees 0, takes its harmless
-// fast path) without touching the ambiguous dispatch logic itself or any
-// call site's argument-passing. See wiki/assets.md's root-cause writeup.
-#define MAME_IRIX_SPINLOCK_INIT_WORKAROUND
-
 // TEMPORARY diagnostic (2026-08-14): logs every COP0 exception delivery,
 // ERET execution, and COP0_Status store while total_cycles() falls inside
 // the eret-race onset window bisected via MAME_SGI_EARLY_SAVE_DIAG
@@ -4283,47 +4266,6 @@ void mips3_device::func_mutex_wake_dequeue_probe()
 
 #ifdef MAME_DRC_DIAG
 static void cfunc_mutex_wake_dequeue_probe(void *param) { ((mips3_device *)param)->func_mutex_wake_dequeue_probe(); }
-#endif
-
-#ifdef MAME_IRIX_SPINLOCK_INIT_WORKAROUND
-/*-------------------------------------------------
-    cfunc_spinlock_init_workaround - see the
-    MAME_IRIX_SPINLOCK_INIT_WORKAROUND definition at the top
-    of this file for the full rationale. Hooked right after
-    spinlock_init's own real store (`0x881b6540: sw $at,($a0)`,
-    which unconditionally writes the literal 2) - overwrites
-    the same word with 0 immediately after, for every lock_t
-    in the kernel, every time spinlock_init runs.
--------------------------------------------------*/
-
-void mips3_device::func_spinlock_init_workaround()
-{
-	const uint32_t lock_vaddr = (uint32_t)m_core->r[4];
-	static uint64_t s_count = 0;
-	s_count++;
-	if (lock_vaddr >= 0x80000000 && lock_vaddr < 0xc0000000)
-	{
-		m_program->write_dword(lock_vaddr & 0x1fffffff, 0);
-	}
-	else
-	{
-		const uint32_t tlbval = vtlb_table()[lock_vaddr >> 12];
-		if (tlbval & WRITE_ALLOWED)
-		{
-			const uint32_t phys = (tlbval & ~0xfff) | (lock_vaddr & 0xfff);
-			m_program->write_dword(phys, 0);
-		}
-	}
-	// DISABLED (2026-07-28): the workaround itself (the write_dword above)
-	// stays active - it's real and needed - but this diagnostic print fired
-	// on every single occurrence (64,000+ times in a 15-minute run, ~70/sec)
-	// and was never gated, unlike the probes disabled elsewhere in this file
-	// tonight. s_count is kept (harmless, cheap) in case a future session
-	// wants the print back for a specific investigation.
-	(void)s_count;
-}
-
-static void cfunc_spinlock_init_workaround(void *param) { ((mips3_device *)param)->func_spinlock_init_workaround(); }
 #endif
 
 /*-------------------------------------------------
@@ -9998,10 +9940,6 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 					desc->pc, compiler.checkints, compiler.checksoftints);
 				fflush(stderr);
 			}
-#endif
-#ifdef MAME_IRIX_SPINLOCK_INIT_WORKAROUND
-			if (desc->pc == 0x881b6540)
-				UML_CALLC(block, cfunc_spinlock_init_workaround, this);
 #endif
 			if (!in_delay_slot)
 				generate_update_cycles(block, compiler, desc->pc + 4, true);

@@ -8,15 +8,6 @@
 
 ***************************************************************************/
 
-// Interpreter-side counterpart to mips3drc.cpp's own
-// MAME_IRIX_SPINLOCK_INIT_WORKAROUND (self-defined here for the same
-// reason that file self-defines its own macros: this file compiles as
-// part of the shared "optional" project, not the mame_sgi project
-// sgi.lua's defines{} block scopes to, and the two translation units
-// don't share preprocessor state). See the SW opcode case below for the
-// actual fix and its rationale.
-#define MAME_IRIX_SPINLOCK_INIT_WORKAROUND
-
 // TEMPORARY diagnostic (2026-08-13): triggers a one-shot machine().save()
 // at total_cycles() >= this value, from inside execute_run() itself - lets
 // the -state save/restore corruption investigation (see wiki/assets.md and
@@ -6277,33 +6268,7 @@ void mips3_device::execute_run()
 			case 0x28:  /* SB */        WBYTE(SIMMVAL+RSVAL32, RTVAL32);                                          break;
 			case 0x29:  /* SH */        WHALF(SIMMVAL+RSVAL32, RTVAL32);                                          break;
 			case 0x2a:  /* SWL */       (this->*m_swl)(op);                                                       break;
-			case 0x2b:  /* SW */
-				WWORD(SIMMVAL+RSVAL32, RTVAL32);
-#ifdef MAME_IRIX_SPINLOCK_INIT_WORKAROUND
-				// Interpreter-side counterpart to mips3drc.cpp's
-				// MAME_IRIX_SPINLOCK_INIT_WORKAROUND (see that file for the
-				// full rationale: a real, source-confirmed IRIX kernel bug
-				// in sv_timedwait's ospl-truthiness dispatch, defanged by
-				// making every fresh lock_t start at 0 instead of the
-				// literal 2 spinlock_init unconditionally writes). This is
-				// the same fix applied to the plain interpreter's own SW
-				// handler, since -nodrc never executes any DRC-compiled
-				// code and so never sees the DRC-side hook.
-				if (m_core->pc - 4 == 0x881b6540)
-				{
-					// DISABLED (2026-07-28): the workaround itself (the
-					// WWORD below) stays active - it's real and needed -
-					// but this diagnostic print, like its DRC-side twin,
-					// was never gated and fired unconditionally on every
-					// occurrence. Since -nodrc is the baseline every DRC
-					// speed comparison tonight has been measured against,
-					// this was making the baseline itself artificially
-					// slow too - found while auditing the interpreter for
-					// the same category of bug just fixed in mips3drc.cpp.
-					WWORD(SIMMVAL+RSVAL32, 0);
-				}
-#endif
-				break;
+			case 0x2b:  /* SW */        WWORD(SIMMVAL+RSVAL32, RTVAL32);                                          break;
 			case 0x2c:  /* SDL */       (this->*m_sdl)(op);                                                       break;
 			case 0x2d:  /* SDR */       (this->*m_sdr)(op);                                                       break;
 			case 0x2e:  /* SWR */       (this->*m_swr)(op);                                                       break;

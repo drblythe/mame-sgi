@@ -1444,7 +1444,6 @@ public:
 	void func_interrupt_taken_probe();
 	void func_mutex_lock_enqueue_probe();
 	void func_mutex_lock_enqueue_end_probe();
-	void func_spinlock_init_workaround();
 	void func_us_delay_entry_probe();
 	void func_mrupdatef_entry_probe();
 	void func_rmap_del_panic_probe(int site);
