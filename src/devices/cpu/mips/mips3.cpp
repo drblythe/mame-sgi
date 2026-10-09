@@ -418,6 +418,9 @@ device_memory_interface::space_config_vector mips3_device::memory_space_config()
 
 void mips3_device::device_stop()
 {
+	if (m_stale_stub_container_recompiles)
+		osd_printf_info("MAME_SGI_STALE_STUB_FIX summary: container_recompiles=%llu\n", (unsigned long long)m_stale_stub_container_recompiles);
+
 	// TEMPORARY diagnostic (2026-08-01): dump before m_drcfe/m_drcuml
 	// (and the drc_cache they depend on) get torn down below. See
 	// mips3.h's comment on m_diag_usermode_recompile_counts for the
@@ -902,6 +905,7 @@ void mips3_device::device_start()
 	// MAME_SGI_NOCODE_REFRESH_FIX - same reasoning as tlb_mismatch_retry_pc
 	// immediately above: memset() leaves this 0, a real guest PC.
 	m_core->nocode_retry_pc = 0xffffffff;
+	m_core->stub_site_pc = 0xffffffff;      // MAME_SGI_STALE_STUB_FIX: no stub pending
 	// Task #101 Phase 0 diag - memset() leaves this 0, which would make
 	// the very first interval look like a 0ns minimum forever after.
 	m_core->diag_entry_interval_min_ns = ~uint64_t(0);

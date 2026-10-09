@@ -1006,6 +1006,9 @@ protected:
 		uint32_t        diag_tlbmiss_redispatch_firstpc; /* TEMPORARY (2026-09-10): first UML_RECOVER's (delay-slot-rounded-up) PC, for the same event */
 		uint32_t        diag_new_epc;                /* TEMPORARY (2026-07-27): stashed I0 value about to become EPC in static_generate_exception's EXCEPTION_INTERRUPT case, read by func_interrupt_delivery_probe */
 		uint64_t        cop0_store_value;            /* value being written by mtc0, preserved across the interrupt check that precedes the store */
+		uint32_t        stub_container_pc;           /* MAME_SGI_STALE_STUB_FIX: entry pc of the block whose compiler_page_fault stub last fired */
+		uint32_t        stub_container_mode;         /* MAME_SGI_STALE_STUB_FIX: that block's hash key */
+		uint32_t        stub_site_pc;                /* MAME_SGI_STALE_STUB_FIX: pc tlb_mismatch recovers for that stub (~0 when none pending) */
 		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
 		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
 		uint64_t        diag_mtcz_i0_stash;          /* TEMPORARY (2026-07-27): I0 stashed/restored around func_mtcz_read_probe's CALLC so it can't clobber the value generate_set_cop0_reg consumes right after */
@@ -1210,6 +1213,10 @@ protected:
 	// safe when empty/unused - see MAME_DRC_USERMODE_RECOMPILE_DIAG in
 	// mips3drc.cpp for the gate on actually populating it).
 	std::unordered_map<uint64_t, uint32_t> m_diag_usermode_recompile_counts;
+
+	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled
+	uint32_t m_compile_entry_mode = 0;
+	uint64_t m_stale_stub_container_recompiles = 0;
 
 	// TEMPORARY diagnostic (2026-08-01): sanity check for the
 	// dispatch_mode fix above - every KERNEL-privilege compile

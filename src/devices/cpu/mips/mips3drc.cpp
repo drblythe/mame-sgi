@@ -123,6 +123,19 @@
 // this diagnostic active again.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
+// Repair blocks that embed a stale compiler_page_fault() stub.
+// describe_code() walks backwards as well as forwards from the compile pc,
+// so a block can embed stubs for instructions on a neighbouring page that
+// was unmapped at compile time. Once that page is mapped, every pass
+// through the block that reaches the stub (local branch, fall-through,
+// delay slot, or the same sequence) exits to tlb_mismatch, which only
+// recompiles the stub's own pc - the containing block keeps its stale stub
+// and the next pass repeats the exit. With this defined, each stub records
+// its containing block's entry (pc and hash key); when it fires on a page
+// that is now mapped, code_compile_block() recompiles that container too,
+// so later entries through the hash table reach fresh code.
+#define MAME_SGI_STALE_STUB_FIX
+
 // TEMPORARY diagnostic (2026-09-17, task #100 scoping) - see
 // m_diag_checkints_all_compiled_pcs's comment in mips3.h. Answers whether
 // m_checkints_addrs's per-PC sticky-set design is even the right shape:
@@ -2109,6 +2122,28 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 	if (!writable_now)
 		mode = m_core->mode;
+
+#ifdef MAME_SGI_STALE_STUB_FIX
+	// See MAME_SGI_STALE_STUB_FIX: a stub in another block sent us here, and
+	// its page is mapped now - recompile that container from its own entry
+	// so it stops carrying the stale stub. Only when its hash key is the
+	// shared key or the current process's own, so it is compiled against the
+	// mappings it will run under.
+	if (m_core->stub_site_pc == pc)
+	{
+		uint32_t const container_pc = m_core->stub_container_pc;
+		uint32_t const container_mode = m_core->stub_container_mode;
+		m_core->stub_site_pc = 0xffffffff;
+		if (container_pc != pc && (container_mode == m_core->mode || container_mode == m_core->dispatch_mode) &&
+				(vtlb_table()[container_pc >> 12] & FETCH_ALLOWED))
+		{
+			m_stale_stub_container_recompiles++;
+			code_compile_block(container_mode, container_pc);
+		}
+	}
+	m_compile_entry_pc = pc;
+	m_compile_entry_mode = mode;
+#endif
 
 	// Cross-key aliasing - ATTEMPTED AND REVERTED (2026-08-22, same
 	// session as the entry-key diagnostic above). Reasoning at the time:
@@ -8507,6 +8542,11 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			UML_MOV(block, mem(&m_core->arg1), 1);           // site 1: compiler_page_fault
 			UML_CALLC(block, cfunc_task84_tlb_mismatch_diag, this);
 		}
+#endif
+#ifdef MAME_SGI_STALE_STUB_FIX
+		UML_MOV(block, mem(&m_core->stub_container_pc), m_compile_entry_pc);    // mov     [stub_container_pc],entry pc of this block
+		UML_MOV(block, mem(&m_core->stub_container_mode), m_compile_entry_mode); // mov     [stub_container_mode],hash key of this block
+		UML_MOV(block, mem(&m_core->stub_site_pc), desc->epc() & ~3);           // mov     [stub_site_pc],pc tlb_mismatch will recover
 #endif
 		UML_EXH(block, *m_tlb_mismatch, 0);                      // exh     tlb_mismatch,0
 		// Unconditional tlb exception, no point going further
