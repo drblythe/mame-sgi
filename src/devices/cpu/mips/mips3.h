@@ -1009,6 +1009,8 @@ protected:
 		uint32_t        stub_container_pc;           /* MAME_SGI_STALE_STUB_FIX: entry pc of the block whose compiler_page_fault stub last fired */
 		uint32_t        stub_container_mode;         /* MAME_SGI_STALE_STUB_FIX: that block's hash key */
 		uint32_t        stub_site_pc;                /* MAME_SGI_STALE_STUB_FIX: pc tlb_mismatch recovers for that stub (~0 when none pending) */
+		uint32_t        diag_study_serial;           /* MAME_SGI_RECOMPILE_STUDY_DIAG: compile serial baked into a traced validate_tlb check */
+		uint32_t        diag_recompile_origin;       /* MAME_SGI_RECOMPILE_STUDY_DIAG: which handler requested the pending recompile (1 = nocode, 2 = tlb_mismatch) */
 		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
 		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
 		uint64_t        diag_mtcz_i0_stash;          /* TEMPORARY (2026-07-27): I0 stashed/restored around func_mtcz_read_probe's CALLC so it can't clobber the value generate_set_cop0_reg consumes right after */
@@ -1214,9 +1216,47 @@ protected:
 	// mips3drc.cpp for the gate on actually populating it).
 	std::unordered_map<uint64_t, uint32_t> m_diag_usermode_recompile_counts;
 
+	// MAME_SGI_RECOMPILE_STUDY_DIAG (mips3drc.cpp): classifies every
+	// USER-mode compile request by cause and records the code content, for
+	// the recompile study (task #8). Populated in code_compile_block(),
+	// written to a TSV file by recompile_study_dump() from device_stop().
+	struct recompile_study_key
+	{
+		uint32_t count = 0;
+		uint32_t last_flush = 0;
+		uint64_t last_hash = 0;
+		uint32_t last_physpc = 0;
+	};
+	struct recompile_study_variant
+	{
+		uint64_t hash;
+		uint32_t count;
+		uint32_t words[8];
+	};
+	struct recompile_study_pc
+	{
+		uint32_t cls[5][2] = {};            // [class][content changed vs. this key's previous compile]
+		uint32_t shared_key = 0;            // compiles registered under the ASID-independent key
+		uint32_t asid_key = 0;              // compiles registered under an ASID-scoped key
+		uint32_t stub_same_page = 0;        // compiles whose window hit a page fault on pc's own page
+		uint32_t stub_next_page = 0;        // ...on a later page (block crosses into an unmapped page)
+		std::vector<recompile_study_variant> variants;
+		std::vector<uint32_t> physpcs;
+		std::unordered_set<uint32_t> requesters;
+	};
+	std::unordered_map<uint64_t, recompile_study_key> m_recompile_study_keys;
+	std::unordered_map<uint32_t, recompile_study_pc> m_recompile_study_pcs;
+	uint64_t m_recompile_study_totals[5][2] = {};
+	void recompile_study_record(uint32_t key_mode, offs_t pc, const opcode_desc *desclist);
+	void recompile_study_dump();
+	uint32_t m_recompile_study_serial = 0;
 	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled
 	uint32_t m_compile_entry_mode = 0;
 	uint64_t m_stale_stub_container_recompiles = 0;
+	uint32_t m_recompile_study_cur_serial = 0;
+	uint64_t m_recompile_study_handler[4] = {};
+	struct recompile_study_log_entry { uint32_t pc; uint32_t req; uint64_t cycles; };
+	std::vector<recompile_study_log_entry> m_recompile_study_log;
 
 	// TEMPORARY diagnostic (2026-08-01): sanity check for the
 	// dispatch_mode fix above - every KERNEL-privilege compile
@@ -1422,6 +1462,9 @@ public:
 	void func_xfs_trans_commit_iclog_consume_probe();
 	void func_xlog_write_entry_log_probe();
 	void func_mutex_wake_dequeue_probe();
+	void recompile_study_validate_probe();
+	bool recompile_study_traced(uint32_t pc, bool near);
+	void recompile_study_tlb_handler_probe();
 	void func_iclogspace_splhi_probe();
 	void func_iclogspace_splx_probe();
 	void func_interrupt_taken_probe();

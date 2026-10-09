@@ -123,6 +123,25 @@
 // this diagnostic active again.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
+// TEMPORARY diagnostic (2026-10-09, task #8 recompile study): classifies
+// every USER-mode compile request by cause - first compile of its key, after
+// a full cache flush, hash miss without a flush, rejected by the checksum
+// guard (nocode exit with the block still registered), or rejected by the
+// TLB guard (tlb_mismatch exit) - and whether the code content differs from
+// that key's previous compile. Also records each distinct code variant per
+// pc (hash + first 8 opcode words, for offline file attribution) and the
+// physical pages seen. Costs only on the compile path, plus one store on the
+// nocode/tlb_mismatch exits. Written as TSV at exit to
+// $MAME_SGI_RECOMPILE_STUDY_OUT (default recompile_study.tsv). Also counts
+// tlb_mismatch skip-path arrivals by source (validate check, stub embedded
+// in another block, stub at its own block head). Optional per-event traces:
+// $MAME_SGI_RECOMPILE_STUDY_PCS (comma-separated hex pcs; compiles, failed
+// validate checks and handler arrivals near them, with the compile that
+// produced each stub) and $MAME_SGI_RECOMPILE_STUDY_WINDOW ("lo-hi" range
+// of compile serial numbers, every compile in it). Trace files are written
+// next to the TSV with .trace/.validate/.handler suffixes.
+// #define MAME_SGI_RECOMPILE_STUDY_DIAG
+
 // Repair blocks that embed a stale compiler_page_fault() stub.
 // describe_code() walks backwards as well as forwards from the compile pc,
 // so a block can embed stubs for instructions on a neighbouring page that
@@ -1856,6 +1875,291 @@ void mips3_device::code_flush_cache()
     given mode at the specified pc
 -------------------------------------------------*/
 
+// pcs listed in $MAME_SGI_RECOMPILE_STUDY_PCS (comma-separated hex) get a
+// per-event trace; `near` also accepts the pages either side of a listed pc
+bool mips3_device::recompile_study_traced(uint32_t pc, bool near)
+{
+	static std::vector<uint32_t> s_pcs;
+	static bool s_parsed = false;
+	if (!s_parsed)
+	{
+		s_parsed = true;
+		if (char const *env = getenv("MAME_SGI_RECOMPILE_STUDY_PCS"))
+		{
+			while (*env)
+			{
+				char *end = nullptr;
+				unsigned long const v = strtoul(env, &end, 16);
+				if (end == env)
+					break;
+				s_pcs.push_back(uint32_t(v));
+				env = (*end == ',') ? end + 1 : end;
+			}
+		}
+	}
+	for (uint32_t const t : s_pcs)
+	{
+		if (t == pc)
+			return true;
+		if (near && ((pc >> 12) + 1 >= (t >> 12)) && ((pc >> 12) <= (t >> 12) + 1))
+			return true;
+	}
+	return false;
+}
+
+void mips3_device::recompile_study_record(uint32_t key_mode, offs_t pc, const opcode_desc *desclist)
+{
+	enum { FIRST, FLUSH, MISS_NOFLUSH, CHECKSUM, TLB };
+	uint32_t const origin = m_core->diag_recompile_origin;
+	m_core->diag_recompile_origin = 0;
+	uint32_t const flush = m_drcuml->cache().flush_count();
+	bool const entry_exists = m_drcuml->hash_exists(key_mode, pc);
+
+	// FNV-1a over every opcode in the window; first 8 words from pc onward
+	uint64_t hash = 1469598103934665603ULL;
+	uint32_t words[8] = {};
+	unsigned nwords = 0;
+	uint32_t physpc = 0;
+	uint32_t stub_pc = 0;
+	uint32_t last_desc_pc = 0;
+	unsigned ndesc = 0;
+	for (const opcode_desc *d = desclist; d != nullptr; d = d->next())
+	{
+		last_desc_pc = d->pc;
+		ndesc++;
+		uint32_t const op = d->opptr;
+		if (d->compiler_page_fault() && stub_pc == 0)
+			stub_pc = d->pc;
+		for (const opcode_desc *ds = d->delay.first(); ds != nullptr; ds = ds->next())
+			if (ds->compiler_page_fault() && stub_pc == 0)
+				stub_pc = ds->pc;
+		for (int b = 0; b < 4; b++)
+			hash = (hash ^ ((op >> (b * 8)) & 0xff)) * 1099511628211ULL;
+		if (d->pc == pc)
+			physpc = d->physpc;
+		if (nwords < 8 && d->pc == pc + nwords * 4)
+			words[nwords++] = op;
+	}
+
+	m_recompile_study_serial++;
+	m_recompile_study_cur_serial = m_recompile_study_serial;
+	if (m_recompile_study_log.size() <= m_recompile_study_serial)
+		m_recompile_study_log.resize(m_recompile_study_serial + 1);
+	m_recompile_study_log[m_recompile_study_serial] = { uint32_t(pc), m_core->dispatch_mode, total_cycles() };
+	recompile_study_key &k = m_recompile_study_keys[(uint64_t(key_mode) << 32) | pc];
+	unsigned cls;
+	if (k.count == 0)
+		cls = FIRST;
+	else if (origin == 2)
+		cls = TLB;
+	else if (entry_exists)
+		cls = CHECKSUM;
+	else if (flush != k.last_flush)
+		cls = FLUSH;
+	else
+		cls = MISS_NOFLUSH;
+	bool const changed = (k.count != 0) && (hash != k.last_hash);
+	k.count++;
+	k.last_flush = flush;
+	k.last_hash = hash;
+	k.last_physpc = physpc;
+
+	m_recompile_study_totals[cls][changed]++;
+	recompile_study_pc &p = m_recompile_study_pcs[pc];
+	p.cls[cls][changed]++;
+	if (key_mode == m_core->mode)
+		p.shared_key++;
+	else
+		p.asid_key++;
+	if (p.requesters.size() < 4096)
+		p.requesters.insert(m_core->dispatch_mode);
+	bool found = false;
+	for (auto &v : p.variants)
+		if (v.hash == hash) { v.count++; found = true; break; }
+	if (!found && p.variants.size() < 16)
+	{
+		recompile_study_variant v{hash, 1, {}};
+		std::copy(std::begin(words), std::end(words), v.words);
+		p.variants.push_back(v);
+	}
+	if (std::find(p.physpcs.begin(), p.physpcs.end(), physpc) == p.physpcs.end() && p.physpcs.size() < 16)
+		p.physpcs.push_back(physpc);
+	if (stub_pc != 0)
+	{
+		if ((stub_pc >> 12) == (pc >> 12))
+			p.stub_same_page++;
+		else
+			p.stub_next_page++;
+	}
+
+	// time-ordered trace: the first 300 events at pcs listed in MAME_SGI_RECOMPILE_STUDY_PCS,
+	// plus every compile in the serial window from MAME_SGI_RECOMPILE_STUDY_WINDOW ("lo-hi")
+	static uint32_t s_win_lo = 1, s_win_hi = 0;
+	static bool s_win_parsed = false;
+	if (!s_win_parsed)
+	{
+		s_win_parsed = true;
+		if (char const *const w = getenv("MAME_SGI_RECOMPILE_STUDY_WINDOW"))
+			sscanf(w, "%u-%u", &s_win_lo, &s_win_hi);
+	}
+	bool const in_window = m_recompile_study_serial >= s_win_lo && m_recompile_study_serial <= s_win_hi;
+	if (in_window || recompile_study_traced(pc, false))
+	{
+		static unsigned s_traced = 0;
+		static FILE *s_trace = nullptr;
+		if (s_traced < 300 || in_window)
+		{
+			if (!s_trace)
+			{
+				char const *const env = getenv("MAME_SGI_RECOMPILE_STUDY_OUT");
+				std::string const path = std::string(env ? env : "recompile_study.tsv") + ".trace";
+				s_trace = fopen(path.c_str(), "w");
+			}
+			if (s_trace)
+			{
+				vtlb_entry const *const t = vtlb_table();
+				fprintf(s_trace, "%llu\tserial=%u\tpc=%08x\treq=%u\tcls=%u\torigin=%u\tstub=%08x\tvtlb_pc=%08x\tvtlb_next=%08x\twin=%u\tdesc_first=%08x\tdesc_last=%08x\tndesc=%u\n",
+					(unsigned long long)total_cycles(), m_recompile_study_serial, pc, m_core->dispatch_mode, cls, origin, stub_pc,
+					t[pc >> 12], t[(pc >> 12) + 1], unsigned(nwords), desclist ? desclist->pc : 0, last_desc_pc, ndesc);
+				fflush(s_trace);
+				s_traced++;
+			}
+		}
+	}
+}
+
+void mips3_device::recompile_study_validate_probe()
+{
+	// runs at a traced pc's validate_tlb check: arg0 = pc, arg1 = entry baked
+	// at compile time, diag_study_serial = compile serial of the containing block
+	static unsigned s_logged = 0;
+	uint32_t const pc = m_core->arg0;
+	uint32_t const baked = m_core->arg1;
+	uint32_t const live = vtlb_table()[pc >> 12];
+	if (live == baked || s_logged >= 400)
+		return;
+	char const *const env = getenv("MAME_SGI_RECOMPILE_STUDY_OUT");
+	static FILE *s_f = nullptr;
+	if (!s_f)
+		s_f = fopen((std::string(env ? env : "recompile_study.tsv") + ".validate").c_str(), "w");
+	if (s_f)
+	{
+		fprintf(s_f, "%llu\tVALIDATE_MISMATCH\tpc=%08x\tbaked=%08x\tlive=%08x\tblock_serial=%u\tcurrent_serial=%u\treq=%u\n",
+			(unsigned long long)total_cycles(), pc, baked, live, m_core->diag_study_serial, m_recompile_study_serial, m_core->dispatch_mode);
+		fflush(s_f);
+		s_logged++;
+	}
+}
+
+[[maybe_unused]] static void cfunc_recompile_study_validate_probe(void *param)
+{
+	((mips3_device *)param)->recompile_study_validate_probe();
+}
+
+void mips3_device::recompile_study_tlb_handler_probe()
+{
+	// tlb_mismatch handler, after the page-mapped (skip) test: m_core->pc = recovered pc
+	static unsigned s_logged = 0;
+	uint32_t const pc = m_core->pc;
+	{
+		// global attribution of every arrival at the page-mapped (skip) path
+		uint32_t const site = m_core->arg0 <= 3 ? m_core->arg0 : 0;
+		if (site == 1)
+		{
+			uint32_t const cs = m_core->diag_study_serial;
+			bool const embedded = cs < m_recompile_study_log.size() && m_recompile_study_log[cs].pc != pc;
+			m_recompile_study_handler[embedded ? 1 : 2]++;
+		}
+		else
+			m_recompile_study_handler[site == 3 ? 3 : 0]++;
+	}
+	bool const in_range = recompile_study_traced(pc, true);
+	if (!in_range || s_logged >= 400)
+	{
+		m_core->arg0 = 0xffffffff;
+		return;
+	}
+	char const *const env = getenv("MAME_SGI_RECOMPILE_STUDY_OUT");
+	static FILE *s_f = nullptr;
+	if (!s_f)
+		s_f = fopen((std::string(env ? env : "recompile_study.tsv") + ".handler").c_str(), "w");
+	if (s_f)
+	{
+		vtlb_entry const *const t = vtlb_table();
+		fprintf(s_f, "%llu\tTLB_HANDLER\tpc=%08x\tlive_pc=%08x\tlive_next=%08x\tretry_pc=%08x\tserial=%u\tsite=%u\tsite_pc=%08x\n",
+			(unsigned long long)total_cycles(), pc, t[pc >> 12], t[(pc >> 12) + 1], m_core->tlb_mismatch_retry_pc, m_recompile_study_serial,
+			m_core->arg0 <= 3 ? m_core->arg0 : 0, m_core->arg0 <= 3 ? m_core->arg1 : 0);
+		if (m_core->arg0 == 1)
+		{
+			uint32_t const cs = m_core->diag_study_serial;
+			if (cs < m_recompile_study_log.size())
+				fprintf(s_f, "\tstub_from_block\tserial=%u\tentry_pc=%08x\tcompiled_at=%llu\treq=%u\n", cs,
+					m_recompile_study_log[cs].pc, (unsigned long long)m_recompile_study_log[cs].cycles, m_recompile_study_log[cs].req);
+		}
+		fflush(s_f);
+		s_logged++;
+	}
+	m_core->arg0 = 0xffffffff;
+}
+
+[[maybe_unused]] static void cfunc_recompile_study_tlb_handler_probe(void *param)
+{
+	((mips3_device *)param)->recompile_study_tlb_handler_probe();
+}
+
+void mips3_device::recompile_study_dump()
+{
+	if (m_recompile_study_pcs.empty())
+		return;
+	char const *const env = getenv("MAME_SGI_RECOMPILE_STUDY_OUT");
+	std::string const path = env ? env : "recompile_study.tsv";
+	FILE *f = fopen(path.c_str(), "w");
+	if (!f)
+		return;
+	static char const *const names[5] = { "first", "flush", "miss_noflush", "checksum", "tlb" };
+	uint64_t total = 0;
+	for (auto &c : m_recompile_study_totals)
+		total += c[0] + c[1];
+	fprintf(f, "# tlb_mismatch skip-path arrivals: validate(site2)=%llu stub_embedded_in_other_block=%llu stub_as_own_block_head=%llu site3=%llu\n",
+		(unsigned long long)m_recompile_study_handler[0], (unsigned long long)m_recompile_study_handler[1],
+		(unsigned long long)m_recompile_study_handler[2], (unsigned long long)m_recompile_study_handler[3]);
+	fprintf(f, "# recompile study: %llu USER-mode compile requests, %u distinct pcs, %u distinct keys, flushes=%u\n",
+		(unsigned long long)total, unsigned(m_recompile_study_pcs.size()), unsigned(m_recompile_study_keys.size()),
+		m_drcuml->cache().flush_count());
+	for (int c = 0; c < 5; c++)
+		fprintf(f, "# class %-12s same_content=%llu changed_content=%llu\n", names[c],
+			(unsigned long long)m_recompile_study_totals[c][0], (unsigned long long)m_recompile_study_totals[c][1]);
+	fprintf(f, "PC\tpc\ttotal\tshared_key\tasid_key\trequesters\tvariants\tphyspcs\tstub_same_page\tstub_next_page");
+	for (int c = 0; c < 5; c++)
+		fprintf(f, "\t%s_same\t%s_changed", names[c], names[c]);
+	fprintf(f, "\n");
+	for (auto const &[pc, p] : m_recompile_study_pcs)
+	{
+		uint32_t const t = p.shared_key + p.asid_key;
+		if (t < 2)
+			continue;
+		fprintf(f, "PC\t%08x\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u", pc, t, p.shared_key, p.asid_key,
+			unsigned(p.requesters.size()), unsigned(p.variants.size()), unsigned(p.physpcs.size()),
+			p.stub_same_page, p.stub_next_page);
+		for (int c = 0; c < 5; c++)
+			fprintf(f, "\t%u\t%u", p.cls[c][0], p.cls[c][1]);
+		fprintf(f, "\n");
+		for (auto const &v : p.variants)
+		{
+			fprintf(f, "VAR\t%08x\t%016llx\t%u", pc, (unsigned long long)v.hash, v.count);
+			for (uint32_t w : v.words)
+				fprintf(f, "\t%08x", w);
+			fprintf(f, "\n");
+		}
+		fprintf(f, "PHYS\t%08x", pc);
+		for (uint32_t ph : p.physpcs)
+			fprintf(f, "\t%08x", ph);
+		fprintf(f, "\n");
+	}
+	fclose(f);
+	osd_printf_info("MAME_SGI_RECOMPILE_STUDY_DIAG: %llu compile requests written to %s\n", (unsigned long long)total, path.c_str());
+}
+
 void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 {
 	compiler_state compiler = { 0 };
@@ -2283,6 +2587,12 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 	/* get last instruction of the code (potentially used in generate_checksum) */
 	codelast = m_drcfe->get_last();
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+	if (((m_core->dispatch_mode >> 2) != 0) && ((m_core->dispatch_mode & 0x02) != 0))
+		recompile_study_record(mode, pc, desclist);
+	else
+		m_core->diag_recompile_origin = 0;
+#endif
 #ifdef MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
 	// See diag_last_compile_instruction_count's comment in mips3.h. Total
 	// opcode_desc nodes in this call's window - every instruction in every
@@ -7007,6 +7317,9 @@ void mips3_device::static_generate_nocode_handler(drcuml_block &block, int &labe
 	// own retry rather than being permanently suppressed.
 	UML_MOV(block, mem(&m_core->nocode_retry_pc), 0xffffffff);                  // mov     [nocode_retry_pc],~0
 #endif
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+	UML_MOV(block, mem(&m_core->diag_recompile_origin), 1);                     // mov     [diag_recompile_origin],1
+#endif
 	UML_EXIT(block, EXECUTE_MISSING_CODE);                                      // exit    EXECUTE_MISSING_CODE
 }
 
@@ -7122,6 +7435,10 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	UML_RECOVER(block, I0, MAPVAR_PC);                                          // recover i0,PC
 	UML_AND(block, I0, I0, ~3);                                                 // and     i0,i0,~3
 	UML_MOV(block, mem(&m_core->pc), I0);                                       // mov     i0,[pc]
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+	UML_CALLC(block, cfunc_recompile_study_tlb_handler_probe, this);
+	UML_MOV(block, I0, mem(&m_core->pc));
+#endif
 
 #ifdef MAME_SGI_TASK84_TLBMISS_REDISPATCH_DIAG
 	// See the macro's own comment above. diag_tlb_mismatch_pc (set earlier
@@ -7222,6 +7539,9 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	// Disarm, so a later, genuinely unrelated mismatch at this same PC
 	// gets its own retry rather than being permanently suppressed.
 	UML_MOV(block, mem(&m_core->tlb_mismatch_retry_pc), 0xffffffff);            // mov     [tlb_mismatch_retry_pc],~0
+#endif
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+	UML_MOV(block, mem(&m_core->diag_recompile_origin), 2);                     // mov     [diag_recompile_origin],2
 #endif
 	UML_EXIT(block, EXECUTE_MISSING_CODE);                                      // exit    EXECUTE_MISSING_CODE
 }
@@ -8543,6 +8863,11 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			UML_CALLC(block, cfunc_task84_tlb_mismatch_diag, this);
 		}
 #endif
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+		UML_MOV(block, mem(&m_core->arg0), 1);
+		UML_MOV(block, mem(&m_core->arg1), desc->pc);
+		UML_MOV(block, mem(&m_core->diag_study_serial), m_recompile_study_cur_serial);
+#endif
 #ifdef MAME_SGI_STALE_STUB_FIX
 		UML_MOV(block, mem(&m_core->stub_container_pc), m_compile_entry_pc);    // mov     [stub_container_pc],entry pc of this block
 		UML_MOV(block, mem(&m_core->stub_container_mode), m_compile_entry_mode); // mov     [stub_container_mode],hash key of this block
@@ -8597,6 +8922,15 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			// entry with nothing running in between, so the two can only
 			// ever differ. It also cost a store on every execution of
 			// this guard, not just on mismatches. Removed.
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+			if (recompile_study_traced(desc->pc, true))
+			{
+				UML_MOV(block, mem(&m_core->arg0), desc->pc);
+				UML_MOV(block, mem(&m_core->arg1), tlbtable[desc->pc >> 12]);
+				UML_MOV(block, mem(&m_core->diag_study_serial), m_recompile_study_serial);
+				UML_CALLC(block, cfunc_recompile_study_validate_probe, this);
+			}
+#endif
 			UML_LOAD(block, I0, &tlbtable[desc->pc >> 12], 0, SIZE_DWORD, SCALE_x4);        // load i0,tlbtable[desc->pc >> 12],0,dword
 			UML_CMP(block, I0, tlbtable[desc->pc >> 12]);                   // cmp     i0,*tlbentry
 #ifdef MAME_SGI_TASK84_TLB_MISMATCH_DIAG
@@ -8631,6 +8965,10 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			// fetch fails to translate gets compiler_page_fault() set by
 			// the frontend, and that is tested earlier in this function
 			// and returns, so this branch never actually dispatches.
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+			UML_MOV(block, mem(&m_core->arg0), 3);
+			UML_MOV(block, mem(&m_core->arg1), desc->pc);
+#endif
 			UML_EXH(block, *m_tlb_mismatch, 0);                  // exh     tlb_mismatch,0
 			// Unconditional tlb exception, no point going further
 			return;
