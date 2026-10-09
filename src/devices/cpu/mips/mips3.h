@@ -636,15 +636,6 @@ protected:
 		uint32_t        diag_fastram_iswrite;
 		uint32_t        diag_fastram_masked;
 
-		// MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - count of EXCEPTION_
-		// BADCOP deliveries for cop==1 specifically. Counted unconditionally
-		// whenever the diagnostic is compiled in; reported once as a
-		// clean-exit summary in device_stop() (mips3.cpp) rather than
-		// per-event, per this project's own hygiene convention (2026-09-11)
-		// of not leaving live-firing diagnostics printing during ordinary
-		// play once a per-event trace is no longer needed.
-		uint32_t        diag_cop1_trap_count;
-
 		// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - real
 		// host wall-clock (not guest-cycle) duration of each
 		// code_compile_block()/code_flush_cache() call from execute_run().
@@ -1031,21 +1022,6 @@ protected:
 		uint32_t        diag_ctc1_mxcsr_fmod;        /* TEMPORARY (2026-08-24): the fmod value (uml::float_rounding_mode) that CTC1 just requested via UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_ctc1_mxcsr_real_rc;     /* TEMPORARY (2026-08-24): real live MXCSR RC bits actually observed right after that UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_sd_pc;                  /* TEMPORARY (2026-07-27): desc->pc of the SD instruction, for func_sd_value_probe to report */
-		uint32_t        diag_eret_window_exc_type;   /* TEMPORARY (2026-08-14): exception enum stashed in static_generate_exception, read by func_eret_window_exception_diag - eret-race-onset-window investigation, task #66 */
-		uint32_t        diag_eret_window_pc;         /* TEMPORARY (2026-08-14): desc->pc of the ERET instruction, stashed for func_eret_window_eret_diag */
-		/* MAME_SGI_ERET_RACE_WINDOW_DIAG (mips3drc.cpp) - how many of each
-		 * event type landed inside the investigation window, reported once
-		 * as a clean-exit summary in device_stop() (mips3.cpp). Reworked
-		 * 2026-09-11 from an unconditional live per-event stderr trace
-		 * (still available, off by default, via
-		 * MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE) - the eret-race
-		 * investigation itself concluded (task #69/#71, MIPS3DRC_STRICT_
-		 * COP1 was the real fix), only a remaining "does IRIX 5.3 show the
-		 * same issue" curiosity check is open, not worth live noise on
-		 * every normal boot in the meantime. */
-		uint32_t        diag_eret_window_exception_count;
-		uint32_t        diag_eret_window_eret_count;
-		uint32_t        diag_eret_window_status_count;
 		uint64_t        diag_task84_save_count;      /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG - incremented by save_fast_iregs() itself (covers all 4 active call sites by construction), read alongside diag_task84_load_count to check the save/load structural balance the user proposed - see wiki/task84.md's matching entry. */
 		uint64_t        diag_task84_load_count;      /* TEMPORARY (2026-09-05): companion to diag_task84_save_count, incremented by load_fast_iregs() (the single active call site, static_generate_entry_point). Expected to stay within {0,1} of diag_task84_save_count if save/load structurally alternate as assumed - an imbalance beyond that would be a genuine, previously-unverified structural finding. */
 		uint64_t        diag_task84_bracket_save_entry; /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BRACKET_DIAG - snapshot of diag_task84_save_count taken at cpp_get_token's own call site (0x1007df48), so func_task84_saveload_bracket_exit (at the return site, 0x1007df50) can compute the exact save/load activity delta for ONE invocation in guest-instruction order, not wall-clock. */
@@ -1457,9 +1433,6 @@ public:
 	void func_andi_ori_probe(int site);
 	void func_mtcz_read_probe(int compiletime_is_branch_target);
 	void func_sd_value_probe();
-	void func_eret_window_exception_diag();
-	void func_eret_window_eret_diag();
-	void func_eret_window_status_diag();
 	void func_printf_debug();
 	void func_0fac5ffc_anomaly_diag();
 	void func_validate_tlb_mismatch_class_diag();
@@ -1469,7 +1442,6 @@ public:
 	void func_nocode_0fac5ffc_diag();
 	void func_rodata_load_addr_diag();
 	void func_fastram_compare_diag();
-	void func_cop1_trap_diag();
 	void func_printf_probe();
 	void func_debug_break();
 	void func_unimplemented();

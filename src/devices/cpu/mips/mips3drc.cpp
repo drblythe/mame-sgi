@@ -41,7 +41,7 @@
 // only - the fallback itself stays unconditional under MAME_DRC_BUGFIXES
 // above regardless of this. See the fallback's own comment in
 // code_compile_block() and diag_null_seqlast_count's comment in mips3.h.
-#define MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
+// #define MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
 
 // TEMPORARY diagnostic marker (2026-07-23), separate from MAME_DRC_BUGFIXES
 // above - self-defined here for the same reason: this file is its own
@@ -63,62 +63,6 @@
 // only the specific probe(s) actually needed if a future investigation
 // requires one of these again, rather than the whole macro at once.
 // #define MAME_DRC_DIAG
-
-// TEMPORARY diagnostic (2026-08-14): logs every COP0 exception delivery,
-// ERET execution, and COP0_Status store while total_cycles() falls inside
-// the eret-race onset window bisected via MAME_SGI_EARLY_SAVE_DIAG
-// (mips3.cpp) - see task #66 / journal.md's 2026-08-14 entries for the
-// bisection itself: a -state save/reload taken at 2,749,877 cycles comes
-// back healthy, one taken at 2,829,794 cycles comes back permanently
-// stuck at SR.EXL=1/Cause=0x00000034 (the console shows this window sits
-// inside PROM's "Running power-on diagnostics..." phase, well before any
-// keyboard-wait prompt or disk activity). Bounds below are set with margin
-// on both sides of that ~80,000-cycle transition to capture context before
-// and after it, not just inside it. Unlike the disabled
-// MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES family below, this is NOT filtered
-// by PC or by "looks like a kernel .text address" - that family's whole
-// filtering approach assumed IRIX kernel code (elocore_exl_N) and kernel
-// .text addresses, neither of which necessarily applies here since this
-// window is still PROM firmware, not IRIX kernel code.
-// REVISED AGAIN (2026-08-14, same day): a full clean boot with the window
-// wide open [0, 5,000,000] produced ZERO hits (no exception, no eret, no
-// COP0_Status store) - the FIRST such event of any kind, in a completely
-// vanilla continuous boot, doesn't happen until total_cycles() ~206,488,664
-// (confirmed via an even wider sanity pass, [0, 2,000,000,000] - see
-// journal.md 2026-08-14). So neither the pre-save window nor immediately-
-// post-restore can be where an exception/eret/status-store first causes
-// divergence - there simply isn't one there to diverge on. Narrowed to
-// bracket that ~206M onset point instead: reload from BOTH the confirmed-
-// healthy (2,749,877-cycle, sta/indy_4610/healthy_endpoint.sta) and
-// confirmed-stuck (2,829,794-cycle, stuck_endpoint.sta) save points and
-// compare their event sequences starting right where real COP0 activity
-// actually begins, rather than at either save point itself.
-//
-// SAFETY: this WILL runaway into an enormous log if left on for a long/
-// unbounded run - a 452MB log in under 2 minutes was produced once already
-// when accidentally left on with HI=2,000,000,000 during an unrelated
-// detour. Keep LO/HI tight and exit the process as soon as the window
-// closes; never leave this defined for a run without deliberately re-
-// checking these bounds first.
-// RESTORED (2026-08-17) - task #69/#71 concluded (real root cause was
-// MIPS3DRC_STRICT_COP1 never being enabled, see drc-bugfixes.md), so
-// this is back to its normal always-on state after being temporarily
-// disabled for that investigation's stock-vs-modified A/B test.
-#define MAME_SGI_ERET_RACE_WINDOW_DIAG
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG
-// WIDENED (2026-08-14, same day): the 206M-207.5M window only shows the
-// tail-end repeating Trap loop, which is a SYMPTOM (EXL already stuck by
-// the time these fire - MIPS architecture leaves EPC untouched on any
-// exception taken while EXL=1, so none of those events are what actually
-// set EPC/EXL in the first place). The real onset must be somewhere in the
-// still-unexamined gap between the bisected save-point window
-// (2,700,000-2,900,000, confirmed zero hits) and this tail region -
-// widened to cover that whole gap on a RELOAD run specifically (a
-// continuous boot already confirmed clean in this same range at the
-// narrower [0,5,000,000] and [0,2,000,000,000] checks).
-#define MAME_SGI_ERET_RACE_WINDOW_LO 2900000
-#define MAME_SGI_ERET_RACE_WINDOW_HI 3800000
-#endif
 
 // DISABLED (2026-07-28): the andi_ori/mtcz_read/fault_store_mode probe
 // family below was deliberately left ungated (not behind MAME_DRC_DIAG)
@@ -143,8 +87,8 @@
 // construction; safe to leave on unconditionally. rmap_del's own root cause
 // was never determined in this investigation (see wiki/assets.md) - this
 // captures pfdp/pdep/caller at the actual panic site the next time it's hit.
-// RESTORED (2026-08-17) - task #69/#71 concluded, see
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above.
+// RESTORED (2026-08-17) - task #69/#71 concluded (MIPS3DRC_STRICT_COP1
+// was the real fix).
 #define MAME_SGI_RMAP_DEL_PANIC_DIAG
 
 // TEMPORARY diagnostic (2026-08-01): validating a theory about USER-mode
@@ -152,8 +96,7 @@
 // operation - see mips3.h's comment on m_diag_usermode_recompile_counts
 // for the full mechanism/hypothesis. Counts recompile events per
 // (mode, pc), USER mode only, dumped at clean exit from mips3.cpp's
-// device_stop(). RESTORED (2026-08-17) - task #69/#71 concluded, see
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own restore comment above - at the
+// device_stop(). RESTORED (2026-08-17) - task #69/#71 concluded - at the
 // time judged "cheap... safe to leave on for a normal test run" on an
 // amortized-cost basis (one hash-map insert per compile).
 // DISABLED, THEN RE-ENABLED WITH A FIX (2026-09-17, task #97 QoS
@@ -188,7 +131,7 @@
 // (reserved up front, same fix already applied to m_checkints_addrs
 // itself and to m_diag_usermode_recompile_counts this session) - safe to
 // leave on for a normal test run while this scoping question is open.
-#define MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
+// #define MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
 
 // Originally a temporary diagnostic (2026-09-17, task #101 Phase 0) -
 // see diag_entry_reentry_count's comment in mips3.h. Real wall-clock
@@ -200,7 +143,7 @@
 // below: any recurrence of a large re-entry gap at a call-stitched-
 // across-blocks loop shape (the pattern the heuristic exists to catch)
 // would show up here first.
-#define MAME_SGI_TASK101_REENTRY_FREQ_DIAG
+// #define MAME_SGI_TASK101_REENTRY_FREQ_DIAG
 
 // See the full rationale (test evidence, caveats) at the use site
 // (code_compile_block()'s checkints arming block) and in this project's
@@ -327,7 +270,7 @@
 // generate_checksum_block's own declaration rather than resurrecting
 // the old one, since the old context pool's 0x0fac5ffc-specific second
 // half isn't needed here.
-#define MAME_SGI_CHECKSUM_MISMATCH_DIAG_TASK84
+// #define MAME_SGI_CHECKSUM_MISMATCH_DIAG_TASK84
 
 // TEMPORARY diagnostic (2026-09-03, task #84): checksum-mismatch is
 // ruled out (5/5 forced reproductions, zero hits from the diagnostic
@@ -1229,16 +1172,16 @@
 // the hottest path in the system (65M+ occurrences measured in a partial
 // boot alone) - only worth paying for a deliberate re-measurement, not as
 // a standing default.
-// TEMPORARILY DISABLED (2026-08-17) - see the note above
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own disable.
+// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// test; not re-enabled since.
 // #define MAME_SGI_JMPDEST_SAMEPAGE_DIAG
 
 // TEMPORARY diagnostic toggle (2026-08-07) - validate_tlb() execution
 // count, see diag_validate_tlb_total's comment in mips3.h. Paired with
 // the toggle above for the same measurement; same off-by-default
 // reasoning (real per-occurrence cost on a hot path).
-// TEMPORARILY DISABLED (2026-08-17) - see the note above
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own disable.
+// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// test; not re-enabled since.
 // #define MAME_SGI_VALIDATE_TLB_FREQ_DIAG
 
 // TEMPORARY diagnostic toggle (2026-08-22) - resuming the 0x0fac5ffc
@@ -1369,51 +1312,11 @@ std::string drc_compile_rate_timestamp()
 }
 #endif
 
-// TEMPORARY diagnostic (2026-08-23) - FPU-corruption investigation (see
-// wiki/console.md's "%f corruption under host load" section): a real,
-// reproducible ~ASCII-10-offset digit corruption in guest printf("%f")
-// output, seen on both the serial console and the GUI winterm (ruling
-// out a serial-transmission-specific cause), correlated by the user to
-// heavy I/O-interrupt/syscall activity (`ls -R /usr`). Task #69/#71
-// already found and fixed ONE bug in the exact same general mechanism -
-// IRIX's lazy FPU context-restore convention (kernel clears SR.CU1 on a
-// context switch, expects a COP1-unusable trap on the next FP
-// instruction to trigger the real restore) was silently unenforced,
-// MIPS3DRC_STRICT_COP1 (mips3drc.cpp:7523) fixed it for that specific
-// case and is confirmed still active. This diagnostic logs every
-// EXCEPTION_BADCOP delivery specifically for cop==1 (COP1, not COP0 -
-// see static_generate_exception's own GETEXP of the exception
-// parameter) with a wall-clock timestamp, same format as the keyboard-
-// side diagnostics, to check whether the STILL-unexplained corruption
-// correlates with trap-firing frequency/timing under load - i.e.
-// whether this is a subtler, load-dependent edge case in the same
-// general mechanism rather than a regression of the already-fixed one.
-// Was per-event-print, off-by-default; now always counts (cheap) and
-// reports once as a clean-exit summary in mips3_device::device_stop()
-// instead (2026-09-11) - see diag_cop1_trap_count's comment in mips3.h.
-#define MAME_SGI_COP1_TRAP_DIAG
-
-#ifdef MAME_SGI_COP1_TRAP_DIAG
-void mips3_device::func_cop1_trap_diag()
-{
-	// The generated code already gated this call on cop==1 (see the call
-	// site's own comment) - just record the event; func_*/cfunc_* split
-	// per this file's usual convention since m_core is protected and
-	// cfunc_* (below) is a plain C trampoline for UML_CALLCc.
-	m_core->diag_cop1_trap_count++;
-}
-
-static void cfunc_cop1_trap_diag(void *param)
-{
-	((mips3_device *)param)->func_cop1_trap_diag();
-}
-#endif
-
 // TEMPORARY diagnostic toggle (2026-08-07) - compiled-sequence length
 // distribution, see diag_seq_count's comment in mips3.h. Cheap (counted
 // once per compile, not per dispatch).
-// TEMPORARILY DISABLED (2026-08-17) - see the note above
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own disable.
+// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// test; not re-enabled since.
 // #define MAME_SGI_SEQUENCE_LENGTH_DIAG
 
 // TEMPORARY diagnostic toggle (2026-08-08) - per-call-site inline-cache
@@ -1428,8 +1331,8 @@ static void cfunc_cop1_trap_diag(void *param)
 // this diagnostic is expected to be significantly distorted (same
 // methodology caveat as -debug) - only the hit/miss ratio is meaningful,
 // not absolute timing. Off by default.
-// TEMPORARILY DISABLED (2026-08-17) - see the note above
-// MAME_SGI_ERET_RACE_WINDOW_DIAG's own disable.
+// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// test; not re-enabled since.
 // #define MAME_SGI_CALLSITE_IC_HITRATE_DIAG
 
 // PROTOTYPE toggle (2026-08-08) - the guard-based per-call-site inline
@@ -2003,7 +1906,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 // used to live here as a self-rate-limited live print every time the
 // totals changed meaningfully. Moved to a single clean-exit summary in
 // mips3_device::device_stop() instead (2026-09-11), matching the same
-// hygiene convention applied to MAME_SGI_COP1_TRAP_DIAG the same day -
+// hygiene convention applied to other diagnostics the same day -
 // the fix itself (the counters' increments, in static_generate_tlb_
 // mismatch()) is untouched, only this reporting was live/periodic.
 
@@ -2469,7 +2372,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					// live run, see wiki/assets.md) - so reworked
 					// 2026-09-11 to a silent counter, reported once as a
 					// clean-exit summary in device_stop() instead of
-					// per-event, matching MAME_SGI_COP1_TRAP_DIAG/
+					// per-event, matching
 					// MAME_SGI_TLB_MISMATCH_REFRESH_FIX's same-day rework.
 #ifdef MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
 					m_core->diag_null_seqlast_count++;
@@ -4734,136 +4637,6 @@ void mips3_device::func_premature_interrupt_probe()
 		(uint32_t)m_core->cpr[0][COP0_EPC], (uint32_t)m_core->r[26], (uint32_t)m_core->r[27], m_core->mode);
 	fflush(stderr);
 }
-
-/*-------------------------------------------------
-    func_eret_window_exception_diag / _eret_diag /
-    _status_diag - TEMPORARY (2026-08-14): see
-    MAME_SGI_ERET_RACE_WINDOW_DIAG's own comment near the
-    top of this file for the investigation this serves.
-    Each self-disables permanently (via a static latch)
-    once total_cycles() passes the window's high bound, so
-    the per-call total_cycles() read isn't paid for the
-    remainder of a long-running boot once the window of
-    interest has closed - these fire on ERET/COP0_Status-
-    store/exception-delivery, which, unlike the disabled
-    ANDI_ORI/SD family above, are infrequent enough that
-    the cost while INSIDE the window is a non-issue.
--------------------------------------------------*/
-
-// MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE (2026-09-11) - off by default.
-// Restores the original unconditional, capped live stderr trace for all
-// three probes below (full register state per event) for anyone actively
-// re-investigating this window again (e.g. the still-open "does IRIX 5.3
-// show the same race" question) - without it, the three probes below only
-// count, silently, reported once at clean exit. See diag_eret_window_
-// exception_count's comment in mips3.h.
-// #define MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE
-
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE
-namespace {
-	// Shared across all three diagnostics below - caps TOTAL combined output
-	// regardless of how frequent events turn out to be inside the window,
-	// independent of the cycle-based latch (which only protects against
-	// staying armed too long, not against a single window turning out to
-	// be much noisier than expected). See the runaway-log incident noted
-	// in this macro's own comment above.
-	int s_mame_sgi_eret_window_hit_cap = 50;
-}
-#endif
-
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG
-void mips3_device::func_eret_window_exception_diag()
-{
-	static bool s_window_passed = false;
-	if (s_window_passed)
-		return;
-	uint64_t cyc = total_cycles();
-	if (cyc > MAME_SGI_ERET_RACE_WINDOW_HI)
-	{
-		s_window_passed = true;
-		return;
-	}
-	if (cyc < MAME_SGI_ERET_RACE_WINDOW_LO)
-		return;
-	m_core->diag_eret_window_exception_count++;
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE
-	if (--s_mame_sgi_eret_window_hit_cap < 0)
-	{
-		s_window_passed = true;
-		return;
-	}
-	fprintf(stderr, "[MAME_ERET_WINDOW] EXCEPTION cyc=%llu type=%u epc=0x%08x cause=0x%08x status=0x%08x (EXL=%u ERL=%u IE=%u) pc=0x%08x k0=0x%08x%08x k1=0x%08x%08x ra=0x%08x%08x\n",
-		(unsigned long long)cyc, m_core->diag_eret_window_exc_type,
-		(uint32_t)m_core->cpr[0][COP0_EPC], (uint32_t)m_core->cpr[0][COP0_Cause], (uint32_t)m_core->cpr[0][COP0_Status],
-		((uint32_t)m_core->cpr[0][COP0_Status] >> 1) & 1, ((uint32_t)m_core->cpr[0][COP0_Status] >> 2) & 1,
-		(uint32_t)m_core->cpr[0][COP0_Status] & 1, m_core->pc,
-		(uint32_t)(m_core->r[26] >> 32), (uint32_t)m_core->r[26],
-		(uint32_t)(m_core->r[27] >> 32), (uint32_t)m_core->r[27],
-		(uint32_t)(m_core->r[31] >> 32), (uint32_t)m_core->r[31]);
-	fflush(stderr);
-#endif
-}
-static void cfunc_eret_window_exception_diag(void *param) { ((mips3_device *)param)->func_eret_window_exception_diag(); }
-
-void mips3_device::func_eret_window_eret_diag()
-{
-	static bool s_window_passed = false;
-	if (s_window_passed)
-		return;
-	uint64_t cyc = total_cycles();
-	if (cyc > MAME_SGI_ERET_RACE_WINDOW_HI)
-	{
-		s_window_passed = true;
-		return;
-	}
-	if (cyc < MAME_SGI_ERET_RACE_WINDOW_LO)
-		return;
-	m_core->diag_eret_window_eret_count++;
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE
-	if (--s_mame_sgi_eret_window_hit_cap < 0)
-	{
-		s_window_passed = true;
-		return;
-	}
-	fprintf(stderr, "[MAME_ERET_WINDOW] ERET cyc=%llu pc=0x%08x pre_status=0x%08x (EXL=%u ERL=%u IE=%u) epc=0x%08x errorpc=0x%08x cause=0x%08x\n",
-		(unsigned long long)cyc, m_core->diag_eret_window_pc, (uint32_t)m_core->cpr[0][COP0_Status],
-		((uint32_t)m_core->cpr[0][COP0_Status] >> 1) & 1, ((uint32_t)m_core->cpr[0][COP0_Status] >> 2) & 1,
-		(uint32_t)m_core->cpr[0][COP0_Status] & 1,
-		(uint32_t)m_core->cpr[0][COP0_EPC], (uint32_t)m_core->cpr[0][COP0_ErrorPC], (uint32_t)m_core->cpr[0][COP0_Cause]);
-	fflush(stderr);
-#endif
-}
-static void cfunc_eret_window_eret_diag(void *param) { ((mips3_device *)param)->func_eret_window_eret_diag(); }
-
-void mips3_device::func_eret_window_status_diag()
-{
-	static bool s_window_passed = false;
-	if (s_window_passed)
-		return;
-	uint64_t cyc = total_cycles();
-	if (cyc > MAME_SGI_ERET_RACE_WINDOW_HI)
-	{
-		s_window_passed = true;
-		return;
-	}
-	if (cyc < MAME_SGI_ERET_RACE_WINDOW_LO)
-		return;
-	m_core->diag_eret_window_status_count++;
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG_VERBOSE
-	if (--s_mame_sgi_eret_window_hit_cap < 0)
-	{
-		s_window_passed = true;
-		return;
-	}
-	fprintf(stderr, "[MAME_ERET_WINDOW] STATUS_STORE cyc=%llu pc=0x%08x new_status=0x%08x (EXL=%u ERL=%u IE=%u) old_status=0x%08x\n",
-		(unsigned long long)cyc, m_core->diag_status_store_pc, m_core->diag_new_status,
-		(m_core->diag_new_status >> 1) & 1, (m_core->diag_new_status >> 2) & 1, m_core->diag_new_status & 1,
-		(uint32_t)m_core->cpr[0][COP0_Status]);
-	fflush(stderr);
-#endif
-}
-static void cfunc_eret_window_status_diag(void *param) { ((mips3_device *)param)->func_eret_window_status_diag(); }
-#endif
 
 #ifdef MAME_SGI_MUTEXWAIT_SPIN_DIAG
 namespace {
@@ -7521,16 +7294,6 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	{
 		UML_GETEXP(block, I0);                                                  // getexp  i0
 		UML_ROLINS(block, CPR032(COP0_Cause), I0, 28, 0x30000000);              // rolins  [Cause],i0,28,0x30000000
-
-#ifdef MAME_SGI_COP1_TRAP_DIAG
-		// I0 still holds the raw cop number here (ROLINS reads it as a
-		// source, doesn't clobber it) - gate the C call in generated code
-		// on cop==1 so the C function itself needs no arguments/instance
-		// access at all, avoiding any mips3.h header change for a
-		// one-shot investigation diagnostic.
-		UML_CMP(block, I0, 1);                                                  // cmp     i0,1
-		UML_CALLCc(block, COND_E, cfunc_cop1_trap_diag, this);                  // callc   cop1_trap_diag,e
-#endif
 	}
 
 	// TEMPORARY probe (2026-07-27): stash the EPC candidate (I0, still valid
@@ -7550,15 +7313,6 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	UML_OR(block, I0, CPR032(COP0_Status), SR_EXL);                             // or      i0,[Status],SR_EXL
 	UML_MOV(block, CPR032(COP0_Status), I0);                                    // mov     [Status],i0
 	generate_update_mode(block);
-
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG
-	// `exception` is a per-call-site compile-time constant (this function is
-	// invoked once per exception type during device_start-time codegen), so
-	// this MOV bakes in an immediate - same idiom as `UML_MOV(block, I3,
-	// offset)` a few lines above using the same kind of parameter.
-	UML_MOV(block, mem(&m_core->diag_eret_window_exc_type), exception);         // mov     [diag_eret_window_exc_type],exception
-	UML_CALLC(block, cfunc_eret_window_exception_diag, this);                   // callc   cfunc_eret_window_exception_diag
-#endif
 
 #ifdef MAME_DRC_DIAG
 	if (exception == EXCEPTION_INTERRUPT)
@@ -10802,15 +10556,10 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			// through the real store and generate_update_mode - the exact
 			// clobber-ordering bug class this whole investigation started
 			// from. See func_status_store_probe's comment for what this is
-			// checking.
+			// checking. Only needed by that probe family.
+#ifdef MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES
 			UML_MOV(block, mem(&m_core->diag_new_status), I0);                 // mov     [diag_new_status],i0
 			UML_MOV(block, mem(&m_core->diag_status_store_pc), desc->pc);      // mov     [diag_status_store_pc],desc->pc
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG
-			// Hooked right after the stash above and before the real store
-			// below - COP0_Status in memory here is still the pre-store
-			// value, so func_eret_window_status_diag can report "old" vs
-			// "new" (diag_new_status) correctly.
-			UML_CALLC(block, cfunc_eret_window_status_diag, this);             // callc   cfunc_eret_window_status_diag
 #endif
 			UML_MOV(block, I1, CPR032(COP0_Status));                            // mov     i1,[Status]
 			UML_MOV(block, CPR032(COP0_Status), I0);                            // mov     [Status],i0
@@ -11182,15 +10931,6 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 					return true;
 
 				case 0x18:  /* ERET */
-#ifdef MAME_SGI_ERET_RACE_WINDOW_DIAG
-					// desc->pc is compile-time-known here (this UML is
-					// generated once per compiled instance of this ERET
-					// instruction), so a plain MOV bakes it in as an
-					// immediate. Hooked before Status is touched below, so
-					// the probe sees the genuine pre-ERET value.
-					UML_MOV(block, mem(&m_core->diag_eret_window_pc), desc->pc);   // mov     [diag_eret_window_pc],desc->pc
-					UML_CALLC(block, cfunc_eret_window_eret_diag, this);           // callc   cfunc_eret_window_eret_diag
-#endif
 					UML_MOV(block, mem(&m_core->llbit), 0);                     // mov     [llbit],0
 					UML_MOV(block, I0, CPR032(COP0_Status));                    // mov     i0,[Status]
 					UML_TEST(block, I0, SR_ERL);                                // test    i0,SR_ERL

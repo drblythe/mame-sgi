@@ -48,7 +48,7 @@
 // bisection on failure alone can't distinguish "this save point is the
 // problem" from "this save point just takes longer to reach the same
 // pre-existing problem"). Undefined by default.
-#define MAME_SGI_PC_TRACE_DIAG
+// #define MAME_SGI_PC_TRACE_DIAG
 #ifdef MAME_SGI_PC_TRACE_DIAG
 #define MAME_SGI_PC_TRACE_LO 2833334
 #define MAME_SGI_PC_TRACE_HI 2834400
@@ -463,15 +463,6 @@ void mips3_device::device_stop()
 						: 100.0 * double(m_checkints_addrs.size()) / double(m_diag_checkints_all_compiled_pcs.size()));
 	}
 
-	// Clean-exit summary for MAME_SGI_COP1_TRAP_DIAG (mips3drc.cpp) - see
-	// diag_cop1_trap_count's comment in mips3.h. Unconditionally safe when
-	// zero (only ever incremented if the diagnostic is compiled in).
-	if (m_core->diag_cop1_trap_count != 0)
-	{
-		osd_printf_info("MAME_SGI_COP1_TRAP_DIAG summary: cop1_trap_count=%u\n",
-				m_core->diag_cop1_trap_count);
-	}
-
 	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8) -
 	// see diag_tlb_mismatch_skip_total's comment in mips3.h. This used to
 	// be a live, self-rate-limited stderr print inside code_compile_block()
@@ -603,19 +594,6 @@ void mips3_device::device_stop()
 				(unsigned long long)m_core->diag_entry_max_interval_guest_cycles,
 				max_interval_effective_hz,
 				(unsigned long long)m_cpu_clock);
-	}
-
-	// Clean-exit summary for MAME_SGI_ERET_RACE_WINDOW_DIAG (task #69/#71,
-	// concluded - MIPS3DRC_STRICT_COP1 was the real fix) - see
-	// diag_eret_window_exception_count's comment in mips3.h. Detailed
-	// per-event trace still available via the VERBOSE sub-macro.
-	if ((m_core->diag_eret_window_exception_count | m_core->diag_eret_window_eret_count | m_core->diag_eret_window_status_count) != 0)
-	{
-		osd_printf_info(
-				"MAME_SGI_ERET_RACE_WINDOW_DIAG summary: exceptions=%u erets=%u status_stores=%u\n",
-				m_core->diag_eret_window_exception_count,
-				m_core->diag_eret_window_eret_count,
-				m_core->diag_eret_window_status_count);
 	}
 
 	// Clean-exit summary for MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
