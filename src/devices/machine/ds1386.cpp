@@ -373,6 +373,16 @@ void ds1386_device::nvram_default()
 {
 	std::fill_n(&m_ram[0], m_ram_size, 0);
 	m_ram[REGISTER_COMMAND] = COMMAND_TE | COMMAND_WAM | COMMAND_TDM;
+
+	// MAME_SGI_RTC_DEFAULT_NVRAM: a region with this device's tag supplies the
+	// default contents of the user RAM (offset 0xe on); the clock and control
+	// registers keep the defaults above
+	if (m_default_data.found())
+	{
+		size_t const count = std::min<size_t>(m_ram_size, m_default_data.bytes());
+		for (size_t i = 0xe; i < count; i++)
+			m_ram[i] = m_default_data[i];
+	}
 }
 
 bool ds1386_device::nvram_read(util::read_stream &file)
