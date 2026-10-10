@@ -195,6 +195,12 @@
 
 ***************************************************************************/
 
+// MAME_SGI_HASH32: when the CPU passes DRCUML_OPTION_HASH32, the hash
+// table's L2 entries are 32-bit offsets from RBP instead of 64-bit host code
+// pointers, halving the L2 tables (256KB -> 128KB each); a HASHJMP then
+// loads the offset, adds RBP and jumps through RAX. Other CPUs keep the
+// stock 64-bit table.
+
 #include "emu.h"
 #include "drcbex64.h"
 
@@ -209,6 +215,7 @@
 #include "asmjit/asmjit/x86.h"
 
 #include <cstddef>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -835,7 +842,11 @@ private:
 	size_t emit(CodeHolder &ch, bool invariant);
 
 	// internal state
-	drc_hash_table          m_hash;                 // hash table state
+	// hash table state: exactly one is constructed (MAME_SGI_HASH32)
+	std::optional<drc_hash_table>   m_hash64;
+	std::optional<drc_hash_table32> m_hash32;
+	template <typename F> decltype(auto) with_hash(F &&f) { if (m_hash32) return f(*m_hash32); else return f(*m_hash64); }
+	template <typename F> decltype(auto) with_hash(F &&f) const { if (m_hash32) return f(*m_hash32); else return f(*m_hash64); }
 	drc_map_variables       m_map;                  // code map
 	x86log_context::ptr     m_log;                  // logging
 	FILE *                  m_log_asmjit;
@@ -1318,7 +1329,6 @@ void drcbe_x64::emit_memaccess_setup(Assembler &a, const memory_accessors &acces
 
 drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u32 flags, int modes, int addrbits, int ignorebits)
 	: drcbe_interface(drcuml, cache, device)
-	, m_hash(cache, modes, addrbits, ignorebits, drcuml.max_sequence_length())
 	, m_map(cache, 0xaaaaaaaa5555)
 	, m_log_asmjit(nullptr)
 	, m_lzcnt(false)
@@ -1333,6 +1343,12 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	, m_near(*cache.alloc_near<near_state>())
 	, m_invariant_block(false)
 {
+	// MAME_SGI_HASH32: construct the hash table the CPU asked for
+	if (flags & DRCUML_OPTION_HASH32)
+		m_hash32.emplace(cache, modes, addrbits, ignorebits, drcuml.max_sequence_length());
+	else
+		m_hash64.emplace(cache, modes, addrbits, ignorebits, drcuml.max_sequence_length());
+
 	// check for optional CPU features
 	const auto &x86_features = CpuInfo::host().features().x86();
 	m_lzcnt = x86_features.has_lzcnt();
@@ -1616,7 +1632,7 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	}
 
 	// set the "no code" pointer
-	m_hash.set_default_codeptr(m_nocode);
+	with_hash([&] (auto &h) { h.set_code_base(m_rbpvalue); h.set_default_codeptr(m_nocode); });   // MAME_SGI_HASH32: 32-bit entries are offsets from RBP
 }
 
 
@@ -1685,7 +1701,7 @@ void drcbe_x64::reset()
 		m_log->printf("%s", "\n\n===========\nCACHE RESET\n===========\n\n");
 
 	// reset our hash tables
-	m_hash.reset();
+	with_hash([] (auto &h) { h.reset(); });
 }
 
 
@@ -1717,7 +1733,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	}
 
 	// tell all of our utility objects that a block is beginning
-	m_hash.block_begin(block, instlist, numinst);
+	with_hash([&] (auto &h) { h.block_begin(block, instlist, numinst); });
 	m_map.block_begin(block);
 	m_invariant_block = block.invariant();
 
@@ -1922,7 +1938,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 		m_log->disasm_code_range(blockname.empty() ? "Unknown block" : blockname.c_str(), dst, dst + bytes);
 
 	// tell all of our utility objects that the block is finished
-	m_hash.block_end(block);
+	with_hash([&] (auto &h) { h.block_end(block); });
 	m_map.block_end(block);
 }
 
@@ -1934,7 +1950,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 
 bool drcbe_x64::hash_exists(u32 mode, u32 pc) const noexcept
 {
-	return m_hash.code_exists(mode, pc);
+	return with_hash([&] (auto &h) { return h.code_exists(mode, pc); });
 }
 
 
@@ -1945,7 +1961,7 @@ bool drcbe_x64::hash_exists(u32 mode, u32 pc) const noexcept
 
 void drcbe_x64::hash_invalidate_range(u32 pcstart, u32 pcend) noexcept
 {
-	m_hash.invalidate_range(pcstart, pcend);
+	with_hash([&] (auto &h) { h.invalidate_range(pcstart, pcend); });
 }
 
 
@@ -1958,7 +1974,7 @@ void drcbe_x64::hash_invalidate_range(u32 pcstart, u32 pcend) noexcept
 
 drccodeptr drcbe_x64::get_codeptr(u32 mode, u32 pc) const noexcept
 {
-	return m_hash.get_codeptr(mode, pc);
+	return with_hash([&] (auto &h) { return h.get_codeptr(mode, pc); });
 }
 
 
@@ -2462,7 +2478,7 @@ void drcbe_x64::op_hash(Assembler &a, const instruction &inst)
 	assert(inst.param(1).is_immediate());
 
 	// register the current pointer for the mode/PC
-	m_hash.set_codeptr(inst.param(0).immediate(), inst.param(1).immediate(), drccodeptr(a.code()->base_address() + a.offset()));
+	with_hash([&] (auto &h) { h.set_codeptr(inst.param(0).immediate(), inst.param(1).immediate(), drccodeptr(a.code()->base_address() + a.offset())); });
 }
 
 
@@ -2632,57 +2648,97 @@ void drcbe_x64::op_hashjmp(Assembler &a, const instruction &inst)
 	Label nocode = a.new_label();
 	a.mov(rsp, MABS(&m_near.stacksave));
 
-	// fixed mode cases
-	if (modep.is_immediate() && m_hash.populate_mode(modep.immediate()))
+	with_hash([&] (auto &h)
 	{
-		if (pcp.is_immediate() && !m_invariant_block)
+		constexpr bool h32 = std::is_same_v<std::decay_t<decltype(h)>, drc_hash_table32>;
+		// fixed mode cases
+		if (modep.is_immediate() && h.populate_mode(modep.immediate()))
 		{
-			// a straight immediate jump is direct, though we need the PC in EAX in case of failure
-			const u32 l1val = (pcp.immediate() >> m_hash.l1shift()) & m_hash.l1mask();
-			const u32 l2val = (pcp.immediate() >> m_hash.l2shift()) & m_hash.l2mask();
-			a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
-			a.jmp(MABS(&m_hash.base()[modep.immediate()][l1val][l2val]));
+			if (pcp.is_immediate() && !m_invariant_block)
+			{
+				// a straight immediate jump is direct, though we need the PC in EAX in case of failure
+				const u32 l1val = (pcp.immediate() >> h.l1shift()) & h.l1mask();
+				const u32 l2val = (pcp.immediate() >> h.l2shift()) & h.l2mask();
+				a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
+				if constexpr (h32)
+				{
+					a.mov(eax, MABS(&h.base()[modep.immediate()][l1val][l2val], 4));
+					a.add(rax, rbp);
+					a.jmp(rax);
+				}
+				else
+				{
+					a.jmp(MABS(&h.base()[modep.immediate()][l1val][l2val]));
+				}
+			}
+			else
+			{
+				// a fixed mode but variable PC
+				mov_reg_param(a, eax, pcp);
+				a.mov(edx, eax);
+				a.shr(edx, h.l1shift());
+				a.and_(eax, h.l2mask() << h.l2shift());
+				a.mov(rdx, ptr(rbp, rdx, 3, offset_from_rbp(&h.base()[modep.immediate()][0])));
+				a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
+				if constexpr (h32)
+				{
+					a.mov(eax, dword_ptr(rdx, rax, 2 - h.l2shift()));
+					a.add(rax, rbp);
+					a.jmp(rax);
+				}
+				else
+				{
+					a.jmp(ptr(rdx, rax, 3 - h.l2shift()));
+				}
+			}
 		}
 		else
 		{
-			// a fixed mode but variable PC
-			mov_reg_param(a, eax, pcp);
-			a.mov(edx, eax);
-			a.shr(edx, m_hash.l1shift());
-			a.and_(eax, m_hash.l2mask() << m_hash.l2shift());
-			a.mov(rdx, ptr(rbp, rdx, 3, offset_from_rbp(&m_hash.base()[modep.immediate()][0])));
-			a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
-			a.jmp(ptr(rdx, rax, 3 - m_hash.l2shift()));
-		}
-	}
-	else
-	{
-		// variable mode
-		const Gp modereg = modep.select_register(ecx);
-		mov_reg_param(a, modereg, modep);
-		a.mov(rcx, ptr(rbp, modereg, 3, offset_from_rbp(m_hash.base())));
+			// variable mode
+			const Gp modereg = modep.select_register(ecx);
+			mov_reg_param(a, modereg, modep);
+			a.mov(rcx, ptr(rbp, modereg, 3, offset_from_rbp(h.base())));
 
-		if (pcp.is_immediate())
-		{
-			// fixed PC
-			const u32 l1val = (pcp.immediate() >> m_hash.l1shift()) & m_hash.l1mask();
-			const u32 l2val = (pcp.immediate() >> m_hash.l2shift()) & m_hash.l2mask();
-			a.mov(rdx, ptr(rcx, l1val * 8));
-			a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
-			a.jmp(ptr(rdx, l2val * 8));
+			if (pcp.is_immediate())
+			{
+				// fixed PC
+				const u32 l1val = (pcp.immediate() >> h.l1shift()) & h.l1mask();
+				const u32 l2val = (pcp.immediate() >> h.l2shift()) & h.l2mask();
+				a.mov(rdx, ptr(rcx, l1val * 8));
+				a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
+				if constexpr (h32)
+				{
+					a.mov(eax, dword_ptr(rdx, l2val * 4));
+					a.add(rax, rbp);
+					a.jmp(rax);
+				}
+				else
+				{
+					a.jmp(ptr(rdx, l2val * 8));
+				}
+			}
+			else
+			{
+				// variable PC
+				mov_reg_param(a, eax, pcp);
+				a.mov(edx, eax);
+				a.shr(edx, h.l1shift());
+				a.mov(rdx, ptr(rcx, rdx, 3));
+				a.and_(eax, h.l2mask() << h.l2shift());
+				a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
+				if constexpr (h32)
+				{
+					a.mov(eax, dword_ptr(rdx, rax, 2 - h.l2shift()));
+					a.add(rax, rbp);
+					a.jmp(rax);
+				}
+				else
+				{
+					a.jmp(ptr(rdx, rax, 3 - h.l2shift()));
+				}
+			}
 		}
-		else
-		{
-			// variable PC
-			mov_reg_param(a, eax, pcp);
-			a.mov(edx, eax);
-			a.shr(edx, m_hash.l1shift());
-			a.mov(rdx, ptr(rcx, rdx, 3));
-			a.and_(eax, m_hash.l2mask() << m_hash.l2shift());
-			a.short_().lea(gpq(REG_PARAM1), ptr(nocode));
-			a.jmp(ptr(rdx, rax, 3 - m_hash.l2shift()));
-		}
-	}
+	});
 
 	// in all cases, if there is no code, we return here to generate the exception
 	a.bind(nocode);

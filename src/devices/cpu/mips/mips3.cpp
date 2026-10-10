@@ -949,6 +949,8 @@ void mips3_device::device_start()
 	m_compare_int_timer = timer_alloc(FUNC(mips3_device::compare_int_callback), this);
 
 	uint32_t flags = 0;
+	if (m_drc_hash32)
+		flags |= DRCUML_OPTION_HASH32;    // MAME_SGI_HASH32
 	/* initialize the UML generator */
 	// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01): widened from 8 to 2048
 	// to fit dispatch_mode's 11-bit encoding (see internal_mips3_state's

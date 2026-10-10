@@ -141,6 +141,10 @@ private:
 
 
 // interface structure for a back-end
+// MAME_SGI_HASH32: drcuml_state option flag - ask the native backend for a
+// hash table with 32-bit L2 entries (x64 backend only; others ignore it)
+constexpr u32 DRCUML_OPTION_HASH32 = 0x00000001;
+
 class drcbe_interface
 {
 public:

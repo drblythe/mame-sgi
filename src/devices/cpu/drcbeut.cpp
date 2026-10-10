@@ -63,7 +63,8 @@ using namespace uml;
 //  drc_hash_table - constructor
 //-------------------------------------------------
 
-drc_hash_table::drc_hash_table(
+template <typename Entry>
+drc_hash_table_t<Entry>::drc_hash_table_t(
 		drc_cache &cache,
 		uint32_t modes,
 		uint8_t addrbits,
@@ -77,9 +78,9 @@ drc_hash_table::drc_hash_table(
 	m_next_l2_block(0),
 	m_invariant_mode_count(0),
 	m_cache(cache),
-	m_modealign(std::align_val_t(std::lcm(std::size_t(modealign), alignof(drccodeptr **)))),
-	m_l1align(std::align_val_t(std::lcm(std::size_t(l1align), alignof(drccodeptr *)))),
-	m_l2align(std::align_val_t(std::lcm(std::size_t(l2align), alignof(drccodeptr)))),
+	m_modealign(std::align_val_t(std::lcm(std::size_t(modealign), alignof(Entry **)))),
+	m_l1align(std::align_val_t(std::lcm(std::size_t(l1align), alignof(Entry *)))),
+	m_l2align(std::align_val_t(std::lcm(std::size_t(l2align), alignof(Entry)))),
 	m_nocodeptr(nullptr),
 	m_modes(modes),
 	m_max_sequence_length(max_sequence_length),
@@ -89,11 +90,11 @@ drc_hash_table::drc_hash_table(
 	m_l2shift(ignorebits),
 	m_l1mask((1 << m_l1bits) - 1),
 	m_l2mask((1 << m_l2bits) - 1),
-	m_base(reinterpret_cast<drccodeptr ***>(cache.alloc(modes * sizeof(drccodeptr **), m_modealign))),
-	m_emptyl1(reinterpret_cast<drccodeptr **>(m_cache.alloc(sizeof(drccodeptr *) << m_l1bits, m_l1align))),
-	m_emptyl2(reinterpret_cast<drccodeptr *>(m_cache.alloc(sizeof(drccodeptr) << m_l2bits, m_l2align))),
-	m_l1alloc(std::min<std::size_t>(L1_ALLOCATION, m_modes) * block_bytes<drccodeptr *>(1 << m_l1bits, m_l1align)),
-	m_l2alloc(L2_ALLOCATION * block_bytes<drccodeptr>(1 << m_l2bits, m_l2align))
+	m_base(reinterpret_cast<Entry ***>(cache.alloc(modes * sizeof(Entry **), m_modealign))),
+	m_emptyl1(reinterpret_cast<Entry **>(m_cache.alloc(sizeof(Entry *) << m_l1bits, m_l1align))),
+	m_emptyl2(reinterpret_cast<Entry *>(m_cache.alloc(sizeof(Entry) << m_l2bits, m_l2align))),
+	m_l1alloc(std::min<std::size_t>(L1_ALLOCATION, m_modes) * block_bytes<Entry *>(1 << m_l1bits, m_l1align)),
+	m_l2alloc(L2_ALLOCATION * block_bytes<Entry>(1 << m_l2bits, m_l2align))
 {
 #if defined(MAME_DEBUG)
 	osd_printf_verbose(
@@ -103,8 +104,8 @@ drc_hash_table::drc_hash_table(
 			m_modes, addrbits, ignorebits,
 			m_l1bits, m_l1shift, m_l1mask,
 			m_l2bits, m_l2shift, m_l2mask,
-			m_l1alloc, block_bytes<drccodeptr *>(1 << m_l1bits, m_l1align), std::min<std::size_t>(L1_ALLOCATION, m_modes),
-			m_l2alloc, block_bytes<drccodeptr>(1 << m_l2bits, m_l2align), L2_ALLOCATION);
+			m_l1alloc, block_bytes<Entry *>(1 << m_l1bits, m_l1align), std::min<std::size_t>(L1_ALLOCATION, m_modes),
+			m_l2alloc, block_bytes<Entry>(1 << m_l2bits, m_l2align), L2_ALLOCATION);
 #endif
 
 	m_l1blocks.reserve(std::min<std::size_t>(L1_ALLOCATION, m_modes));
@@ -114,7 +115,7 @@ drc_hash_table::drc_hash_table(
 		std::fill_n(m_emptyl1, 1 << m_l1bits, m_emptyl2);
 
 	if (m_emptyl2)
-		std::fill_n(m_emptyl2, 1 << m_l2bits, m_nocodeptr);
+		std::fill_n(m_emptyl2, 1 << m_l2bits, encode(m_nocodeptr));
 
 	reset();
 }
@@ -125,7 +126,8 @@ drc_hash_table::drc_hash_table(
 //  new ones
 //-------------------------------------------------
 
-bool drc_hash_table::reset() noexcept
+template <typename Entry>
+bool drc_hash_table_t<Entry>::reset() noexcept
 {
 	// start from the beginning of the allocated blocks
 	m_next_l1_block = m_invariant_mode_count;
@@ -152,7 +154,8 @@ bool drc_hash_table::reset() noexcept
 //  entry
 //-------------------------------------------------
 
-bool drc_hash_table::populate_mode(uint32_t mode) noexcept
+template <typename Entry>
+bool drc_hash_table_t<Entry>::populate_mode(uint32_t mode) noexcept
 {
 	assert(mode < m_modes);
 	if (m_base[mode] != m_emptyl1)
@@ -164,14 +167,14 @@ bool drc_hash_table::populate_mode(uint32_t mode) noexcept
 		try { m_l1blocks.reserve(m_l1blocks.size() + std::min<std::size_t>(L1_ALLOCATION, m_modes)); }
 		catch (std::bad_alloc const &) { return false; }
 
-		drccodeptr **const l1block = reinterpret_cast<drccodeptr **>(m_cache.alloc(m_l1alloc, m_l1align));
+		Entry **const l1block = reinterpret_cast<Entry **>(m_cache.alloc(m_l1alloc, m_l1align));
 		if (!l1block)
 			return false;
 
 		for (unsigned i = 0; std::min<std::size_t>(L1_ALLOCATION, m_modes) > i; ++i)
 		{
-			void *const table = reinterpret_cast<uint8_t *>(l1block) + (block_bytes<drccodeptr *>(1 << m_l1bits, m_l1align) * i);
-			m_l1blocks.emplace_back(reinterpret_cast<drccodeptr **>(table));
+			void *const table = reinterpret_cast<uint8_t *>(l1block) + (block_bytes<Entry *>(1 << m_l1bits, m_l1align) * i);
+			m_l1blocks.emplace_back(reinterpret_cast<Entry **>(table));
 		}
 	}
 
@@ -186,7 +189,8 @@ bool drc_hash_table::populate_mode(uint32_t mode) noexcept
 //  block_begin - note the beginning of a block
 //-------------------------------------------------
 
-void drc_hash_table::block_begin(drcuml_block &block, const uml::instruction *instlist, uint32_t numinst)
+template <typename Entry>
+void drc_hash_table_t<Entry>::block_begin(drcuml_block &block, const uml::instruction *instlist, uint32_t numinst)
 {
 	// before generating code, pre-allocate any hash entries; we do this by setting dummy hash values
 	for (int inum = 0; inum < numinst; inum++)
@@ -236,7 +240,8 @@ void drc_hash_table::block_begin(drcuml_block &block, const uml::instruction *in
 //  block_end - note the end of a block
 //-------------------------------------------------
 
-void drc_hash_table::block_end(drcuml_block &block)
+template <typename Entry>
+void drc_hash_table_t<Entry>::block_end(drcuml_block &block)
 {
 	// nothing to do here, yet
 }
@@ -247,7 +252,8 @@ void drc_hash_table::block_end(drcuml_block &block)
 //  codeptr
 //-------------------------------------------------
 
-void drc_hash_table::set_default_codeptr(drccodeptr nocodeptr) noexcept
+template <typename Entry>
+void drc_hash_table_t<Entry>::set_default_codeptr(drccodeptr nocodeptr) noexcept
 {
 	// nothing to do if the same
 	drccodeptr const old = m_nocodeptr;
@@ -256,15 +262,15 @@ void drc_hash_table::set_default_codeptr(drccodeptr nocodeptr) noexcept
 	m_nocodeptr = nocodeptr;
 
 	// update the empty L2 table first
-	std::fill_n(m_emptyl2, 1 << m_l2bits, nocodeptr);
+	std::fill_n(m_emptyl2, 1 << m_l2bits, encode(nocodeptr));
 
 	// now scan all existing L2 tables for entries
 	for (uint32_t i = 0; m_next_l2_block > i; ++i)
 	{
 		for (uint32_t l2entry = 0; (1 << m_l2bits > l2entry); ++l2entry)
 		{
-			if (m_l2blocks[i][l2entry] == old)
-				m_l2blocks[i][l2entry] = nocodeptr;
+			if (m_l2blocks[i][l2entry] == encode(old))
+				m_l2blocks[i][l2entry] = encode(nocodeptr);
 		}
 	}
 }
@@ -275,7 +281,8 @@ void drc_hash_table::set_default_codeptr(drccodeptr nocodeptr) noexcept
 //  mode/pc
 //-------------------------------------------------
 
-bool drc_hash_table::set_codeptr(uint32_t mode, uint32_t pc, drccodeptr code) noexcept
+template <typename Entry>
+bool drc_hash_table_t<Entry>::set_codeptr(uint32_t mode, uint32_t pc, drccodeptr code) noexcept
 {
 	if (!populate_mode(mode))
 		return false;
@@ -289,24 +296,24 @@ bool drc_hash_table::set_codeptr(uint32_t mode, uint32_t pc, drccodeptr code) no
 			try { m_l2blocks.reserve(m_l2blocks.size() + L2_ALLOCATION); }
 			catch (std::bad_alloc const &) { return false; }
 
-			drccodeptr *const l2block = reinterpret_cast<drccodeptr *>(m_cache.alloc(m_l2alloc, m_l2align));
+			Entry *const l2block = reinterpret_cast<Entry *>(m_cache.alloc(m_l2alloc, m_l2align));
 			if (!l2block)
 				return false;
 
 			for (unsigned i = 0; L2_ALLOCATION > i; ++i)
 			{
-				void *const table = reinterpret_cast<uint8_t *>(l2block) + (block_bytes<drccodeptr>(1 << m_l2bits, m_l2align) * i);
-				m_l2blocks.emplace_back(reinterpret_cast<drccodeptr *>(table));
+				void *const table = reinterpret_cast<uint8_t *>(l2block) + (block_bytes<Entry>(1 << m_l2bits, m_l2align) * i);
+				m_l2blocks.emplace_back(reinterpret_cast<Entry *>(table));
 			}
 		}
 
 		m_base[mode][l1] = m_l2blocks[m_next_l2_block++];
-		std::fill_n(m_base[mode][l1], 1 << m_l2bits, m_nocodeptr);
+		std::fill_n(m_base[mode][l1], 1 << m_l2bits, encode(m_nocodeptr));
 	}
 
 	// set the new entry
 	uint32_t const l2 = (pc >> m_l2shift) & m_l2mask;
-	m_base[mode][l1][l2] = code;
+	m_base[mode][l1][l2] = encode(code);
 	return true;
 }
 
@@ -320,7 +327,8 @@ bool drc_hash_table::set_codeptr(uint32_t mode, uint32_t pc, drccodeptr code) no
 //  program counters.
 //-------------------------------------------------
 
-void drc_hash_table::invalidate_range(uint32_t pcstart, uint32_t pcend) noexcept
+template <typename Entry>
+void drc_hash_table_t<Entry>::invalidate_range(uint32_t pcstart, uint32_t pcend) noexcept
 {
 	// Sequences are hashed on their starting address, so a sequence at the start of this
 	// block may have crossed over from a previous block.  Back up the starting address by
@@ -338,12 +346,12 @@ void drc_hash_table::invalidate_range(uint32_t pcstart, uint32_t pcend) noexcept
 		while (true)
 		{
 			const uint32_t slotend = std::min<uint64_t>(uint64_t(pc) | ((uint32_t(1) << m_l1shift) - 1), pcend);
-			drccodeptr *const l2 = m_base[mode][(pc >> m_l1shift) & m_l1mask];
+			Entry *const l2 = m_base[mode][(pc >> m_l1shift) & m_l1mask];
 			if (l2 != m_emptyl2)
 			{
 				for (uint32_t p = pc; p <= slotend; p += uint32_t(1) << m_l2shift)
 				{
-					l2[(p >> m_l2shift) & m_l2mask] = m_nocodeptr;
+					l2[(p >> m_l2shift) & m_l2mask] = encode(m_nocodeptr);
 					if (p > 0xffff'ffff - (uint32_t(1) << m_l2shift))
 					{
 						break;
@@ -361,6 +369,10 @@ void drc_hash_table::invalidate_range(uint32_t pcstart, uint32_t pcend) noexcept
 	}
 }
 
+
+
+template class drc_hash_table_t<drccodeptr>;
+template class drc_hash_table_t<uint32_t>;  // MAME_SGI_HASH32
 
 
 //**************************************************************************

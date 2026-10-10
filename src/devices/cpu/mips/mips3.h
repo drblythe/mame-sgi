@@ -346,6 +346,9 @@ public:
 
 	void set_drc_cache_size(size_t bytes) { m_drc_cache.set_size(bytes); }
 	void set_icache_size(size_t icache_size) { c_icache_size = icache_size; }
+	// MAME_SGI_HASH32: use the DRC hash table with 32-bit entries (half the
+	// size; see drcbex64.cpp). Off by default, so other drivers keep stock.
+	void set_drc_hash32(bool enable) { m_drc_hash32 = enable; }
 	void set_dcache_size(size_t dcache_size) { c_dcache_size = dcache_size; }
 	void set_secondary_cache_line_size(uint8_t secondary_cache_line_size) { c_secondary_cache_line_size = secondary_cache_line_size; }
 	void set_system_clock(uint32_t system_clock) { c_system_clock = system_clock; }
@@ -1250,6 +1253,7 @@ protected:
 	void recompile_study_record(uint32_t key_mode, offs_t pc, const opcode_desc *desclist);
 	void recompile_study_dump();
 	uint32_t m_recompile_study_serial = 0;
+	bool m_drc_hash32 = false;                  // MAME_SGI_HASH32, see set_drc_hash32()
 	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled
 	uint32_t m_compile_entry_mode = 0;
 	uint64_t m_stale_stub_container_recompiles = 0;

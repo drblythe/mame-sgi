@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <list>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -30,22 +31,27 @@ namespace drc {
 // ======================> drc_hash_table
 
 // common hash table management
-class drc_hash_table
+//
+// Entry is the type stored in the L2 tables: drccodeptr (stock, a host code
+// pointer) or uint32_t (MAME_SGI_HASH32: a 32-bit offset from a code base set
+// with set_code_base(), with ~0 meaning nullptr), which halves the L2 tables.
+template <typename Entry>
+class drc_hash_table_t
 {
 public:
 	// construction/destruction
-	drc_hash_table(
+	drc_hash_table_t(
 			drc_cache &cache,
 			uint32_t modes,
 			uint8_t addrbits,
 			uint8_t ignorebits,
 			uint32_t max_sequence_length,
-			std::align_val_t modealign = std::align_val_t(alignof(drccodeptr **)),
-			std::align_val_t l1align = std::align_val_t(alignof(drccodeptr **)),
-			std::align_val_t l2align = std::align_val_t(alignof(drccodeptr *)));
+			std::align_val_t modealign = std::align_val_t(alignof(Entry **)),
+			std::align_val_t l1align = std::align_val_t(alignof(Entry **)),
+			std::align_val_t l2align = std::align_val_t(alignof(Entry *)));
 
 	// getters
-	drccodeptr ***base() const noexcept { return m_base; }
+	Entry ***base() const noexcept { return m_base; }
 	uint8_t l1bits() const noexcept { return m_l1bits; }
 	uint8_t l2bits() const noexcept { return m_l2bits; }
 	uint8_t l1shift() const noexcept { return m_l1shift; }
@@ -66,7 +72,29 @@ public:
 
 	// code pointer access
 	bool set_codeptr(uint32_t mode, uint32_t pc, drccodeptr code) noexcept;
-	drccodeptr get_codeptr(uint32_t mode, uint32_t pc) const noexcept { assert(mode < m_modes); return m_base[mode][(pc >> m_l1shift) & m_l1mask][(pc >> m_l2shift) & m_l2mask]; }
+	drccodeptr get_codeptr(uint32_t mode, uint32_t pc) const noexcept { assert(mode < m_modes); return decode(m_base[mode][(pc >> m_l1shift) & m_l1mask][(pc >> m_l2shift) & m_l2mask]); }
+	void set_code_base(drccodeptr base) noexcept { m_codebase = base; }
+
+	// L2 entry encoding
+	Entry encode(drccodeptr code) const noexcept
+	{
+		if constexpr (std::is_same_v<Entry, drccodeptr>)
+			return code;
+		else
+		{
+			if (!code)
+				return Entry(~Entry(0));
+			assert(code >= m_codebase && uint64_t(code - m_codebase) < uint64_t(Entry(~Entry(0))));
+			return Entry(code - m_codebase);
+		}
+	}
+	drccodeptr decode(Entry entry) const noexcept
+	{
+		if constexpr (std::is_same_v<Entry, drccodeptr>)
+			return entry;
+		else
+			return (entry == Entry(~Entry(0))) ? nullptr : (m_codebase + entry);
+	}
 	bool code_exists(uint32_t mode, uint32_t pc) const noexcept { return get_codeptr(mode, pc) != m_nocodeptr; }
 	void invalidate_range(uint32_t pcstart, uint32_t pcend) noexcept;
 
@@ -74,8 +102,8 @@ private:
 	static constexpr unsigned L1_ALLOCATION = 2;
 	static constexpr unsigned L2_ALLOCATION = 4;
 
-	std::vector<drccodeptr **> m_l1blocks;
-	std::vector<drccodeptr *> m_l2blocks;
+	std::vector<Entry **> m_l1blocks;
+	std::vector<Entry *> m_l2blocks;
 	std::vector<bool> m_invariant_modes;
 	uint32_t m_next_l1_block;
 	uint32_t m_next_l2_block;
@@ -87,6 +115,7 @@ private:
 	std::align_val_t const  m_l1align;              // desired alignment for L1 tables
 	std::align_val_t const  m_l2align;              // desired alignment for L2 tables
 	drccodeptr              m_nocodeptr;            // pointer to code which will handle missing entries
+	drccodeptr              m_codebase = nullptr;   // base for 32-bit L2 entries (MAME_SGI_HASH32)
 	uint32_t const          m_modes;                // number of modes supported
 	uint32_t const          m_max_sequence_length;  // maximum length in bytes of a generated sequence
 
@@ -97,12 +126,16 @@ private:
 	offs_t const            m_l1mask;               // mask to apply after shifting
 	offs_t const            m_l2mask;               // mask to apply after shifting
 
-	drccodeptr *** const    m_base;                 // pointer to the L1 table for each mode
-	drccodeptr ** const     m_emptyl1;              // pointer to empty L1 hash table
-	drccodeptr * const      m_emptyl2;              // pointer to empty L2 hash table
+	Entry *** const         m_base;                 // pointer to the L1 table for each mode
+	Entry ** const          m_emptyl1;              // pointer to empty L1 hash table
+	Entry * const           m_emptyl2;              // pointer to empty L2 hash table
 	std::size_t const       m_l1alloc;              // bytes to allocate for L1 tables
 	std::size_t const       m_l2alloc;              // bytes to allocate for L2 tables
 };
+
+
+using drc_hash_table = drc_hash_table_t<drccodeptr>;
+using drc_hash_table32 = drc_hash_table_t<uint32_t>;  // MAME_SGI_HASH32
 
 
 // ======================> drc_map_variables

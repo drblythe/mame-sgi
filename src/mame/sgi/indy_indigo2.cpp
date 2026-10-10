@@ -735,6 +735,7 @@ void ip24_state::indy_5015(machine_config &config)
 	R5000BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x8000);
+	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x8000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 }
@@ -746,6 +747,7 @@ void ip24_state::indy_4613(machine_config &config)
 	R4600BE(config, m_maincpu, 2 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
+	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 }
@@ -757,6 +759,7 @@ void ip24_state::indy_4610(machine_config &config)
 	R4600BE(config, m_maincpu, 2 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
+	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 }
@@ -767,6 +770,7 @@ void ip22_state::indigo2_4415(machine_config &config)
 	R4400BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
+	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip22_state::ip22_map);
 
