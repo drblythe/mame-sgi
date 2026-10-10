@@ -199,6 +199,7 @@ const options_entry emu_options::s_option_entries[] =
 	{ OPTION_DRC,                                        "1",         core_options::option_type::BOOLEAN,    "enable DRC CPU cores if available" },
 	{ OPTION_DRC_RWX,                                    "1",         core_options::option_type::BOOLEAN,    "allow DRC to use writable executable pages if supported" },
 	{ OPTION_DRC_USE_C,                                  "0",         core_options::option_type::BOOLEAN,    "force DRC to use C backend" },
+	{ OPTION_DRC_CACHE_MB "(0-1024)",                    "0",         core_options::option_type::INTEGER,    "DRC code cache size in MB for CPUs that support it (0 = the CPU's default)" },   // MAME_SGI_DRC_CACHE_OPTION
 	{ OPTION_DRC_LOG_UML,                                "0",         core_options::option_type::BOOLEAN,    "write DRC UML disassembly log" },
 	{ OPTION_DRC_LOG_NATIVE,                             "0",         core_options::option_type::BOOLEAN,    "write DRC native disassembly log" },
 	{ OPTION_BIOS,                                       nullptr,     core_options::option_type::STRING,     "select the system BIOS to use" },

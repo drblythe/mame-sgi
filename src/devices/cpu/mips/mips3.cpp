@@ -263,6 +263,18 @@ void mame_sgi_mxcsr_diag_check(const char *checkpoint);
 // journal.md 2026-08-08 for the full A/B.
 #define DRC_CACHE_SIZE              (128 * 1024 * 1024)
 
+// MAME_SGI_DRC_CACHE_OPTION: -drc_cache_mb (command line, mame.ini or a
+// per-system ini) overrides DRC_CACHE_SIZE at startup. Clamped to
+// 32MB-1GB: generated code reaches internal state relative to RBP, which
+// is limited to +/-2GB across the whole cache.
+static size_t drc_cache_bytes(const machine_config &mconfig)
+{
+	int const mb = mconfig.options().drc_cache_mb();
+	if (mb <= 0)
+		return DRC_CACHE_SIZE;
+	return size_t(std::clamp(mb, 32, 1024)) * 1024 * 1024;
+}
+
 
 
 static const uint8_t fcc_shift[8] = { 23, 25, 26, 27, 28, 29, 30, 31 };
@@ -360,7 +372,7 @@ mips3_device::mips3_device(const machine_config &mconfig, device_type type, cons
 	, c_secondary_cache_line_size(0)
 	, m_fastram_select(0)
 	, m_debugger_temp(0)
-	, m_drc_cache(DRC_CACHE_SIZE + sizeof(internal_mips3_state) + 0x800000)
+	, m_drc_cache(drc_cache_bytes(mconfig) + sizeof(internal_mips3_state) + 0x800000)
 	, m_drcuml(nullptr)
 	, m_drcfe(nullptr)
 	, m_drcoptions(0)

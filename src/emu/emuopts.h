@@ -167,6 +167,7 @@
 #define OPTION_DRC                  "drc"
 #define OPTION_DRC_RWX              "drc_rwx"
 #define OPTION_DRC_USE_C            "drc_use_c"
+#define OPTION_DRC_CACHE_MB         "drc_cache_mb"   // MAME_SGI_DRC_CACHE_OPTION
 #define OPTION_DRC_LOG_UML          "drc_log_uml"
 #define OPTION_DRC_LOG_NATIVE       "drc_log_native"
 #define OPTION_BIOS                 "bios"
@@ -451,6 +452,7 @@ public:
 	bool drc() const { return bool_value(OPTION_DRC); }
 	bool drc_rwx() const { return bool_value(OPTION_DRC_RWX); }
 	bool drc_use_c() const { return bool_value(OPTION_DRC_USE_C); }
+	int drc_cache_mb() const { return int_value(OPTION_DRC_CACHE_MB); }   // MAME_SGI_DRC_CACHE_OPTION
 	bool drc_log_uml() const { return bool_value(OPTION_DRC_LOG_UML); }
 	bool drc_log_native() const { return bool_value(OPTION_DRC_LOG_NATIVE); }
 	const char *bios() const { return value(OPTION_BIOS); }
