@@ -388,6 +388,12 @@
 extern bool g_mame_sgi_lwc1_target_block;
 #endif
 
+// Query the host cache line size once, when the back-end is constructed,
+// instead of at the start of every generate() call. On Linux,
+// osd_get_cache_line_size() opens, parses and closes a sysfs file, which
+// made it a large share of the time spent compiling a block.
+#define MAME_SGI_DRC_LINESIZE_ONCE
+
 // TEMPORARY diagnostic (2026-09-08, task #84): the narrow, targeted
 // follow-up to the broad global $v0 shadow-divergence detector
 // (mips3drc.cpp's MAME_SGI_TASK84_V0_SHADOW_DIAG) - that one never caught
@@ -866,6 +872,9 @@ private:
 	near_state &            m_near;
 
 	bool                    m_invariant_block;      // are we generating an invariant block?
+#ifdef MAME_SGI_DRC_LINESIZE_ONCE
+	uintptr_t               m_linemask;             // host cache line size - 1, for aligning block starts
+#endif
 
 	resolved_member_function m_debug_cpu_instruction_hook;
 	resolved_member_function m_drcmap_get_value;
@@ -1343,6 +1352,9 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	, m_endofblock(nullptr)
 	, m_near(*cache.alloc_near<near_state>())
 	, m_invariant_block(false)
+#ifdef MAME_SGI_DRC_LINESIZE_ONCE
+	, m_linemask(63)
+#endif
 {
 	// MAME_SGI_HASH32: construct the hash table the CPU asked for
 	if (flags & DRCUML_OPTION_HASH32)
@@ -1354,6 +1366,24 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	const auto &x86_features = CpuInfo::host().features().x86();
 	m_lzcnt = x86_features.has_lzcnt();
 	m_bmi = x86_features.has_bmi();
+
+#ifdef MAME_SGI_DRC_LINESIZE_ONCE
+	// block starts are aligned to a cache line (see generate())
+	{
+		auto [err, linesize] = osd_get_cache_line_size();
+		if (err)
+		{
+			osd_printf_verbose("drcbe_x64(%s): Error getting cache line size (%s:%d %s), assuming 64 bytes\n", m_device.tag(), err.category().name(), err.value(), err.message());
+		}
+		else
+		{
+			assert(linesize);
+			m_linemask = linesize - 1;
+			for (unsigned shift = 1; m_linemask & (m_linemask + 1); ++shift)
+				m_linemask |= m_linemask >> shift;
+		}
+	}
+#endif
 
 	// build up necessary arrays
 	constexpr u32 sse_control[4] =
@@ -1842,6 +1872,9 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 #endif
 
 	// compute the base by aligning the cache top to a cache line
+#ifdef MAME_SGI_DRC_LINESIZE_ONCE
+	uintptr_t const linemask = m_linemask;
+#else
 	auto [err, linesize] = osd_get_cache_line_size();
 	uintptr_t linemask = 63;
 	if (err)
@@ -1855,6 +1888,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 		for (unsigned shift = 1; linemask & (linemask + 1); ++shift)
 			linemask |= linemask >> shift;
 	}
+#endif
 	x86code *dst = (x86code *)(uintptr_t(m_cache.top() + linemask) & ~linemask);
 
 	CodeHolder ch;
