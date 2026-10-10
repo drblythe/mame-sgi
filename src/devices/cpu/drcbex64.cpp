@@ -224,6 +224,7 @@
 #include <string>
 #include <sstream>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -393,6 +394,11 @@ extern bool g_mame_sgi_lwc1_target_block;
 // osd_get_cache_line_size() opens, parses and closes a sysfs file, which
 // made it a large share of the time spent compiling a block.
 #define MAME_SGI_DRC_LINESIZE_ONCE
+
+// Map UML code labels to asmjit labels with a per-block table instead of
+// formatting a "PC$<n>" name and looking it up by name for every LABEL
+// and JMP. Same labels, bound the same way; only the lookup changes.
+#define MAME_SGI_DRC_LABEL_MAP
 
 // TEMPORARY diagnostic (2026-09-08, task #84): the narrow, targeted
 // follow-up to the broad global $v0 shadow-divergence detector
@@ -874,6 +880,10 @@ private:
 	bool                    m_invariant_block;      // are we generating an invariant block?
 #ifdef MAME_SGI_DRC_LINESIZE_ONCE
 	uintptr_t               m_linemask;             // host cache line size - 1, for aligning block starts
+#endif
+#ifdef MAME_SGI_DRC_LABEL_MAP
+	std::unordered_map<u32, Label> m_code_labels;   // UML code label -> asmjit label, for the block being generated
+	Label code_label(Assembler &a, uml::code_label label);
 #endif
 
 	resolved_member_function m_debug_cpu_instruction_hook;
@@ -1763,6 +1773,11 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 			throw emu_fatalerror("Error resolving debugger instruction hook member function!\n");
 	}
 
+#ifdef MAME_SGI_DRC_LABEL_MAP
+	// asmjit labels belong to one CodeHolder, so they never outlive a block
+	m_code_labels.clear();
+#endif
+
 	// tell all of our utility objects that a block is beginning
 	with_hash([&] (auto &h) { h.block_begin(block, instlist, numinst); });
 	m_map.block_begin(block);
@@ -2527,6 +2542,24 @@ void drcbe_x64::op_hash(Assembler &a, const instruction &inst)
 //  op_label - process a LABEL opcode
 //-------------------------------------------------
 
+#ifdef MAME_SGI_DRC_LABEL_MAP
+//-------------------------------------------------
+//  code_label - the asmjit label for a UML code
+//  label in the block being generated, created on
+//  first use
+//-------------------------------------------------
+
+Label drcbe_x64::code_label(Assembler &a, uml::code_label label)
+{
+	auto const found = m_code_labels.find(label.label());
+	if (found != m_code_labels.end())
+		return found->second;
+	Label const created = a.new_label();
+	m_code_labels.emplace(label.label(), created);
+	return created;
+}
+#endif
+
 void drcbe_x64::op_label(Assembler &a, const instruction &inst)
 {
 	assert_no_condition(inst);
@@ -2534,10 +2567,14 @@ void drcbe_x64::op_label(Assembler &a, const instruction &inst)
 	assert(inst.numparams() == 1);
 	assert(inst.param(0).is_code_label());
 
+#ifdef MAME_SGI_DRC_LABEL_MAP
+	Label const label = code_label(a, inst.param(0).label());
+#else
 	std::string labelName = util::string_format("PC$%x", inst.param(0).label());
 	Label label = a.label_by_name(labelName.c_str());
 	if (!label.is_valid())
 		label = a.new_named_label(labelName.c_str());
+#endif
 
 	// register the current pointer for the label
 	a.bind(label);
@@ -2840,10 +2877,14 @@ void drcbe_x64::op_jmp(Assembler &a, const instruction &inst)
 	const parameter &labelp = inst.param(0);
 	assert(labelp.is_code_label());
 
+#ifdef MAME_SGI_DRC_LABEL_MAP
+	Label const jmptarget = code_label(a, labelp.label());
+#else
 	std::string labelName = util::string_format("PC$%x", labelp.label());
 	Label jmptarget = a.label_by_name(labelName.c_str());
 	if (!jmptarget.is_valid())
 		jmptarget = a.new_named_label(labelName.c_str());
+#endif
 
 	if (inst.condition() == uml::COND_ALWAYS)
 		a.jmp(jmptarget);                                                               // jmp   target
