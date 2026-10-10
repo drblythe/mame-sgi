@@ -27,6 +27,10 @@ public:
 	void write(offs_t offset, uint16_t data);
 	uint16_t read(offs_t offset);
 
+	// Unpopulated chip (e.g. Challenge S): the revision register reads as a
+	// floating bus, whose bit 15 tells the PROM and IRIX there is no audio.
+	void set_absent(bool absent) { m_absent = absent; }
+
 	attotime get_rate(const uint32_t channel);
 
 	void set_right_volume(uint8_t vol) { m_rdac->set_output_gain(ALL_OUTPUTS, vol / 255.0f); }
@@ -106,6 +110,7 @@ protected:
 	uint16_t m_curr_dac = 0;
 
 	static const uint32_t s_channel_pair[4];
+	bool m_absent = false;
 };
 
 DECLARE_DEVICE_TYPE(SGI_HAL2, hal2_device)

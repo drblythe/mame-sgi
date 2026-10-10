@@ -63,6 +63,7 @@
 #include "bus/gio64/gio64.h"
 #include "bus/nscsi/cd.h"
 #include "bus/nscsi/hd.h"
+#include "bus/pc_kbd/pc_kbdc.h"
 #include "cpu/mips/mips3.h"
 #include "machine/ds1386.h"
 #include "machine/edlc.h"
@@ -138,6 +139,8 @@ public:
 	void ip24_base(machine_config &config, uint32_t system_clock);
 	void ip24(machine_config &config, uint32_t system_clock);
 	void indy_5015(machine_config &config);
+	void challenge_s(machine_config &config);
+	void init_challenge_s();
 	void indy_4613(machine_config &config);
 	void indy_4610(machine_config &config);
 
@@ -198,6 +201,7 @@ protected:
 	required_device<ioc2_device> m_ioc2;
 	required_device<ds1386_device> m_rtc;
 	optional_device<vino_device> m_vino;
+	bool m_vino_fitted = true;   // false for boards without video input (challenge_s)
 	optional_device<saa7191_device> m_dmsd;
 	optional_device<gio64_device> m_gio64;
 	optional_device<gio64_slot_device> m_gio64_gfx;
@@ -289,7 +293,12 @@ void ip24_state::ip24_base_map(address_map &map)
 void ip24_state::ip24_map(address_map &map)
 {
 	ip24_base_map(map);
-	map(0x00080000, 0x0009ffff).rw(m_vino, FUNC(vino_device::read), FUNC(vino_device::write));
+	// decided at config time: device finders are not resolved yet when
+	// address maps are built, so m_vino.found() would always be false here
+	if (m_vino_fitted)
+		map(0x00080000, 0x0009ffff).rw(m_vino, FUNC(vino_device::read), FUNC(vino_device::write));
+	else
+		map(0x00080000, 0x0009ffff).rw(FUNC(ip24_state::bus_error_r<0x00080000>), FUNC(ip24_state::bus_error_w<0x00080000>));
 }
 
 void ip24_state::pio0_map(address_map &map)
@@ -671,6 +680,93 @@ void ip24_state::indy_5015(machine_config &config)
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 }
 
+// Factory NVRAM default for the Challenge S, used only when no nvram file
+// exists: the PROM environment with console=d1 (serial port 1) and AutoLoad
+// on. Without it the PROM finds no keyboard and stops at the System
+// Maintenance Menu instead of booting; with console=d1 it skips the keyboard
+// probe. The base image is a PROM-written NVRAM from this project;
+// init_challenge_s() sets console explicitly and recomputes the checksum,
+// so fields can be changed there. Bytes below 0xe are clock registers and
+// are ignored (ds1386_device::nvram_default()).
+static const uint8_t challenge_s_default_rtc[0x140] = {
+	0x07, 0x45, 0x26, 0x00, 0x01, 0x00, 0x07, 0x00, 0x10, 0x10, 0x86, 0x84, 0x10, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x4d, 0x08, 0x64, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x6d, 0x65, 0x6d, 0x00, 0x6e, 0x75, 0x6c, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6b, 0x73, 0x63,
+	0x00, 0x00, 0x00, 0x00, 0x73, 0x63, 0x73, 0x69, 0x28, 0x25, 0x64, 0x29, 0x64, 0x69, 0x73, 0x6b,
+	0x28, 0x25, 0x64, 0x29, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x6d, 0x65, 0x6d, 0x00, 0x6e, 0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x6d, 0x65, 0x6d, 0x00, 0x6e, 0x75, 0x6c, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6b,
+	0x73, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x39, 0x36, 0x30, 0x30, 0x00, 0x30, 0x50, 0x53, 0x54, 0x38, 0x50, 0x44,
+	0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6d, 0x65,
+	0x6d, 0x00, 0x6e, 0x75, 0x6c, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x64, 0x6b, 0x73, 0x63, 0x00, 0x00,
+	0x00, 0x00, 0x73, 0x63, 0x73, 0x69, 0x28, 0x25, 0x64, 0x29, 0x64, 0x69, 0x73, 0x6b, 0x28, 0x25,
+	0x64, 0x29, 0x59, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6e, 0x69,
+	0x74, 0x5f, 0x65, 0x6e, 0x76, 0x28, 0x00, 0x00, 0x00, 0x00, 0x69, 0x6e, 0x69, 0x74, 0x5f, 0x65,
+	0x6e, 0x76, 0x28, 0x29, 0x0d, 0x0a, 0x00, 0x00, 0x38, 0x30, 0x00, 0x00, 0x79, 0x00, 0x00, 0x79,
+	0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x08, 0x00, 0x69, 0x12, 0x34, 0x56,
+};
+
+void ip24_state::init_challenge_s()
+{
+	uint8_t *const rtc = memregion("rtc")->base();
+	std::copy(std::begin(challenge_s_default_rtc), std::end(challenge_s_default_rtc), rtc);
+
+	// PROM environment block (IRIX sys/IP22nvram.h layout) at DS1386 offset
+	// 0x40: checksum, layout revision, then the 2-byte console variable
+	constexpr unsigned ENV = 0x40, ENV_LEN = 256, OFF_CONSOLE = 2;
+	rtc[ENV + OFF_CONSOLE + 0] = 'd';
+	rtc[ENV + OFF_CONSOLE + 1] = '1';
+
+	// recompute the checksum the PROM verifies (libsk dallas.c nvchecksum():
+	// XOR every byte but the checksum into a seed of 0xa5, rotating the
+	// running value left one bit after each odd index)
+	uint8_t sum = 0xa5;
+	for (unsigned i = 0; i < ENV_LEN; i++)
+	{
+		if (i != 0)
+			sum ^= rtc[ENV + i];
+		if (i & 1)
+			sum = uint8_t((sum << 1) | (sum >> 7));
+	}
+	rtc[ENV] = sum;
+}
+
+// Challenge S (IP24 server, SGI 007-2314-005): the Indy system board with
+// no graphics board, keyboard or mouse; the console is serial port 1. This
+// models the 180MHz R5000SC module. The CPU-to-system-bus ratio is assumed
+// to be 3:1 as for the 150MHz R5000 (60MHz system clock). Its 512KB
+// secondary cache is not modelled yet. The slots stay configurable
+// (-gio64_gfx xl24 etc. add the hardware back); RAM comes from the SIMMS
+// menu (default 128MB, 16-256MB on real hardware). Audio and video input are
+// not fitted on this board.
+void ip24_state::challenge_s(machine_config &config)
+{
+	constexpr uint32_t system_clock = 60'000'000;
+	ip24(config, system_clock);
+	R5000BE(config, m_maincpu, 3 * system_clock);
+	m_maincpu->set_system_clock(system_clock);
+	m_maincpu->set_icache_size(0x8000);
+	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
+	m_maincpu->set_dcache_size(0x8000);
+	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
+
+	subdevice<gio64_slot_device>("gio64_gfx")->set_default_option(nullptr);
+	subdevice<pc_kbdc_device>("ioc2:kbd")->set_default_option(nullptr);
+	subdevice<pc_kbdc_device>("ioc2:aux")->set_default_option(nullptr);
+
+	// no audio or video input: HAL2 reads as absent; Vino and its SAA7191
+	// decoder are not fitted, so their address range bus-errors
+	m_hal2->set_absent(true);
+	m_vino_fitted = false;
+	config.device_remove("vino");
+	config.device_remove("dmsd");
+}
+
 void ip24_state::indy_4613(machine_config &config)
 {
 	constexpr uint32_t system_clock = 66'666'666;
@@ -795,6 +891,13 @@ ROM_START( indy_5015 )
 	INDY_BIOS_R5K
 ROM_END
 
+ROM_START( challenge_s )
+	ROM_REGION64_BE( 0x80000, "user1", 0 )
+	INDY_BIOS_R5K
+
+	ROM_REGION( 0x2000, "rtc", ROMREGION_ERASE00 )   // filled by init_challenge_s()
+ROM_END
+
 ROM_START( indigo2_4415 )
 	ROM_REGION64_BE( 0x80000, "user1", 0 )
 	ROM_SYSTEM_BIOS( 0, "e", "Version 5.3 Rev E R4X00 Jan 29, 1996" )
@@ -810,4 +913,5 @@ ROM_END
 COMP( 1993, indy_4610,    0,         0,      indy_4610,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 100MHz)",    MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND | MACHINE_NODEVICE_MICROPHONE )
 COMP( 1993, indy_4613,    indy_4610, 0,      indy_4613,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 133MHz)",    MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND | MACHINE_NODEVICE_MICROPHONE )
 COMP( 1996, indy_5015,    indy_4610, 0,      indy_5015,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R5000, 150MHz)",    MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND | MACHINE_NODEVICE_MICROPHONE )
+COMP( 1996, challenge_s,  indy_4610, 0,      challenge_s,  ip24, ip24_state, init_challenge_s, "Silicon Graphics Inc", "Challenge S (R5000SC, 180MHz)", MACHINE_IMPERFECT_SOUND | MACHINE_NODEVICE_MICROPHONE )
 COMP( 1993, indigo2_4415, 0,         0,      indigo2_4415, ip24, ip22_state, empty_init, "Silicon Graphics Inc", "Indigo2 (R4400, 150MHz)", MACHINE_NOT_WORKING )
