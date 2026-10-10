@@ -595,6 +595,7 @@ public:
 	virtual int execute(uml::code_handle &entry) override;
 	virtual void generate(drcuml_block &block, const uml::instruction *instlist, u32 numinst) override;
 	virtual bool hash_exists(u32 mode, u32 pc) const noexcept override;
+	virtual void hash_stats(hash_stats_t &out) const noexcept override;  // MAME_SGI_HASH_TABLE_STATS
 	virtual void hash_invalidate_range(u32 pcstart, u32 pcend) noexcept override;
 	virtual drccodeptr get_codeptr(u32 mode, u32 pc) const noexcept override;
 	virtual void get_info(drcbe_info &info) const noexcept override;
@@ -1947,6 +1948,12 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 //  hash_exists - return true if the given mode/pc
 //  exists in the hash table
 //-------------------------------------------------
+
+void drcbe_x64::hash_stats(hash_stats_t &out) const noexcept
+{
+	with_hash([&] (auto &h) { h.stats(out.modes, out.l2s, out.slices_by_l2bits, out.l1_allocated, out.l2_allocated, out.table_bytes); });
+}
+
 
 bool drcbe_x64::hash_exists(u32 mode, u32 pc) const noexcept
 {

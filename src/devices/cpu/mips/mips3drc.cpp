@@ -142,6 +142,14 @@
 // next to the TSV with .trace/.validate/.handler suffixes.
 // #define MAME_SGI_RECOMPILE_STUDY_DIAG
 
+// Diagnostic (2026-10-09, task #8): report the DRC hash table's footprint
+// just before every cache flush and at exit - populated dispatch modes and
+// L2 tables in use, split into shared keys (mode < 8) and per-ASID keys
+// (MAME_SGI_DISPATCH_MODE_ASID_FIX composites), plus the L1/L2 tables
+// allocated so far, which is the permanent drc_cache footprint the tables
+// cost (each table is 256KB). Cheap: runs a handful of times per boot.
+#define MAME_SGI_HASH_TABLE_STATS_DIAG
+
 // Repair blocks that embed a stale compiler_page_fault() stub.
 // describe_code() walks backwards as well as forwards from the compile pc,
 // so a block can embed stubs for instructions on a neighbouring page that
@@ -1171,6 +1179,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -1781,9 +1790,66 @@ void mips3_device::mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cyc
     regenerate static code
 -------------------------------------------------*/
 
+void mips3_device::report_hash_stats(char const *when)
+{
+	drcbe_interface::hash_stats_t st;
+	m_drcuml->hash_stats(st);
+	uint32_t shared_modes = 0, asid_modes = 0, shared_l2 = 0, asid_l2 = 0, asid_l2_max = 0;
+	uint32_t hist[5] = {};  // per-ASID mode L2 counts: 1, 2, 3-4, 5-8, >8
+	for (auto const &[mode, l2] : st.modes)
+	{
+		if (mode < 8)
+		{
+			shared_modes++;
+			shared_l2 += l2;
+		}
+		else
+		{
+			asid_modes++;
+			asid_l2 += l2;
+			asid_l2_max = std::max(asid_l2_max, l2);
+			hist[l2 <= 1 ? 0 : l2 == 2 ? 1 : l2 <= 4 ? 2 : l2 <= 8 ? 3 : 4]++;
+		}
+	}
+	osd_printf_info("MAME_SGI_HASH_TABLE_STATS (%s, flush_count=%u): shared modes=%u L2=%u | asid modes=%u L2=%u (max per mode %u; per-mode L2 1:%u 2:%u 3-4:%u 5-8:%u >8:%u) | allocated L1=%u L2=%u = %.1fMB\n",
+		when, m_drcuml->cache().flush_count(), shared_modes, shared_l2, asid_modes, asid_l2, asid_l2_max,
+		hist[0], hist[1], hist[2], hist[3], hist[4],
+		unsigned(st.l1_allocated), unsigned(st.l2_allocated), double(st.table_bytes) / (1024.0 * 1024.0));
+
+	// density of the L2 tables in use: entry points per 128KB slice, distinct
+	// 4KB pages holding entries, and where the slices are
+	uint64_t entries = 0, pages = 0;
+	uint32_t dens[5] = {};  // entries per L2: 1-8, 9-64, 65-512, 513-4096, >4096
+	std::map<std::pair<uint32_t, uint32_t>, std::array<uint32_t, 3>> region;  // (mode, pc>>24) -> L2s, entries, pages
+	std::set<std::pair<uint32_t, uint32_t>> mb;  // distinct (mode, 1MB region)
+	for (auto const &l : st.l2s)
+	{
+		entries += l[2];
+		pages += l[3];
+		dens[l[2] <= 8 ? 0 : l[2] <= 64 ? 1 : l[2] <= 512 ? 2 : l[2] <= 4096 ? 3 : 4]++;
+		auto &r = region[{ l[0], l[1] >> 24 }];
+		r[0]++; r[1] += l[2]; r[2] += l[3];
+		mb.insert({ l[0], l[1] >> 20 });
+	}
+	if (st.l2s.empty())
+		return;
+	osd_printf_info("MAME_SGI_HASH_TABLE_STATS density: %u L2s, %llu entries (%.1f per L2 of 32768), %llu distinct 4KB pages; L2s by entries 1-8:%u 9-64:%u 65-512:%u 513-4096:%u >4096:%u; distinct 1MB regions %u\n",
+		unsigned(st.l2s.size()), (unsigned long long)entries, double(entries) / st.l2s.size(), (unsigned long long)pages,
+		dens[0], dens[1], dens[2], dens[3], dens[4], unsigned(mb.size()));
+	osd_printf_info("MAME_SGI_HASH_TABLE_STATS slices needed by L2 size: 10b(4KB)=%llu 11b(8KB)=%llu 12b(16KB)=%llu 13b(32KB)=%llu 14b(64KB)=%llu 15b(128KB)=%llu\n",
+		(unsigned long long)st.slices_by_l2bits[0], (unsigned long long)st.slices_by_l2bits[1], (unsigned long long)st.slices_by_l2bits[2],
+		(unsigned long long)st.slices_by_l2bits[3], (unsigned long long)st.slices_by_l2bits[4], (unsigned long long)st.slices_by_l2bits[5]);
+	for (auto const &[k, r] : region)
+		osd_printf_info("MAME_SGI_HASH_TABLE_STATS region mode=%u pc=%02x000000: L2s=%u entries=%u pages=%u\n", k.first, k.second, r[0], r[1], r[2]);
+}
+
 void mips3_device::code_flush_cache()
 {
 	int mode;
+
+#ifdef MAME_SGI_HASH_TABLE_STATS_DIAG
+	report_hash_stats("before flush");
+#endif
 
 	/* empty the transient cache contents */
 	m_drcuml->reset();

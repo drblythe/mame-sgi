@@ -1252,6 +1252,7 @@ protected:
 	uint64_t m_recompile_study_totals[5][2] = {};
 	void recompile_study_record(uint32_t key_mode, offs_t pc, const opcode_desc *desclist);
 	void recompile_study_dump();
+	void report_hash_stats(char const *when);  // MAME_SGI_HASH_TABLE_STATS_DIAG
 	uint32_t m_recompile_study_serial = 0;
 	bool m_drc_hash32 = false;                  // MAME_SGI_HASH32, see set_drc_hash32()
 	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled

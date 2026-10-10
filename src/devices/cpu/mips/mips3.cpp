@@ -420,6 +420,7 @@ void mips3_device::device_stop()
 {
 	// MAME_SGI_RECOMPILE_STUDY_DIAG (mips3drc.cpp) - no-op unless populated.
 	recompile_study_dump();
+	report_hash_stats("exit");  // MAME_SGI_HASH_TABLE_STATS_DIAG (mips3drc.cpp); always cheap
 	if (m_stale_stub_container_recompiles)
 		osd_printf_info("MAME_SGI_STALE_STUB_FIX summary: container_recompiles=%llu\n", (unsigned long long)m_stale_stub_container_recompiles);
 

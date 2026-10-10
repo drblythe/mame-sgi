@@ -19,6 +19,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -156,6 +157,11 @@ public:
 	virtual int execute(uml::code_handle &entry) = 0;
 	virtual void generate(drcuml_block &block, uml::instruction const *instlist, u32 numinst) = 0;
 	virtual bool hash_exists(u32 mode, u32 pc) const noexcept = 0;
+	// MAME_SGI_HASH_TABLE_STATS: L2 tables in use per populated mode, plus the
+	// number of L1/L2 tables allocated so far (the permanent footprint).
+	// Backends without it report nothing.
+	struct hash_stats_t { std::vector<std::pair<u32, u32>> modes; std::vector<std::array<u32, 4>> l2s; std::array<u64, 6> slices_by_l2bits{}; std::size_t l1_allocated = 0, l2_allocated = 0, table_bytes = 0; };  // l2s: mode, first pc of the slice, entries, distinct 4KB pages
+	virtual void hash_stats(hash_stats_t &out) const noexcept { }
 	virtual void hash_invalidate_range(u32 pcstart, u32 pcend) noexcept = 0;
 	// MAME_SGI_DRC_GET_CODEPTR_ACCESSOR (permanent, no #ifdef): exposes
 	// drc_hash_table's existing internal get_codeptr() lookup (drcbeut.h)
@@ -211,6 +217,7 @@ public:
 	// back-end interface
 	void get_backend_info(drcbe_info &info) const { m_beintf->get_info(info); }
 	bool hash_exists(u32 mode, u32 pc) const { return m_beintf->hash_exists(mode, pc); }
+	void hash_stats(drcbe_interface::hash_stats_t &out) const { m_beintf->hash_stats(out); }  // MAME_SGI_HASH_TABLE_STATS
 	void hash_invalidate_range(u32 pcstart, u32 pcend) { m_beintf->hash_invalidate_range(pcstart, pcend); }
 	drccodeptr get_codeptr(u32 mode, u32 pc) const { return m_beintf->get_codeptr(mode, pc); }  // MAME_SGI_DRC_GET_CODEPTR_ACCESSOR
 	void generate(drcuml_block &block, uml::instruction *instructions, u32 count) { m_beintf->generate(block, instructions, count); }

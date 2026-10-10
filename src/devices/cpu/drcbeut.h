@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <list>
+#include <array>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -63,6 +64,8 @@ public:
 
 	// set up and configuration
 	bool reset() noexcept;
+	// MAME_SGI_HASH_TABLE_STATS: see drcbe_interface::hash_stats
+	void stats(std::vector<std::pair<uint32_t, uint32_t>> &modes, std::vector<std::array<uint32_t, 4>> &l2s, std::array<uint64_t, 6> &slices_by_l2bits, std::size_t &l1_allocated, std::size_t &l2_allocated, std::size_t &table_bytes) const noexcept;
 	void set_default_codeptr(drccodeptr code) noexcept;
 	bool populate_mode(uint32_t mode) noexcept;
 

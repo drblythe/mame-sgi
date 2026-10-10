@@ -190,6 +190,54 @@ bool drc_hash_table_t<Entry>::populate_mode(uint32_t mode) noexcept
 //-------------------------------------------------
 
 template <typename Entry>
+void drc_hash_table_t<Entry>::stats(std::vector<std::pair<uint32_t, uint32_t>> &modes, std::vector<std::array<uint32_t, 4>> &l2s, std::array<uint64_t, 6> &slices_by_l2bits, std::size_t &l1_allocated, std::size_t &l2_allocated, std::size_t &table_bytes) const noexcept
+{
+	// MAME_SGI_HASH_TABLE_STATS
+	for (uint32_t mode = 0; mode < m_modes; ++mode)
+	{
+		if (m_base[mode] == m_emptyl1)
+			continue;
+		uint32_t l2 = 0;
+		for (uint32_t i = 0; i < (1U << m_l1bits); ++i)
+		{
+			if (m_base[mode][i] == m_emptyl2)
+				continue;
+			++l2;
+			uint32_t entries = 0, pages = 0, lastpage = ~0U;
+			uint32_t lastsub[6] = { ~0U, ~0U, ~0U, ~0U, ~0U, ~0U };
+			for (uint32_t j = 0; j < (1U << m_l2bits); ++j)
+			{
+				if (m_base[mode][i][j] == encode(m_nocodeptr))
+					continue;
+				++entries;
+				// distinct sub-slices this L2 would need with a 10..15-bit L2
+				for (unsigned b = 0; b < 6; ++b)
+				{
+					uint32_t const sub = j >> (10 + b);
+					if (sub != lastsub[b])
+					{
+						lastsub[b] = sub;
+						++slices_by_l2bits[b];
+					}
+				}
+				uint32_t const page = j >> (12 - m_l2shift);
+				if (page != lastpage)
+				{
+					++pages;
+					lastpage = page;
+				}
+			}
+			l2s.push_back({ mode, i << m_l1shift, entries, pages });
+		}
+		modes.emplace_back(mode, l2);
+	}
+	l1_allocated = m_l1blocks.size();
+	l2_allocated = m_l2blocks.size();
+	table_bytes = l1_allocated * block_bytes<Entry *>(1 << m_l1bits, m_l1align) + l2_allocated * block_bytes<Entry>(1 << m_l2bits, m_l2align);
+}
+
+
+template <typename Entry>
 void drc_hash_table_t<Entry>::block_begin(drcuml_block &block, const uml::instruction *instlist, uint32_t numinst)
 {
 	// before generating code, pre-allocate any hash entries; we do this by setting dummy hash values
