@@ -100,6 +100,7 @@ drc_cache::drc_cache(std::size_t bytes) noexcept
 	, m_invargen(false)
 	, m_max_temporary(0)
 	, m_flush_count(0)
+	, m_generation(0)
 #if defined(MAME_DEBUG)
 	, m_near_allocated(0)
 	, m_near_padding(0)
@@ -267,6 +268,7 @@ void drc_cache::flush() noexcept
 	// just reset the top back to the base and re-seed
 	m_max_temporary = std::max<std::size_t>(m_max_temporary, m_top - m_invartop);
 	++m_flush_count;
+	++m_generation;
 	m_top = m_invartop;
 }
 

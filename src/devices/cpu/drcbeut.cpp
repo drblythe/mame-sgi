@@ -24,6 +24,13 @@
 // scan-distance-dominated) - then disabled again below, as intended.
 // #define MAME_SGI_GETVALUE_SCAN_DIAG
 
+// Memoise drc_map_variables::get_value(). Each call (the RECOVER opcode,
+// used by exception handlers to recover the guest PC and cycle count)
+// otherwise scans forward from the code pointer for the block's map data
+// and walks it, and exception-heavy guests make that a measurable share of
+// host time. See the value_memo comment in drcbeut.h.
+#define MAME_SGI_RECOVER_MEMO
+
 #include "emu.h"
 #include "drcbeut.h"
 
@@ -436,6 +443,9 @@ drc_map_variables::drc_map_variables(drc_cache &cache, uint64_t uniquevalue) :
 	m_uniquevalue(uniquevalue)
 {
 	std::fill(std::begin(m_mapvalue), std::end(m_mapvalue), 0);
+#ifdef MAME_SGI_RECOVER_MEMO
+	m_value_memo = std::make_unique<value_memo []>(size_t(1) << VALUE_MEMO_BITS);
+#endif
 }
 
 
@@ -445,6 +455,9 @@ drc_map_variables::drc_map_variables(drc_cache &cache, uint64_t uniquevalue) :
 
 drc_map_variables::~drc_map_variables()
 {
+	if (m_value_memo_hits || m_value_memo_misses)
+		osd_printf_verbose("drc_map_variables: get_value memo %llu hits, %llu misses\n",
+				(unsigned long long)m_value_memo_hits, (unsigned long long)m_value_memo_misses);
 }
 
 
@@ -593,6 +606,22 @@ uint32_t drc_map_variables::get_value(drccodeptr codebase, uint32_t mapvar) cons
 	assert((mapvar >= MAPVAR_M0) && (mapvar < MAPVAR_END));
 	mapvar -= MAPVAR_M0;
 
+#ifdef MAME_SGI_RECOVER_MEMO
+	value_memo *memo = nullptr;
+	if (m_value_memo)
+	{
+		uintptr_t const key = uintptr_t(codebase);
+		unsigned const index = unsigned((key ^ (key >> VALUE_MEMO_BITS) ^ (mapvar * 0x9e3779b1U)) & ((1U << VALUE_MEMO_BITS) - 1));
+		memo = &m_value_memo[index];
+		if ((memo->codebase == codebase) && (memo->mapvar == mapvar) && (memo->generation == m_cache.generation()))
+		{
+			m_value_memo_hits++;
+			return memo->value;
+		}
+		m_value_memo_misses++;
+	}
+#endif
+
 	// get an aligned pointer to start scanning
 	auto curscan = reinterpret_cast<uint64_t const *>((uintptr_t(codebase) | 7) + 1);
 	auto const endscan = reinterpret_cast<uint64_t const *>(m_cache.top());
@@ -657,6 +686,15 @@ uint32_t drc_map_variables::get_value(drccodeptr codebase, uint32_t mapvar) cons
 	}
 	if (LOG_RECOVER)
 		printf("recover %d @ %p = %08X\n", mapvar, codebase, result);
+#ifdef MAME_SGI_RECOVER_MEMO
+	if (memo)
+	{
+		memo->codebase = codebase;
+		memo->generation = m_cache.generation();
+		memo->mapvar = mapvar;
+		memo->value = result;
+	}
+#endif
 	return result;
 }
 

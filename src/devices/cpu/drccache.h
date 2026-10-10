@@ -55,6 +55,7 @@ public:
 	drccodeptr near() const { return m_near; }
 	drccodeptr top() const { return m_top; }
 	uint32_t flush_count() const { return m_flush_count; }  // task #8 standing feature - see mips3drc.cpp's code_compile_block() for the full rationale
+	uint64_t generation() const { return m_generation; }    // bumped by every flush, never reset: code addresses are only reused across generations
 
 	// pointer checking
 	bool contains_pointer(const void *ptr) const { return ((drccodeptr)ptr >= m_near && (drccodeptr)ptr < m_near + m_size); }
@@ -186,6 +187,7 @@ private:
 	// stats
 	std::size_t m_max_temporary;
 	uint32_t    m_flush_count;
+	uint64_t    m_generation;
 #if defined(MAME_DEBUG)
 	uint32_t    m_near_allocated;
 	uint32_t    m_near_padding;

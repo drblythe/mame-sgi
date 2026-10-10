@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <list>
+#include <memory>
 #include <array>
 #include <type_traits>
 #include <utility>
@@ -175,6 +176,22 @@ private:
 	uint32_t                m_mapvalue[uml::MAPVAR_END - uml::MAPVAR_M0]; // array of current values
 	map_entry_vector        m_entry_list;       // list of entries
 	std::vector<uint32_t>   m_out_temp;         // buffer for building output
+
+	// get_value() results, direct-mapped by (code pointer, map variable).
+	// A result depends only on the code and map data at that address, which
+	// stay unchanged until the cache is flushed, so entries carry the cache
+	// generation they were computed in.
+	struct value_memo
+	{
+		drccodeptr      codebase = nullptr;
+		uint64_t        generation = 0;
+		uint32_t        mapvar = 0;
+		uint32_t        value = 0;
+	};
+	static constexpr unsigned VALUE_MEMO_BITS = 16;
+	std::unique_ptr<value_memo []> m_value_memo;
+	mutable uint64_t        m_value_memo_hits = 0;
+	mutable uint64_t        m_value_memo_misses = 0;
 
 public:
 	// TEMPORARY diagnostic (2026-07-29): pure in-memory counters (no I/O,
