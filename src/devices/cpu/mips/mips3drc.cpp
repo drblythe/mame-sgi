@@ -142,6 +142,13 @@
 // next to the TSV with .trace/.validate/.handler suffixes.
 // #define MAME_SGI_RECOMPILE_STUDY_DIAG
 
+// TEMPORARY diagnostic (2026-10-10, task #128): when $MAME_SGI_SYSCALL_LOG
+// names a file, log every SYSCALL exception there - total cycles, ASID,
+// syscall number (v0) and a0-a3, plus the path string for calls whose
+// first or second argument is a path - to find what a guest process sleeps
+// in. Costs a C call per syscall when built in.
+// #define MAME_SGI_SYSCALL_LOG_DIAG
+
 // Diagnostic (2026-10-09, task #8): report the DRC hash table's footprint
 // just before every cache flush and at exit - populated dispatch modes and
 // L2 tables in use, split into shared keys (mode < 8) and per-ASID keys
@@ -2211,6 +2218,70 @@ void mips3_device::recompile_study_tlb_handler_probe()
 [[maybe_unused]] static void cfunc_recompile_study_tlb_handler_probe(void *param)
 {
 	((mips3_device *)param)->recompile_study_tlb_handler_probe();
+}
+
+void mips3_device::syscall_log_diag()
+{
+	static FILE *s_f = nullptr;
+	static bool s_init = false;
+	if (!s_init)
+	{
+		s_init = true;
+		if (char const *const p = getenv("MAME_SGI_SYSCALL_LOG"))
+		{
+			s_f = fopen(p, "w");
+			if (s_f)
+				setvbuf(s_f, nullptr, _IOFBF, 1 << 16);
+		}
+	}
+	if (!s_f)
+		return;
+	uint32_t const num = uint32_t(m_core->r[2]);
+	auto guest_string = [this] (uint64_t vaddr, char *out, size_t len)
+	{
+		size_t i = 0;
+		for (; i + 1 < len; i++)
+		{
+			offs_t a = offs_t(vaddr + i);
+			address_space *sp;
+			if (!memory_translate(AS_PROGRAM, device_memory_interface::TR_READ, a, sp))
+				break;
+			char const c = char(sp->read_byte(a));
+			if (!c)
+				break;
+			out[i] = (c >= 32 && c < 127) ? c : '.';
+		}
+		out[i] = 0;
+	};
+	char path[96] = "";
+	switch (num)
+	{
+	case 1005: case 1010: case 1011: case 1015: case 1018: case 1033: case 1059: case 1116: // open unlink execv chmod stat access execve readlink
+		guest_string(m_core->r[4], path, sizeof(path));
+		break;
+	case 1158: case 1159: // xstat lxstat: path in a1
+		guest_string(m_core->r[5], path, sizeof(path));
+		break;
+	}
+	// IRIX IP22 (32-bit kernel, 4KB pages): the PDA is at 0xffffa000 and
+	// pda_s.p_curuthread is the word at offset 20 - unique per live thread,
+	// which separates processes that end up sharing an ASID
+	uint32_t uthread = 0;
+	{
+		offs_t a = 0xffffa014;
+		address_space *sp;
+		if (memory_translate(AS_PROGRAM, device_memory_interface::TR_READ, a, sp))
+			uthread = sp->read_dword(a);
+	}
+	fprintf(s_f, "%llu %02x/%08x %u %llx %llx %llx %llx %s\n", (unsigned long long)total_cycles(),
+		uint32_t(m_core->cpr[0][COP0_EntryHi] & 0xff), uthread, num,
+		(unsigned long long)m_core->r[4], (unsigned long long)m_core->r[5],
+		(unsigned long long)m_core->r[6], (unsigned long long)m_core->r[7], path);
+}
+
+[[maybe_unused]] static void cfunc_syscall_log_diag(void *param)
+{
+	((mips3_device *)param)->syscall_log_diag();
 }
 
 void mips3_device::recompile_study_dump()
@@ -7716,6 +7787,14 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	/* add a global entry for this */
 	alloc_handle(*m_drcuml, exception_handle, name);
 	UML_HANDLE(block, *exception_handle);                                           // handle  name
+
+#ifdef MAME_SGI_SYSCALL_LOG_DIAG
+	if (exception == EXCEPTION_SYSCALL)
+	{
+		save_fast_iregs(block);
+		UML_CALLC(block, cfunc_syscall_log_diag, this);
+	}
+#endif
 
 #ifdef MAME_SGI_TASK84_DRC_EVENT_LOG
 	// See MAME_SGI_TASK84_DRC_EVENT_LOG's comment in mips3.h and

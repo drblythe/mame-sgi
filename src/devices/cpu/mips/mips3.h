@@ -1489,6 +1489,7 @@ public:
 	void recompile_study_validate_probe();
 	bool recompile_study_traced(uint32_t pc, bool near);
 	void recompile_study_tlb_handler_probe();
+	void syscall_log_diag();                    // MAME_SGI_SYSCALL_LOG_DIAG
 	void func_iclogspace_splhi_probe();
 	void func_iclogspace_splx_probe();
 	void func_interrupt_taken_probe();

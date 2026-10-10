@@ -34,6 +34,27 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
+// TEMPORARY diagnostic (2026-10-10, task #128): when $MAME_SGI_SCSI_LOG names
+// a file, log each command start (with the CDB for select-and-transfer) and
+// each interrupt raised or held back, with emulated time, to find a request
+// that never completes.
+// #define MAME_SGI_SCSI_LOG_DIAG
+
+#ifdef MAME_SGI_SCSI_LOG_DIAG
+static FILE *scsi_log_diag_file()
+{
+	static FILE *s_f = nullptr;
+	static bool s_init = false;
+	if (!s_init)
+	{
+		s_init = true;
+		if (char const *const p = getenv("MAME_SGI_SCSI_LOG"))
+			s_f = fopen(p, "w");
+	}
+	return s_f;
+}
+#endif
+
 // Cap on how many bytes' worth of cycles can be accumulated before a real
 // timer is forced regardless of eligibility - see MAME_SGI_SCSI_COARSE_
 // SCHEDULE's definition in the header. Unchanged from wd33c9x.cpp.
@@ -1002,6 +1023,17 @@ void nwd33c9x_device::determine_active_disk()
 void nwd33c9x_device::start_command()
 {
 	const uint8_t cc = m_regs[COMMAND] & COMMAND_CC;
+#ifdef MAME_SGI_SCSI_LOG_DIAG
+	if (FILE *const f = scsi_log_diag_file())
+	{
+		fprintf(f, "%.6f %s CMD cc=%02x dest=%02x", machine().time().as_double(), tag(), cc, m_regs[DESTINATION_ID]);
+		if (cc == COMMAND_CC_SELECT_TRANSFER || cc == COMMAND_CC_SELECT_ATN_TRANSFER)
+			for (int i = 0; i < 12; i++)
+				fprintf(f, " %02x", m_regs[CDB_1 + i]);
+		fprintf(f, "\n");
+		fflush(f);
+	}
+#endif
 
 	if (cc > COMMAND_CC_DISCONNECT && cc != COMMAND_CC_SET_IDI) {
 		m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_BSY;
@@ -1868,12 +1900,18 @@ void nwd33c9x_device::update_irq()
 			switch (m_regs[SCSI_STATUS]) {
 			case SCSI_STATUS_DISCONNECT:
 				if (!(m_regs[CONTROL] & CONTROL_IDI)) {
+#ifdef MAME_SGI_SCSI_LOG_DIAG
+					if (FILE *const f = scsi_log_diag_file()) { fprintf(f, "%.6f %s HOLD status=%02x (IDI clear)\n", machine().time().as_double(), tag(), m_regs[SCSI_STATUS]); fflush(f); }
+#endif
 					return;
 				}
 				break;
 
 			case SCSI_STATUS_SELECT_TRANSFER_SUCCESS:
 				if ((m_regs[CONTROL] & CONTROL_EDI) && m_mode != MODE_D) {
+#ifdef MAME_SGI_SCSI_LOG_DIAG
+					if (FILE *const f = scsi_log_diag_file()) { fprintf(f, "%.6f %s HOLD status=%02x (EDI)\n", machine().time().as_double(), tag(), m_regs[SCSI_STATUS]); fflush(f); }
+#endif
 					return;
 				}
 				break;
@@ -1881,6 +1919,9 @@ void nwd33c9x_device::update_irq()
 		}
 
 		LOGMASKED(LOG_LINES, "Asserting IRQ - SCSI Status (%02x)\n", m_regs[SCSI_STATUS]);
+#ifdef MAME_SGI_SCSI_LOG_DIAG
+		if (FILE *const f = scsi_log_diag_file()) { fprintf(f, "%.6f %s IRQ status=%02x\n", machine().time().as_double(), tag(), m_regs[SCSI_STATUS]); fflush(f); }
+#endif
 		m_irq_cb(ASSERT_LINE);
 	}
 }
