@@ -1989,10 +1989,25 @@ void mips3_device::recompile_study_record(uint32_t key_mode, offs_t pc, const op
 	uint32_t stub_pc = 0;
 	uint32_t last_desc_pc = 0;
 	unsigned ndesc = 0;
+	uint64_t own_hash = 1469598103934665603ULL;
+	bool stub_at_pc = false;
+	auto own = [&own_hash, pc](const opcode_desc *x)
+	{
+		if ((x->pc >> 12) != (pc >> 12))
+			return;
+		uint32_t const v = x->compiler_page_fault() ? 0xfffffffeU : uint32_t(x->opptr);
+		for (int b = 0; b < 4; b++)
+			own_hash = (own_hash ^ ((v >> (b * 8)) & 0xff)) * 1099511628211ULL;
+	};
 	for (const opcode_desc *d = desclist; d != nullptr; d = d->next())
 	{
 		last_desc_pc = d->pc;
 		ndesc++;
+		own(d);
+		for (const opcode_desc *ds = d->delay.first(); ds != nullptr; ds = ds->next())
+			own(ds);
+		if (d->pc == pc && d->compiler_page_fault())
+			stub_at_pc = true;
 		uint32_t const op = d->opptr;
 		if (d->compiler_page_fault() && stub_pc == 0)
 			stub_pc = d->pc;
@@ -2025,14 +2040,27 @@ void mips3_device::recompile_study_record(uint32_t key_mode, offs_t pc, const op
 	else
 		cls = MISS_NOFLUSH;
 	bool const changed = (k.count != 0) && (hash != k.last_hash);
+	unsigned tlb_kind = 0, tlb_outcome = 0;
+	if (cls == TLB)
+	{
+		tlb_kind = m_recompile_study_last_kind;
+		tlb_outcome = k.last_was_stub ? 0 : !changed ? 1 : (own_hash == k.last_own_hash) ? 2 : 3;
+		m_recompile_study_tlb[tlb_kind][tlb_outcome]++;
+	}
+	m_recompile_study_last_kind = 3;
+	m_recompile_study_bucket = cls == FIRST ? (stub_at_pc ? 1 : 0) : cls == FLUSH ? 2 : cls == TLB ? (tlb_kind == 0 ? 3 : tlb_kind == 2 ? 4 : 5) : 5;
 	k.count++;
 	k.last_flush = flush;
 	k.last_hash = hash;
+	k.last_own_hash = own_hash;
 	k.last_physpc = physpc;
+	k.last_was_stub = stub_at_pc;
 
 	m_recompile_study_totals[cls][changed]++;
 	recompile_study_pc &p = m_recompile_study_pcs[pc];
 	p.cls[cls][changed]++;
+	if (cls == TLB)
+		p.tlb[tlb_kind][tlb_outcome]++;
 	if (key_mode == m_core->mode)
 		p.shared_key++;
 	else
@@ -2135,9 +2163,21 @@ void mips3_device::recompile_study_tlb_handler_probe()
 			uint32_t const cs = m_core->diag_study_serial;
 			bool const embedded = cs < m_recompile_study_log.size() && m_recompile_study_log[cs].pc != pc;
 			m_recompile_study_handler[embedded ? 1 : 2]++;
+			m_recompile_study_last_kind = embedded ? 3 : 2;
+		}
+		else if (site == 0)
+		{
+			m_recompile_study_handler[0]++;
+			uint32_t const baked = m_core->diag_study_baked;
+			uint32_t const live = vtlb_table()[pc >> 12];
+			m_recompile_study_last_kind = ((baked ^ live) & ~0xfffU) ? 0 : 1;
+			m_recompile_study_flag_xor[(baked ^ live) & 0xfff]++;
 		}
 		else
-			m_recompile_study_handler[site == 3 ? 3 : 0]++;
+		{
+			m_recompile_study_handler[3]++;
+			m_recompile_study_last_kind = 3;
+		}
 	}
 	bool const in_range = recompile_study_traced(pc, true);
 	if (!in_range || s_logged >= 400)
@@ -2195,9 +2235,23 @@ void mips3_device::recompile_study_dump()
 	for (int c = 0; c < 5; c++)
 		fprintf(f, "# class %-12s same_content=%llu changed_content=%llu\n", names[c],
 			(unsigned long long)m_recompile_study_totals[c][0], (unsigned long long)m_recompile_study_totals[c][1]);
+	static char const *const kinds[4] = { "validate_phys", "validate_flags", "stub_own_head", "stub_other" };
+	fprintf(f, "# tlb recompiles by source x outcome: prev_was_stub window_same own_page_same own_page_changed\n");
+	for (int k = 0; k < 4; k++)
+		fprintf(f, "# tlb %-15s %llu %llu %llu %llu\n", kinds[k],
+			(unsigned long long)m_recompile_study_tlb[k][0], (unsigned long long)m_recompile_study_tlb[k][1],
+			(unsigned long long)m_recompile_study_tlb[k][2], (unsigned long long)m_recompile_study_tlb[k][3]);
+	static char const *const buckets[7] = { "first", "first_stub", "flush", "tlb_validate_phys", "tlb_after_stub", "other_user", "kernel" };
+	for (int b = 0; b < 7; b++)
+		fprintf(f, "# host time %-18s n=%llu ms=%.1f us_each=%.1f\n", buckets[b], (unsigned long long)m_recompile_study_n[b],
+			m_recompile_study_ns[b] / 1e6, m_recompile_study_n[b] ? m_recompile_study_ns[b] / 1e3 / m_recompile_study_n[b] : 0.0);
+	for (auto const &[x, n] : m_recompile_study_flag_xor)
+		fprintf(f, "# validate mismatch flag xor %03x: %llu\n", x, (unsigned long long)n);
 	fprintf(f, "PC\tpc\ttotal\tshared_key\tasid_key\trequesters\tvariants\tphyspcs\tstub_same_page\tstub_next_page");
 	for (int c = 0; c < 5; c++)
 		fprintf(f, "\t%s_same\t%s_changed", names[c], names[c]);
+	for (int k = 0; k < 4; k++)
+		fprintf(f, "\t%s_stub\t%s_same\t%s_neigh\t%s_own", kinds[k], kinds[k], kinds[k], kinds[k]);
 	fprintf(f, "\n");
 	for (auto const &[pc, p] : m_recompile_study_pcs)
 	{
@@ -2209,6 +2263,9 @@ void mips3_device::recompile_study_dump()
 			p.stub_same_page, p.stub_next_page);
 		for (int c = 0; c < 5; c++)
 			fprintf(f, "\t%u\t%u", p.cls[c][0], p.cls[c][1]);
+		for (int k = 0; k < 4; k++)
+			for (int o = 0; o < 4; o++)
+				fprintf(f, "\t%u", p.tlb[k][o]);
 		fprintf(f, "\n");
 		for (auto const &v : p.variants)
 		{
@@ -2233,6 +2290,30 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	const opcode_desc *codelast;
 	const opcode_desc *desclist;
 	bool override = false;
+
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+	// host time of each top-level request, by the bucket the (last) record call chose
+	struct study_timer
+	{
+		mips3_device &d;
+		bool const top;
+		std::chrono::steady_clock::time_point const t0;
+		study_timer(mips3_device &dev) : d(dev), top(dev.m_recompile_study_depth++ == 0), t0(std::chrono::steady_clock::now())
+		{
+			if (top)
+				d.m_recompile_study_bucket = 6;
+		}
+		~study_timer()
+		{
+			d.m_recompile_study_depth--;
+			if (!top)
+				return;
+			uint64_t const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+			d.m_recompile_study_ns[d.m_recompile_study_bucket] += ns;
+			d.m_recompile_study_n[d.m_recompile_study_bucket]++;
+		}
+	} study_timer_scope(*this);
+#endif
 
 #ifdef MAME_SGI_TASK84_DRC_EVENT_LOG
 	log_drc_event("COMPILE", pc);
@@ -8999,6 +9080,9 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 #endif
 			UML_LOAD(block, I0, &tlbtable[desc->pc >> 12], 0, SIZE_DWORD, SCALE_x4);        // load i0,tlbtable[desc->pc >> 12],0,dword
 			UML_CMP(block, I0, tlbtable[desc->pc >> 12]);                   // cmp     i0,*tlbentry
+#ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
+			UML_MOVc(block, COND_NE, mem(&m_core->diag_study_baked), tlbtable[desc->pc >> 12]); // flags preserved
+#endif
 #ifdef MAME_SGI_TASK84_TLB_MISMATCH_DIAG
 			if (desc->pc >= 0x1007de00 && desc->pc <= 0x1007e100)
 			{

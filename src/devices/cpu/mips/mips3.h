@@ -39,6 +39,7 @@ MIPS III/IV emulator.
 
 #include <unordered_map>
 #include <unordered_set>
+#include <map>
 #include <cstring>
 
 #include "divtlb.h"
@@ -1013,6 +1014,7 @@ protected:
 		uint32_t        stub_container_mode;         /* MAME_SGI_STALE_STUB_FIX: that block's hash key */
 		uint32_t        stub_site_pc;                /* MAME_SGI_STALE_STUB_FIX: pc tlb_mismatch recovers for that stub (~0 when none pending) */
 		uint32_t        diag_study_serial;           /* MAME_SGI_RECOMPILE_STUDY_DIAG: compile serial baked into a traced validate_tlb check */
+		uint32_t        diag_study_baked;            /* MAME_SGI_RECOMPILE_STUDY_DIAG: compile-time vtlb entry of the last failed validate_tlb check */
 		uint32_t        diag_recompile_origin;       /* MAME_SGI_RECOMPILE_STUDY_DIAG: which handler requested the pending recompile (1 = nocode, 2 = tlb_mismatch) */
 		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
 		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
@@ -1228,7 +1230,9 @@ protected:
 		uint32_t count = 0;
 		uint32_t last_flush = 0;
 		uint64_t last_hash = 0;
+		uint64_t last_own_hash = 0;         // hash of the window's descriptors on pc's own page only
 		uint32_t last_physpc = 0;
+		bool last_was_stub = false;         // the previous compile was a page-fault stub at pc itself
 	};
 	struct recompile_study_variant
 	{
@@ -1243,6 +1247,7 @@ protected:
 		uint32_t asid_key = 0;              // compiles registered under an ASID-scoped key
 		uint32_t stub_same_page = 0;        // compiles whose window hit a page fault on pc's own page
 		uint32_t stub_next_page = 0;        // ...on a later page (block crosses into an unmapped page)
+		uint32_t tlb[4][4] = {};            // as m_recompile_study_tlb, for this pc
 		std::vector<recompile_study_variant> variants;
 		std::vector<uint32_t> physpcs;
 		std::unordered_set<uint32_t> requesters;
@@ -1260,6 +1265,20 @@ protected:
 	uint64_t m_stale_stub_container_recompiles = 0;
 	uint32_t m_recompile_study_cur_serial = 0;
 	uint64_t m_recompile_study_handler[4] = {};
+	// TLB-class recompiles split by what sent them (index: 0 = validate_tlb
+	// mismatch with a different physical page, 1 = validate_tlb mismatch with
+	// only the flag bits different, 2 = stub at its own block head, 3 = stub
+	// embedded in another block or unknown) and by outcome (0 = previous
+	// compile was a stub at pc, 1 = window identical, 2 = own page identical
+	// but the window differs, 3 = own page changed)
+	uint64_t m_recompile_study_tlb[4][4] = {};
+	std::map<uint32_t, uint64_t> m_recompile_study_flag_xor;    // validate mismatches by (baked ^ live) & 0xfff
+	uint32_t m_recompile_study_last_kind = 3;
+	uint32_t m_recompile_study_depth = 0;       // code_compile_block nesting
+	uint32_t m_recompile_study_bucket = 6;      // time bucket of the current top-level request
+	uint64_t m_recompile_study_ns[7] = {};
+	uint64_t m_recompile_study_n[7] = {};
+
 	struct recompile_study_log_entry { uint32_t pc; uint32_t req; uint64_t cycles; };
 	std::vector<recompile_study_log_entry> m_recompile_study_log;
 
