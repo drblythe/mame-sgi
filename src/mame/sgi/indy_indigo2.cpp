@@ -767,11 +767,15 @@ void ip24_state::challenge_s(machine_config &config)
 	config.device_remove("dmsd");
 }
 
+// The 133MHz module derives its pipeline clock from a 66.666MHz crystal
+// (x2) and runs SysAD, and so the MC, at a third of that: 44.444MHz. IRIX
+// relies on this, assuming a 45ns MC RPSS tick (SysAD/2) on this module
+// rather than computing it from the CPU frequency.
 void ip24_state::indy_4613(machine_config &config)
 {
-	constexpr uint32_t system_clock = 66'666'666;
+	constexpr uint32_t system_clock = 44'444'444;
 	ip24(config, system_clock);
-	R4600BE(config, m_maincpu, 2 * system_clock);
+	R4600BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
