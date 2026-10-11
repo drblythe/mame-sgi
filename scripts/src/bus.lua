@@ -4257,6 +4257,8 @@ if BUSES["PC_KBD"] then
 		MAME_DIR .. "src/devices/bus/pc_kbd/pcxt83.h",
 		MAME_DIR .. "src/devices/bus/pc_kbd/pcat101.cpp",
 		MAME_DIR .. "src/devices/bus/pc_kbd/pcat101.h",
+		MAME_DIR .. "src/devices/bus/pc_kbd/hle_kbd.cpp",
+		MAME_DIR .. "src/devices/bus/pc_kbd/hle_kbd.h",
 		MAME_DIR .. "src/devices/bus/pc_kbd/hle_mouse.cpp",
 		MAME_DIR .. "src/devices/bus/pc_kbd/hle_mouse.h",
 	}
