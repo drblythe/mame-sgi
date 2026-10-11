@@ -340,6 +340,43 @@ static void color_src_diag_log(const char *fmt, ...)
 // left thin vertical lines along the left edge of menus and dialogs.
 #define MAME_SGI_REX3_READ_NO_PREFETCH
 
+// Diagnostic, disabled by default: trace of REX3 host-data (CPU-to-screen)
+// transfers. Logs every Host Data Port write (value, access mask, and the
+// RWPACKED/RWDOUBLE/HOSTDEPTH state) and every pixel the Span/Block draw
+// loops take from host data (position, the command's end x, the per-dispatch
+// limit, and m_host_shift before the pixel was extracted). Written to the
+// file named by $MAME_SGI_REX3_HOSTDATA_LOG once emulated time reaches
+// $MAME_SGI_REX3_HOSTDATA_START seconds (default 0), so a boot can be skipped.
+// #define MAME_SGI_REX3_HOSTDATA_DIAG
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+static FILE *rex3_hostdata_diag_file(running_machine &machine)
+{
+	static FILE *file = nullptr;
+	static bool opened = false;
+	static double start = -1.0;
+	if (start < 0.0)
+	{
+		const char *s = getenv("MAME_SGI_REX3_HOSTDATA_START");
+		start = s ? atof(s) : 0.0;
+	}
+	if (machine.time().as_double() < start)
+		return nullptr;
+	if (!opened)
+	{
+		opened = true;
+		if (const char *path = getenv("MAME_SGI_REX3_HOSTDATA_LOG"))
+		{
+			// append + line buffering, so another diagnostic (the MC DMA
+			// trace) can share the file with lines in true order
+			file = fopen(path, "a");
+			if (file)
+				setvbuf(file, nullptr, _IOLBF, 0);
+		}
+	}
+	return file;
+}
+#endif
+
 // TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
 // newport_base_device::screen_update()'s own CPU cost (the per-pixel
 // software compositing loop below) in isolation, to compare directly
@@ -2967,6 +3004,13 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 		LOGMASKED(LOG_REX3, "%s: REX3 Host Data Port Read: %08x%08x\n", machine().describe_context(), (uint32_t)(m_rex3.m_host_dataport >> 32),
 			(uint32_t)m_rex3.m_host_dataport);
 		ret = m_rex3.m_host_dataport;
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+		if (FILE *f = rex3_hostdata_diag_file(machine()))
+			fprintf(f, "Q t=%.6f ctx=%s off=%x ret=%016llx mask=%016llx go=%d m0=%08x m1=%08x pf=%d x=%d y=%d\n",
+					machine().time().as_double(), machine().describe_context().c_str(), offset, (unsigned long long)ret,
+					(unsigned long long)mem_mask, (offset & 0x100) ? 1 : 0, m_rex3.m_draw_mode0, m_rex3.m_draw_mode1,
+					BIT(m_rex3.m_draw_mode1, 26), m_rex3.m_x_start_i, m_rex3.m_y_start_i);
+#endif
 		break;
 	case 0x0238/8:
 		if (ACCESSING_BITS_32_63)
@@ -4305,6 +4349,11 @@ void newport_base_device::do_rex3_command()
 				do_setup();
 			// Our do_pixel_word_read does not use octant, but seems like hardware is still updating it
 			m_rex3.m_host_dataport = do_pixel_word_read();
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+			if (FILE *f = rex3_hostdata_diag_file(machine()))
+				fprintf(f, "RD t=%.6f m0=%08x m1=%08x pf=%d x=%d y=%d -> dp=%016llx\n", machine().time().as_double(),
+						mode0, mode1, BIT(mode1, 26), m_rex3.m_x_start_i, m_rex3.m_y_start_i, (unsigned long long)m_rex3.m_host_dataport);
+#endif
 			break;
 		case 2: // Draw
 			if (BIT(mode0, 5))
@@ -4358,7 +4407,18 @@ void newport_base_device::do_rex3_command()
 						if (BIT(pattern, bit))
 						{
 							if (m_rex3.m_color_host)
-								output_pixel(start_x, start_y, get_host_color());
+								{
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+									const uint32_t diag_shift = m_rex3.m_host_shift;
+									const uint32_t diag_color = get_host_color();
+									if (FILE *f = rex3_hostdata_diag_file(machine()))
+										fprintf(f, "P am=%d x=%d y=%d end=%d pend=%d sh=%u c=%08x m0=%08x m1=%08x\n",
+												adrmode, start_x, start_y, end_x, prim_end_x, diag_shift, diag_color, mode0, mode1);
+									output_pixel(start_x, start_y, diag_color);
+#else
+									output_pixel(start_x, start_y, get_host_color());
+#endif
+								}
 							else if ((shade || rgbmode) && !fastclear)
 								output_pixel(start_x, start_y, get_rgb_color(start_x, start_y));
 							else
@@ -4430,7 +4490,18 @@ void newport_base_device::do_rex3_command()
 							if (BIT(pattern, bit))
 							{
 								if (m_rex3.m_color_host)
-									output_pixel(start_x, start_y, get_host_color());
+									{
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+										const uint32_t diag_shift = m_rex3.m_host_shift;
+										const uint32_t diag_color = get_host_color();
+										if (FILE *f = rex3_hostdata_diag_file(machine()))
+											fprintf(f, "P am=%d x=%d y=%d end=%d pend=%d sh=%u c=%08x m0=%08x m1=%08x\n",
+													adrmode, start_x, start_y, end_x, prim_end_x, diag_shift, diag_color, mode0, mode1);
+										output_pixel(start_x, start_y, diag_color);
+#else
+										output_pixel(start_x, start_y, get_host_color());
+#endif
+									}
 								else if ((shade || rgbmode) && !fastclear)
 									output_pixel(start_x, start_y, get_rgb_color(start_x, start_y));
 								else
@@ -5240,6 +5311,13 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		LOGMASKED(LOG_REX3, "REX3 Host Data Port Write: %08x%08x & %08x%08x\n", (uint32_t)(data >> 32), (uint32_t)data, (uint64_t)(mem_mask >> 32), (uint32_t)mem_mask);
 		COMBINE_DATA(&m_rex3.m_host_dataport);
 		m_rex3.m_host_shift = 64 - s_host_shifts[m_rex3.m_hostdepth];
+#ifdef MAME_SGI_REX3_HOSTDATA_DIAG
+		if (FILE *f = rex3_hostdata_diag_file(machine()))
+			fprintf(f, "W t=%.6f ctx=%s off=%x data=%016llx mask=%016llx dp=%016llx pk=%d dbl=%d hd=%d x=%d y=%d go=%d\n",
+					machine().time().as_double(), machine().describe_context().c_str(), offset, (unsigned long long)data, (unsigned long long)mem_mask,
+					(unsigned long long)m_rex3.m_host_dataport, m_rex3.m_rwpacked, m_rex3.m_rwdouble, m_rex3.m_hostdepth,
+					m_rex3.m_x_start_i, m_rex3.m_y_start_i, (offset & 0x100) ? 1 : 0);
+#endif
 		break;
 	case 0x0238/8:
 		if (ACCESSING_BITS_32_63)

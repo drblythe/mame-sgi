@@ -57,6 +57,39 @@
 // cover.
 #define MAME_SGI_RAM_FASTRAM
 
+// Diagnostic, disabled by default: trace of DMA register writes and of each
+// DMA transfer (parameters, translated source address, and the memory around
+// the first source word at transfer time) to $MAME_SGI_REX3_HOSTDATA_LOG
+// (shared with newport.cpp's host-data trace, appended line by line) once
+// emulated time reaches $MAME_SGI_REX3_HOSTDATA_START seconds.
+// #define MAME_SGI_MC_DMA_DIAG
+#ifdef MAME_SGI_MC_DMA_DIAG
+static FILE *mc_dma_diag_file(running_machine &machine)
+{
+	static FILE *file = nullptr;
+	static bool opened = false;
+	static double start = -1.0;
+	if (start < 0.0)
+	{
+		const char *s = getenv("MAME_SGI_REX3_HOSTDATA_START");
+		start = s ? atof(s) : 0.0;
+	}
+	if (machine.time().as_double() < start)
+		return nullptr;
+	if (!opened)
+	{
+		opened = true;
+		if (const char *path = getenv("MAME_SGI_REX3_HOSTDATA_LOG"))
+		{
+			file = fopen(path, "a");
+			if (file)
+				setvbuf(file, nullptr, _IOLBF, 0);
+		}
+	}
+	return file;
+}
+#endif
+
 DEFINE_DEVICE_TYPE(SGI_MC, sgi_mc_device, "sgi_mc", "SGI Memory Controller")
 
 sgi_mc_device::sgi_mc_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
@@ -370,6 +403,17 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::perform_dma)
 	const uint32_t linewidth = get_line_width();
 	const uint32_t linezoom = get_line_zoom();
 	const uint32_t stride = get_stride();
+#ifdef MAME_SGI_MC_DMA_DIAG
+	if (FILE *f = mc_dma_diag_file(machine()))
+	{
+		const uint32_t phys = dma_translate(memory_addr);
+		fprintf(f, "D t=%.6f mode=%x mem=%08x phys=%08x size=%08x stride=%08x count=%08x gio=%08x lines=%u zoom=%u bytes=%u width=%u lzoom=%u str=%d m8=%016llx m0=%016llx p8=%016llx\n",
+				machine().time().as_double(), m_dma_mode, memory_addr, phys, m_dma_size, m_dma_stride, m_dma_count, gio_addr,
+				linecount, zoomcount, bytecount, linewidth, linezoom, (int)stride,
+				(unsigned long long)m_space->read_qword(phys - 8), (unsigned long long)m_space->read_qword(phys),
+				(unsigned long long)m_space->read_qword(phys + 8));
+	}
+#endif
 	m_dma_size &= 0x0000ffff;
 	m_dma_count = 0;
 	while (linecount > 0)
@@ -651,6 +695,12 @@ uint32_t sgi_mc_device::read(offs_t offset, uint32_t mem_mask)
 
 void sgi_mc_device::write(offs_t offset, uint32_t data, uint32_t mem_mask)
 {
+#ifdef MAME_SGI_MC_DMA_DIAG
+	if (offset >= 0x2000/4 && offset <= 0x2070/4)
+		if (FILE *f = mc_dma_diag_file(machine()))
+			fprintf(f, "R t=%.6f ctx=%s reg=%04x data=%08x mask=%08x\n", machine().time().as_double(),
+					machine().describe_context().c_str(), offset * 4, data, mem_mask);
+#endif
 	switch (offset & ~1)
 	{
 	case 0x0000/4:
