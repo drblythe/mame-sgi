@@ -317,6 +317,18 @@ static void color_src_diag_log(const char *fmt, ...)
 }
 #endif
 
+// REX3 host data port reads without pixel prefetch. With prefetch disabled
+// (DRAWMODE1 bit 26 clear), a GO read of the host data port waits for the
+// read it starts and returns that data. Only with prefetch enabled does it
+// return the data fetched by the previous GO, which is why drivers that use
+// prefetch prime the pipeline with an extra GO before reading. MAME used the
+// prefetch behaviour unconditionally, so IRIX's window backing-store save
+// (MC DMA reading the data port with GO, prefetch off, no priming GO) stored
+// every word one read late: the first word was stale data port contents and
+// each saved row began with the previous row's last pixels. Restoring that
+// left thin vertical lines along the left edge of menus and dialogs.
+#define MAME_SGI_REX3_READ_NO_PREFETCH
+
 // TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
 // newport_base_device::screen_update()'s own CPU cost (the per-pixel
 // software compositing loop below) in isolation, to compare directly
@@ -2632,6 +2644,15 @@ void newport_base_device::update_screen_size(int state)
 uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 {
 	uint64_t ret = 0;
+#ifdef MAME_SGI_REX3_READ_NO_PREFETCH
+	// A GO read of the host data port with prefetch off runs its command
+	// before the data port is returned, not after.
+	const bool go_before_read = (offset & 0x00000100) && (offset & ~(0x800/8)) == 0x0230/8 && !BIT(m_rex3.m_draw_mode1, 26);
+	if (go_before_read)
+		do_rex3_command();
+#else
+	const bool go_before_read = false;
+#endif
 	switch (offset & ~(0x800/8))
 	{
 	case 0x0000/8:
@@ -3074,7 +3095,7 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 		return 0;
 	}
 
-	if (offset & 0x00000100)
+	if ((offset & 0x00000100) && !go_before_read)
 	{
 		do_rex3_command();
 	}
