@@ -317,6 +317,17 @@ static void color_src_diag_log(const char *fmt, ...)
 }
 #endif
 
+// REX3 writes to the auxiliary planes touch only the enabled plane. MAME
+// keeps the CID, popup and overlay planes in one 32-bit word per pixel
+// (CID bits 0-1/4-5, popup 2-3/6-7, overlay 8-15/16-23 for buffers 0/1) and
+// restricted stores only by the REX3 write mask, so a popup-plane write with a
+// wide mask (the 4Dwm menu shadow: popup plane, write mask 0xffffff) also
+// landed in the overlay bits. The popup-only erase (write mask 0xcc) then
+// left the overlay data behind as a stale rectangle after cascading
+// Toolchest menus. On the hardware the planes are separate, so each store is
+// limited to the enabled plane's bits.
+#define MAME_SGI_REX3_PLANE_WRITE_MASK
+
 // REX3 host data port reads without pixel prefetch. With prefetch disabled
 // (DRAWMODE1 bit 26 clear), a GO read of the host data port waits for the
 // read it starts and returns that data. Only with prefetch enabled does it
@@ -1487,7 +1498,22 @@ void rb2_device::logic_pixel(uint32_t src)
 
 void rb2_device::store_pixel(uint32_t value)
 {
+#ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
+	// bits of the destination word owned by each DRAWMODE1 plane-enable value
+	static const uint32_t s_plane_bits[8] = {
+		0xffffffff, // none
+		0xffffffff, // RGB/CI
+		0xffffffff, // RGBA
+		0xffffffff, // invalid
+		0x00ffff00, // overlay, buffers 0/1
+		0x000000cc, // popup, buffers 0/1
+		0x00000033, // CID, buffers 0/1
+		0xffffffff, // invalid
+	};
+	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+#else
 	const uint32_t write_mask = m_write_mask & m_global_mask;
+#endif
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
 	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
