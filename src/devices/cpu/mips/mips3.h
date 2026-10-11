@@ -63,6 +63,16 @@ MIPS III/IV emulator.
 // class-scope constant would be.
 #define MAME_SGI_IC_SITE_COUNT 256
 
+// WAIT (R4600/R4700/R5000) idles until the next scheduled event instead of
+// executing as a no-op: when no enabled-and-pending interrupt is visible in
+// Cause & Status, the CPU gives up the rest of its timeslice. Emulated time
+// (and so Count/Compare) advances exactly as if the CPU had spun, and the
+// timeslice already ends at the next scheduled timer or input change, so
+// interrupt latency is unchanged; only host time spent in the guest's idle
+// loop is saved. Shared by the interpreter (mips3.cpp) and the recompiler
+// (mips3drc.cpp).
+#define MAME_SGI_WAIT_IDLE
+
 DECLARE_DEVICE_TYPE(R4000BE, r4000be_device)
 DECLARE_DEVICE_TYPE(R4000LE, r4000le_device)
 DECLARE_DEVICE_TYPE(R4400BE, r4400be_device)

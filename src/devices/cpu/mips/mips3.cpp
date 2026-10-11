@@ -2668,7 +2668,12 @@ void mips3_device::handle_cop0(uint32_t op)
 					check_irqs();
 					m_core->llbit = 0;
 					break;
-				case 0x20:  /* WAIT */                                                      break;
+				case 0x20:  /* WAIT */
+#ifdef MAME_SGI_WAIT_IDLE
+					if (!(m_core->cpr[0][COP0_Cause] & SR & 0xff00))
+						m_core->icount = 0;
+#endif
+					break;
 				default:    handle_extra_cop0(op);                                          break;
 			}
 			break;

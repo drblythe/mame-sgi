@@ -11597,6 +11597,21 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 					return true;
 
 				case 0x20:  /* WAIT */
+#ifdef MAME_SGI_WAIT_IDLE
+				{
+					// The guest re-enables interrupts with an MTC0 Status just
+					// before WAIT, and that MTC0's interrupt check is only
+					// emitted at the next cycle update, so test for an
+					// already-pending interrupt here rather than idling past it.
+					// The next cycle update then exits through out_of_cycles.
+					uml::code_label skip;
+					UML_AND(block, I0, CPR032(COP0_Cause), CPR032(COP0_Status)); // and     i0,[Cause],[Status]
+					UML_AND(block, I0, I0, 0xff00);                             // and     i0,i0,0xff00
+					UML_JMPc(block, COND_NZ, skip = compiler.labelnum++);       // jmp     skip,NZ
+					UML_MOV(block, mem(&m_core->icount), 0);                    // mov     [icount],0
+					UML_LABEL(block, skip);                                     // skip:
+				}
+#endif
 					return true;
 			}
 			break;
