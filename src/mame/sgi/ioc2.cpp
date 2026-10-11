@@ -108,8 +108,10 @@ void ioc2_device::device_add_mconfig(machine_config &config)
 
 	PC_LPT(config, m_pi1);
 
-	// keyboard connector
-	pc_kbdc_device &kbd_con(PC_KBDC(config, "kbd", pc_at_keyboards, STR_KBD_MICROSOFT_NATURAL));
+	// keyboard connector: the HLE keyboard by default, since running the MS
+	// Natural keyboard's 8051 firmware (still selectable as ms_naturl) costs
+	// a fixed share of host CPU whatever the guest is doing
+	pc_kbdc_device &kbd_con(PC_KBDC(config, "kbd", pc_at_keyboards, STR_HLE_PS2_KEYBOARD));
 	kbd_con.out_clock_cb().set(m_kbdc, FUNC(ps2_keyboard_controller_device::kbd_clk_w));
 	kbd_con.out_data_cb().set(m_kbdc, FUNC(ps2_keyboard_controller_device::kbd_data_w));
 
