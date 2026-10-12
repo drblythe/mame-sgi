@@ -19,6 +19,11 @@
 // every output pixel through the three LUTs.
 #define MAME_SGI_NEWPORT_LUT_FOLD
 
+// Composite each display row as runs of one DID display mode, clipped to the
+// dirty rectangles' columns, with tight loops for the common modes instead
+// of re-deciding the mode for every pixel. Needs MAME_SGI_NEWPORT_LUT_FOLD.
+#define MAME_SGI_NEWPORT_SPAN_COMPOSITE
+
 #include "gio64.h"
 #include "screen.h"
 
@@ -759,6 +764,17 @@ protected:
 	}
 	void lut_fold_update();
 	void lut_fold_invalidate() { m_lut_fold_dirty = true; }
+#endif
+#ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
+	// one DID run's display mode, decoded from its XMAP mode table entry
+	struct composite_mode
+	{
+		uint32_t table_entry;
+		uint8_t pix_mode, pix_size, aux_pix_mode;
+		uint16_t aux_msb, ci_msb, popup_msb;
+	};
+	void composite_span(const composite_mode &mode, const uint32_t *palette, uint32_t *dest,
+			const uint32_t *src_rgbci, const uint32_t *src_cidaux, int count);
 #endif
 
 	// Marks the whole visible framebuffer region dirty (see

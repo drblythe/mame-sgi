@@ -2097,7 +2097,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// cliprect. Gaps between ranges (e.g. an unrelated desktop element
 	// updating far from the app actually being redrawn) are skipped
 	// entirely rather than walked and thrown away.
-	struct row_range_t { int y0, y1; };
+	struct row_range_t { int y0, y1, x0, x1; };	// rows inclusive, columns [x0, x1)
 	row_range_t row_ranges[newport_dirty_rect::MAX_RECTS];
 	int num_row_ranges = 0;
 #ifndef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
@@ -2109,15 +2109,15 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 			const int ry0 = std::max(r.y0, cliprect.min_y);
 			const int ry1 = std::min(r.y1, cliprect.max_y);
 			if (ry0 <= ry1)
-				row_ranges[num_row_ranges++] = { ry0, ry1 };
+				row_ranges[num_row_ranges++] = { ry0, ry1, std::max(r.x0, cliprect.min_x), std::min(r.x1 + 1, cliprect.max_x) };
 		}
 	}
 	else
 	{
-		row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y };
+		row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y, cliprect.min_x, cliprect.max_x };
 	}
 #else
-	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y };
+	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y, cliprect.min_x, cliprect.max_x };
 #endif
 #ifdef MAME_SGI_PENDING_RECTS_DIAG
 	if (g_pr_print)
@@ -2218,6 +2218,63 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// See that member's own comment and mark_dirty_for_xmap_slot().
 		uint32_t row_xmap_mask = 0;
 
+#ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
+		// Walk this row's DID entries as runs of one display mode and
+		// composite only each run's columns inside [span_x0, span_x1).
+		// The walk is the per-pixel loop's own: the first entry applies
+		// from the left edge, each later entry only where x equals its
+		// column exactly (an entry at or left of the current column is
+		// never reached, so its run extends to the row's end), and the
+		// same entries are fetched in the same order for row_xmap_mask.
+		const int span_x0 = row_ranges[range_idx].x0;
+		const int span_x1 = row_ranges[range_idx].x1;
+		const auto decode_mode = [popup_msb] (uint32_t table_entry)
+		{
+			composite_mode mode;
+			mode.table_entry = table_entry;
+			mode.pix_mode = (table_entry >> 8) & 3;
+			mode.pix_size = (table_entry >> 10) & 3;
+			mode.aux_pix_mode = (table_entry >> 16) & 7;
+			mode.aux_msb = (table_entry >> 11) & 0x1f00;
+			mode.popup_msb = popup_msb;
+			switch ((table_entry >> 8) & 3)
+			{
+				case 0: mode.ci_msb = (table_entry & 0xf8) << 5; break;
+				case 1: mode.ci_msb = 0x1d00; break;
+				case 2: mode.ci_msb = 0x1e00; break;
+				default: mode.ci_msb = 0x1f00; break;
+			}
+			return mode;
+		};
+		uint16_t curr_did_entry = m_vc2->begin_did_line(y);
+		row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
+		composite_mode mode = decode_mode(m_xmap[0]->mode_entry(curr_did_entry & 0x1f));
+		curr_did_entry = m_vc2->next_did_line_entry();
+		row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
+		bool entry_reachable = true;
+		for (int x = cliprect.min_x; x < cliprect.max_x; )
+		{
+			const int next_x = curr_did_entry >> 5;
+			if (entry_reachable && next_x == x)
+			{
+				mode = decode_mode(m_xmap[0]->mode_entry(curr_did_entry & 0x1f));
+				curr_did_entry = m_vc2->next_did_line_entry();
+				row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
+				entry_reachable = false;	// the next entry can't take effect at this same column
+				continue;
+			}
+			const int run_end = (next_x > x && next_x < cliprect.max_x) ? next_x : cliprect.max_x;
+			const int a = std::max(x, span_x0);
+			const int b = std::min(run_end, span_x1);
+			if (a < b)
+			{
+				const int col = a - cliprect.min_x;
+				composite_span(mode, palette, dest + col, src_rgbci + col, src_cidaux + col, b - a);
+			}
+			x = run_end;
+			entry_reachable = true;
+		}
+#else
 		// Fetch the initial DID entry
 		uint16_t curr_did_entry = m_vc2->begin_did_line(y);
 		row_xmap_mask |= 1u << (curr_did_entry & 0x1f);
@@ -2480,6 +2537,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 			src_rgbci++;
 			src_cidaux++;
 		}
+#endif
 
 		// Cursor overlay stamp - separate small pass over just the
 		// cursor's own x-span, only for rows it actually occupies,
@@ -2572,6 +2630,325 @@ mame_sgi_composite_done:
 	return mame_sgi_result;
 }
 
+#ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
+#ifndef MAME_SGI_NEWPORT_LUT_FOLD
+#error MAME_SGI_NEWPORT_SPAN_COMPOSITE needs MAME_SGI_NEWPORT_LUT_FOLD
+#endif
+// TEMPORARY diag: composited pixels per display mode, printed every 5 s
+// #define MAME_SGI_SPAN_MODE_DIAG
+#ifdef MAME_SGI_SPAN_MODE_DIAG
+static uint64_t s_span_mode_pixels[128];
+#endif
+
+// Composite count pixels of one DID run. The common modes without an aux
+// plane get their own loops; everything else goes through the general
+// per-pixel code.
+void newport_base_device::composite_span(const composite_mode &mode, const uint32_t *palette, uint32_t *dest,
+		const uint32_t *src_rgbci, const uint32_t *src_cidaux, int count)
+{
+	const uint32_t table_entry = mode.table_entry;
+	const uint8_t pix_mode = mode.pix_mode;
+	const uint8_t pix_size = mode.pix_size;
+	const uint8_t aux_pix_mode = mode.aux_pix_mode;
+	const uint16_t aux_msb = mode.aux_msb;
+	const uint16_t ci_msb = mode.ci_msb;
+	const uint16_t popup_msb = mode.popup_msb;
+#ifdef MAME_SGI_SPAN_MODE_DIAG
+	{
+		static std::chrono::steady_clock::time_point next_print{};
+		s_span_mode_pixels[(aux_pix_mode << 4) | (pix_mode << 2) | pix_size] += count;
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= next_print)
+		{
+			next_print = now + std::chrono::seconds(5);
+			osd_printf_info("MAME_SGI_SPAN_MODE_DIAG (aux,mode,size)=pixels:");
+			for (int i = 0; i < 128; i++)
+				if (s_span_mode_pixels[i])
+					osd_printf_info(" (%d,%d,%d)=%llu", i >> 4, (i >> 2) & 3, i & 3, (unsigned long long)s_span_mode_pixels[i]);
+			osd_printf_info("\n");
+		}
+	}
+#endif
+
+	if (aux_pix_mode == 0)
+	{
+		switch ((pix_mode << 2) | pix_size)
+		{
+		case (0 << 2) | 0: // CI 4bpp
+		{
+			const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | ((src_rgbci[i] >> shift) & 0x0f)];
+			}
+			return;
+		}
+		case (0 << 2) | 1: // CI 8bpp
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | (uint8_t)src_rgbci[i]];
+			}
+			return;
+		case (0 << 2) | 2: // CI 12bpp
+		{
+			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[(ci_msb & 0x1000) | ((src_rgbci[i] >> shift) & 0x0fff)];
+			}
+			return;
+		}
+		case (1 << 2) | 0: // RGB Map0 4bpp
+		{
+			const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb4[(uint8_t)(src_rgbci[i] >> shift) & 0x0f];
+			}
+			return;
+		}
+		case (1 << 2) | 1: // RGB Map0 8bpp
+		{
+			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb8[(uint8_t)(src_rgbci[i] >> shift)];
+			}
+			return;
+		}
+		case (1 << 2) | 2: // RGB Map0 12bpp
+		{
+			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb12[(uint16_t)(src_rgbci[i] >> shift) & 0x0fff];
+			}
+			return;
+		}
+		case (1 << 2) | 3: // RGB Map0 24bpp
+			for (int i = 0; i < count; i++)
+			{
+				const uint32_t aux = src_cidaux[i];
+				const uint32_t pix_in = src_rgbci[i];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)]
+						: 0xff000000 | m_ramdac_lut_r[(uint8_t)pix_in] | m_ramdac_lut_g[(uint8_t)(pix_in >> 8)] | m_ramdac_lut_b[(uint8_t)(pix_in >> 16)];
+			}
+			return;
+		default:
+			break;
+		}
+	}
+
+	// general case: the per-pixel compositor
+	for (int i = 0; i < count; i++)
+	{
+
+		bool pixel_replaced = false;
+		if (*src_cidaux & 0xcc)
+		{
+			const uint32_t src = (*src_cidaux >> 2) & 3;
+			*dest++ = palette[popup_msb | src];
+			pixel_replaced = true;
+		}
+		else if (aux_pix_mode != 0)
+		{
+			if (m_xmap[0]->is_8bpp())
+			{
+				switch (aux_pix_mode)
+				{
+					case 1: // 2-Bit Underlay
+						*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
+						pixel_replaced = true;
+						continue;
+					case 2: // 2-Bit Overlay
+					{
+						const uint32_t pix_in = (*src_cidaux >> 8) & 3;
+						if (pix_in)
+						{
+							*dest++ = palette[aux_msb | pix_in];
+							pixel_replaced = true;
+						}
+						break;
+					}
+					case 6: // 1-Bit Overlay
+					{
+						const uint32_t shift = BIT(table_entry, 1) ? 9 : 8;
+						const uint32_t pix_in = (*src_cidaux >> shift) & 1;
+						if (pix_in)
+						{
+							*dest++ = palette[aux_msb | pix_in];
+							pixel_replaced = true;
+						}
+						break;
+					}
+					case 7: // 1-Bit Overlay, 1-Bit Underlay
+					{
+						const uint32_t pix_in = (*src_cidaux >> 8) & 1;
+						if (pix_in)
+							*dest++ = palette[aux_msb | pix_in];
+						else
+							*dest++ = palette[aux_msb | ((*src_cidaux >> 9) & 1)];
+						pixel_replaced = true;
+						break;
+					}
+					default:
+						break;
+				}
+			}
+			else
+			{
+				switch (aux_pix_mode)
+				{
+					case 1: // 8-Bit Underlay
+						*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
+						pixel_replaced = true;
+						break;
+					case 2: // 8-Bit Overlay
+					{
+						const uint32_t pix_in = ((*src_cidaux >> 8) & 0xf) | ((*src_cidaux >> 16) & 0xf0);
+						if (pix_in)
+						{
+							*dest++ = palette[aux_msb | pix_in];
+							pixel_replaced = true;
+						}
+						break;
+					}
+					case 6: // 4-Bit Overlay
+					{
+						const uint32_t shift = BIT(table_entry, 1) ? 12 : 8;
+						const uint32_t pix_in = (*src_cidaux >> shift) & 0xf;
+						if (pix_in)
+						{
+							*dest++ = palette[aux_msb | pix_in];
+							pixel_replaced = true;
+						}
+						break;
+					}
+					case 7: // 4-Bit Overlay, 4-Bit Underlay
+					{
+						const uint32_t pix_in = (*src_cidaux >> 8) & 0xf;
+						if (pix_in)
+							*dest++ = palette[aux_msb | pix_in];
+						else
+							*dest++ = palette[aux_msb | ((*src_cidaux >> 12) & 0xf)];
+						pixel_replaced = true;
+						break;
+					}
+					default:
+						break;
+				}
+			}
+		}
+
+		if (!pixel_replaced)
+		{
+			switch (pix_mode)
+			{
+				case 0: // CI
+					switch (pix_size)
+					{
+						case 0: // 4bpp
+						{
+							const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+							const uint32_t pix_in = *src_rgbci;
+							*dest++ = palette[ci_msb | ((pix_in >> shift) & 0x0f)];
+							break;
+						}
+						case 1: // 8bpp
+							*dest++ = palette[ci_msb | (uint8_t)*src_rgbci];
+							break;
+						case 2: // 12bpp
+						{
+							const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+							const uint32_t pix_in = (*src_rgbci >> shift) & 0x00000fff;
+							*dest++ = palette[(ci_msb & 0x1000) | pix_in];
+							break;
+						}
+						case 3: // 24bpp (not yet supported)
+							dest++;
+							break;
+					}
+					break;
+				case 1: // RGB Map0
+					switch (pix_size)
+					{
+						case 0: // 4bpp
+						{
+							const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+							const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+							*dest++ = m_lut_rgb4[pix_in & 0xf];
+#else
+							*dest++ = convert_4bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
+							break;
+						}
+						case 1: // 8bpp
+						{
+							const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+							const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+							*dest++ = m_lut_rgb8[pix_in];
+#else
+							*dest++ = convert_8bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
+							break;
+						}
+						case 2: // 12bpp
+						{
+							const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+							const uint16_t pix_in = (uint16_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+							*dest++ = m_lut_rgb12[pix_in & 0xfff];
+#else
+							*dest++ = convert_12bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
+							break;
+						}
+						case 3: // 24bpp
+						{
+							const uint32_t pix_in = (uint32_t)*src_rgbci;
+							const uint8_t r = (uint8_t)(pix_in >> 0);
+							const uint8_t g = (uint8_t)(pix_in >> 8);
+							const uint8_t b = (uint8_t)(pix_in >> 16);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+							*dest++ = 0xff000000 | m_ramdac_lut_r[r] | m_ramdac_lut_g[g] | m_ramdac_lut_b[b];
+#else
+							*dest++ = (r << 16) | (g << 8) | b;
+#endif
+							break;
+						}
+					}
+					break;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+				case 2: // RGB Map1 (not yet supported)
+					*dest++ = ramdac_map(0xff00ff);
+					break;
+				case 3: // RGB Map2 (not yet supported)
+					*dest++ = ramdac_map(0x00ff00);
+					break;
+#else
+				case 2: // RGB Map1 (not yet supported)
+					*dest++ = 0xff00ff;
+					break;
+				case 3: // RGB Map2 (not yet supported)
+					*dest++ = 0x00ff00;
+					break;
+#endif
+			}
+		}
+
+		src_rgbci++;
+		src_cidaux++;
+	}
+}
+#endif
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 void newport_base_device::lut_fold_update()
 {
