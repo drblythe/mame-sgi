@@ -24,6 +24,16 @@
 // of re-deciding the mode for every pixel. Needs MAME_SGI_NEWPORT_LUT_FOLD.
 #define MAME_SGI_NEWPORT_SPAN_COMPOSITE
 
+// RB2 pixel addressing from x/y: set_address_xy() keeps the column and
+// row for the dirty tracker instead of dividing the flat address by the
+// row stride for every pixel.
+#define MAME_SGI_RB2_XY_ADDRESS
+
+// RB2 dirty tracking per run: store_pixel() extends a run of adjacent
+// pixels on one row and adds the run to the dirty rectangles when the
+// next pixel isn't adjacent, instead of one add_rect() per pixel.
+#define MAME_SGI_RB2_SPAN_DIRTY
+
 #include "gio64.h"
 #include "screen.h"
 
@@ -492,6 +502,14 @@ public:
 	void set_write_mask(uint32_t data);
 	void set_flags(uint16_t data);
 	void set_address(uint32_t address);
+#ifdef MAME_SGI_RB2_XY_ADDRESS
+	void set_address_xy(int x, int y)
+	{
+		m_buf_ptr = &m_dest_buf[y * (1280 + 64) + x];
+		m_cur_x = x;
+		m_cur_y = y;
+	}
+#endif
 	uint32_t read_pixel();
 	void write_pixel(uint32_t data);
 
@@ -499,8 +517,14 @@ public:
 	// Updated per-pixel directly in store_pixel() - the single choke
 	// point every framebuffer write (direct pixel ops and all REX3
 	// draw/blit/fill/text operations) funnels through.
+#ifdef MAME_SGI_RB2_SPAN_DIRTY
+	// the pending run is added first
+	const newport_dirty_rect &dirty() { flush_dirty_run(); return m_dirty; }
+	void clear_dirty() { m_dirty.clear(); m_run_valid = false; }
+#else
 	const newport_dirty_rect &dirty() const { return m_dirty; }
 	void clear_dirty() { m_dirty.clear(); }
+#endif
 
 	void serialize(FILE *file);
 	void deserialize(FILE *file);
@@ -539,6 +563,20 @@ private:
 	int m_cur_x;
 	int m_cur_y;
 	newport_dirty_rect m_dirty;
+#ifdef MAME_SGI_RB2_SPAN_DIRTY
+	// run of written pixels on row m_run_y, columns m_run_x0..m_run_x1,
+	// not yet added to m_dirty
+	bool m_run_valid = false;
+	int m_run_y = 0;
+	int m_run_x0 = 0;
+	int m_run_x1 = 0;
+	void flush_dirty_run()
+	{
+		if (m_run_valid)
+			m_dirty.add_rect(m_run_x0, m_run_y, m_run_x1, m_run_y);
+		m_run_valid = false;
+	}
+#endif
 
 	std::unique_ptr<uint32_t[]> m_rgbci;
 	std::unique_ptr<uint32_t[]> m_cidaux;
@@ -866,6 +904,9 @@ protected:
 	void write_mask_w(uint32_t data) { m_rb2->set_write_mask(data); }
 	void draw_flags_w(uint16_t data) { m_rb2->set_flags(data); }
 	void set_address(uint32_t data) { m_rb2->set_address(data); }
+#ifdef MAME_SGI_RB2_XY_ADDRESS
+	void set_address_xy(int x, int y) { m_rb2->set_address_xy(x, y); }
+#endif
 	void write_pixel(uint32_t data) { m_rb2->write_pixel(data); }
 	uint32_t read_pixel() { return m_rb2->read_pixel(); }
 

@@ -1561,7 +1561,26 @@ void rb2_device::store_pixel(uint32_t value)
 #endif
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
+#ifdef MAME_SGI_RB2_SPAN_DIRTY
+	// extend the current run when this pixel is next to it on the same row
+	// (REX3 spans run in either direction), otherwise start a new one
+	if (m_run_valid && m_cur_y == m_run_y && m_cur_x >= m_run_x0 - 1 && m_cur_x <= m_run_x1 + 1)
+	{
+		if (m_cur_x < m_run_x0)
+			m_run_x0 = m_cur_x;
+		else if (m_cur_x > m_run_x1)
+			m_run_x1 = m_cur_x;
+	}
+	else
+	{
+		flush_dirty_run();
+		m_run_valid = true;
+		m_run_y = m_cur_y;
+		m_run_x0 = m_run_x1 = m_cur_x;
+	}
+#else
 	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
+#endif
 	g_mame_sgi_stat_pixel_writes++;
 #ifdef MAME_SGI_DIRTY_SOURCE_DIAG
 	g_mame_sgi_dirty_pixel_writes_this_frame++;
@@ -3813,8 +3832,12 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 	x -= 0x1000;
 	y -= 0x1000;
 
+#ifdef MAME_SGI_RB2_XY_ADDRESS
+	set_address_xy(x, y);
+#else
 	const uint32_t address = (uint32_t)(y * (1280 + 64) + x);
 	set_address(address);
+#endif
 
 	if (BIT(m_rex3.m_draw_mode1, 18))
 		blend_pixel(color);
@@ -4533,7 +4556,11 @@ uint32_t newport_base_device::do_pixel_read()
 	const int16_t src_x = m_rex3.m_x_start_i + m_rex3.m_x_window - 0x1000;
 	const int16_t src_y = m_rex3.m_y_start_i + m_rex3.m_y_window - 0x1000;
 	uint32_t ret = 0;
+#ifdef MAME_SGI_RB2_XY_ADDRESS
+	set_address_xy(src_x, src_y);
+#else
 	set_address(src_y * (1280 + 64) + src_x);
+#endif
 	ret = read_pixel();
 	if (m_rex3.m_plane_enable == 1 || m_rex3.m_plane_enable == 2) // RGB/CI or RGBA planes
 	{
@@ -5025,7 +5052,11 @@ void newport_base_device::do_rex3_command()
 				{
 					do
 					{
+#ifdef MAME_SGI_RB2_XY_ADDRESS
+						set_address_xy(start_x + m_rex3.m_x_window - 0x1000, start_y + m_rex3.m_y_window - 0x1000);
+#else
 						set_address((start_y + m_rex3.m_y_window - 0x1000) * (1280 + 64) + (start_x + m_rex3.m_x_window - 0x1000));
+#endif
 						uint32_t src = read_pixel();
 
 						output_pixel(start_x + m_rex3.m_x_move, start_y + m_rex3.m_y_move, src);
