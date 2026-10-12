@@ -371,9 +371,15 @@ void hal2_device::update_clock_freq(int clock_gen)
 			return;
 	}
 
+	// MODCTRL = (INC - MOD - 1) & 0xffff, Fout = Fs * INC / MOD. A modulus of
+	// zero makes the Bresenham accumulator fire on every master tick, so the
+	// output is the master rate whatever INC is. IRIX relies on this: when it
+	// changes the master clock it first writes INC=0, MODCTRL=0xffff and then
+	// skips rewriting INC/MOD if they are unchanged (e.g. 1/1 at 48kHz and
+	// then at 44.1kHz), leaving the generator in this state.
 	const uint32_t mod = 0x10000 - ((m_bres_clock_modctrl[clock_gen] + 1) - m_bres_clock_inc[clock_gen]);
 	if (mod == 0)
-		m_bres_clock_rate[clock_gen] = attotime::from_ticks(1, m_bres_clock_freq[clock_gen] * m_bres_clock_inc[clock_gen]);
+		m_bres_clock_rate[clock_gen] = attotime::from_ticks(1, m_bres_clock_freq[clock_gen]);
 	else
 		m_bres_clock_rate[clock_gen] = attotime::from_ticks(mod, m_bres_clock_freq[clock_gen] * m_bres_clock_inc[clock_gen]);
 }
