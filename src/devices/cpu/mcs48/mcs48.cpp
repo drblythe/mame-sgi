@@ -573,7 +573,11 @@ void mcs48_cpu_device::execute_jcc(bool result)
 	u16 pch = m_pc & 0xf00;
 	u8 offset = argument_fetch();
 	if (result)
+	{
 		m_pc = pch | offset;
+		if (m_poll_skip && m_pc <= m_prevpc && m_pc != m_poll_head)
+			poll_loop_learn(m_pc, m_prevpc);
+	}
 }
 
 
@@ -1384,6 +1388,97 @@ void mcs48_cpu_device::burn_cycles(int count)
 
 
 /*-------------------------------------------------
+    poll_loop_learn - called on a taken backward
+    jump from tail to head; remember the loop if
+    every instruction in it is a test jump that
+    neither changes state nor depends on anything
+    but the T0/T1 inputs and the UPI-41 status
+-------------------------------------------------*/
+
+void mcs48_cpu_device::poll_loop_learn(u16 head, u16 tail)
+{
+	if (head == m_poll_checked_head && tail == m_poll_checked_tail)
+		return;
+	m_poll_checked_head = head;
+	m_poll_checked_tail = tail;
+	m_poll_head = 0xffff;
+
+	u8 len = 0;
+	for (u16 pc = head; pc <= tail; pc += 2)
+	{
+		if (len == std::size(m_poll_addr))
+			return;
+		const mcs48_ophandler op = m_opcode_table[program_r(pc)];
+		poll_test test;
+		if (op == &mcs48_cpu_device::jnibf)
+			test = POLL_NIBF;
+		else if (op == &mcs48_cpu_device::jobf)
+			test = POLL_OBF;
+		else if (op == &mcs48_cpu_device::jt_0)
+			test = POLL_T0;
+		else if (op == &mcs48_cpu_device::jnt_0)
+			test = POLL_NT0;
+		else if (op == &mcs48_cpu_device::jt_1)
+			test = POLL_T1;
+		else if (op == &mcs48_cpu_device::jnt_1)
+			test = POLL_NT1;
+		else
+			return;
+		m_poll_addr[len] = pc;
+		m_poll_test[len] = test;
+		len++;
+		if (pc == tail)
+		{
+			m_poll_len = len;
+			m_poll_head = head;
+			return;
+		}
+	}
+}
+
+
+/*-------------------------------------------------
+    poll_loop_skip - at the head of the known
+    polling loop, evaluate one pass; if it would
+    branch back to the head, nothing it reads can
+    change before the timeslice ends, so run every
+    remaining pass at once, ending at the same
+    instruction and cycle count as stepping
+-------------------------------------------------*/
+
+bool mcs48_cpu_device::poll_loop_skip()
+{
+	if (m_timecount_enabled || (machine().debug_flags & DEBUG_FLAG_ENABLED))
+		return false;
+
+	for (int i = 0; i < m_poll_len; i++)
+	{
+		bool taken;
+		switch (m_poll_test[i])
+		{
+		case POLL_NIBF: taken = (m_sts & STS_IBF) == 0; break;
+		case POLL_OBF:  taken = (m_sts & STS_OBF) != 0; break;
+		case POLL_T0:   taken = test_r(0) != 0;         break;
+		case POLL_NT0:  taken = test_r(0) == 0;         break;
+		case POLL_T1:   taken = test_r(1) != 0;         break;
+		default:        taken = test_r(1) == 0;         break;
+		}
+		if (taken != (i == m_poll_len - 1))
+			return false;
+	}
+
+	// every instruction in the loop takes two cycles
+	const int count = std::max((m_icount + 1) / 2, 1);
+	const int last = (count - 1) % m_poll_len;
+	m_prevpc = m_poll_addr[last];
+	m_pc = m_poll_addr[(last + 1) % m_poll_len];
+	m_irq_polled = m_poll_test[last] == POLL_NIBF && (m_sts & STS_IBF) != 0;
+	m_icount -= count * 2;
+	return true;
+}
+
+
+/*-------------------------------------------------
     mcs48_execute - execute until we run out
     of cycles
 -------------------------------------------------*/
@@ -1398,6 +1493,9 @@ void mcs48_cpu_device::execute_run()
 		// check interrupts
 		check_irqs();
 		m_irq_polled = false;
+
+		if (m_pc == m_poll_head && poll_loop_skip())
+			break;
 
 		m_prevpc = m_pc;
 		debugger_instruction_hook(m_pc);

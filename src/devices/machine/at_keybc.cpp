@@ -514,6 +514,9 @@ void ps2_keyboard_controller_device::device_add_mconfig(machine_config &config)
 	m_mcu->p2_out_cb().set(FUNC(ps2_keyboard_controller_device::p2_w));
 	m_mcu->t0_in_cb().set([this] () { return kbd_clk_r(); });
 	m_mcu->t1_in_cb().set([this] () { return aux_clk_r(); });
+
+	// the clock inputs are plain reads and only change through synchronize()
+	m_mcu->set_poll_loop_skip(true);
 }
 
 void ps2_keyboard_controller_device::device_start()

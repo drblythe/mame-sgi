@@ -133,6 +133,12 @@ public:
 	u32 get_ale_clock() { return m_clock / 3 / 5; }
 	u32 get_t0_clock() { return m_clock / 3; }
 
+	// Run passes of a polling loop made only of T0/T1/IBF/OBF test jumps
+	// in one step. Exact when the T0/T1 input callbacks have no side
+	// effects and those inputs only change between timeslices (for
+	// example through scheduler synchronize()).
+	void set_poll_loop_skip(bool enable) { m_poll_skip = enable; }
+
 protected:
 	typedef void (mcs48_cpu_device::*mcs48_ophandler)();
 
@@ -222,6 +228,16 @@ protected:
 
 	u8 m_rtemp;             // temporary for import/export
 
+	// polling loop skip (derived from ROM contents, so not saved)
+	enum poll_test : u8 { POLL_NIBF, POLL_OBF, POLL_T0, POLL_NT0, POLL_T1, POLL_NT1 };
+	bool m_poll_skip = false;
+	u16 m_poll_head = 0xffff;           // first address of the known polling loop, 0xffff if none
+	u16 m_poll_checked_head = 0xffff;   // last backward branch examined
+	u16 m_poll_checked_tail = 0xffff;
+	u8 m_poll_len = 0;                  // instructions in the loop
+	u16 m_poll_addr[8];                 // address of each instruction
+	poll_test m_poll_test[8];           // condition tested by each instruction
+
 	static const mcs48_ophandler s_mcs48_opcodes[256];
 	static const mcs48_ophandler s_upi41_opcodes[256];
 	static const mcs48_ophandler s_i8021_opcodes[256];
@@ -264,6 +280,8 @@ protected:
 	void expander_operation(expander_op operation, u8 port);
 	void check_irqs();
 	void burn_cycles(int count);
+	void poll_loop_learn(u16 head, u16 tail);
+	bool poll_loop_skip();
 
 	void illegal();
 	void add_a_r0();
