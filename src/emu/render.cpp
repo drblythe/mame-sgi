@@ -393,6 +393,10 @@ void render_texture::release()
 	m_format = TEXFORMAT_ARGB32;
 	m_scaler = nullptr;
 	m_curseq = 0;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	m_content_seq = 0;
+	m_dirty_base_seq = 0;
+#endif
 }
 
 
@@ -425,7 +429,27 @@ void render_texture::set_bitmap(bitmap_t &bitmap, const rectangle &sbounds, text
 		elem.bitmap.reset();
 		elem.seqid = 0;
 	}
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	m_content_seq = 0;
+	m_dirty_base_seq = 0;
+#endif
 }
+
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+void render_texture::set_bitmap(bitmap_t &bitmap, const rectangle &sbounds, texture_format format, const render_dirty_rects &dirty)
+{
+	// the regions are relative to the previous contents only if those were
+	// tracked and came from the same bitmap with the same bounds and format
+	static u32 s_next_content_seq = 0;
+	const u32 prev = (&bitmap == m_bitmap && sbounds == m_sbounds && format == m_format) ? m_content_seq : 0;
+	set_bitmap(bitmap, sbounds, format);
+	if (++s_next_content_seq == 0)
+		++s_next_content_seq;
+	m_content_seq = s_next_content_seq;
+	m_dirty_base_seq = prev;
+	m_dirty = dirty;
+}
+#endif
 
 
 //-------------------------------------------------
@@ -474,6 +498,23 @@ void render_texture::get_scaled(u32 dwidth, u32 dheight, render_texinfo &texinfo
 		texinfo.height = sheight;
 		// palette will be set later
 		texinfo.seqid = ++m_curseq;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+		texinfo.content_seq = m_content_seq;
+		texinfo.dirty_base_seq = 0;
+		texinfo.dirty.reset();
+		if (m_content_seq != 0 && m_dirty_base_seq != 0)
+		{
+			// convert to texture coordinates (relative to the source bounds)
+			texinfo.dirty_base_seq = m_dirty_base_seq;
+			for (int i = 0; i < m_dirty.count; i++)
+			{
+				rectangle r = m_dirty.rect[i];
+				r &= m_sbounds;
+				if (!r.empty())
+					texinfo.dirty.add(rectangle(r.left() - m_sbounds.left(), r.right() - m_sbounds.left(), r.top() - m_sbounds.top(), r.bottom() - m_sbounds.top()));
+			}
+		}
+#endif
 	}
 	else
 	{
@@ -529,6 +570,11 @@ void render_texture::get_scaled(u32 dwidth, u32 dheight, render_texinfo &texinfo
 		texinfo.height = dheight;
 		// palette will be set later
 		texinfo.seqid = scaled->seqid;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+		texinfo.content_seq = 0;
+		texinfo.dirty_base_seq = 0;
+		texinfo.dirty.reset();
+#endif
 	}
 }
 

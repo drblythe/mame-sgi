@@ -157,6 +157,11 @@ typedef delegate<void (screen_device &, bool)> vblank_state_delegate;
 
 typedef device_delegate<u32 (screen_device &, bitmap_ind16 &, const rectangle &)> screen_update_ind16_delegate;
 typedef device_delegate<u32 (screen_device &, bitmap_rgb32 &, const rectangle &)> screen_update_rgb32_delegate;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+// an RGB32 screen update that also adds every region of the bitmap it
+// changes to the given list
+typedef device_delegate<u32 (screen_device &, bitmap_rgb32 &, const rectangle &, render_dirty_rects &)> screen_update_rgb32_dirty_delegate;
+#endif
 
 
 // ======================> screen_device
@@ -198,7 +203,11 @@ public:
 	float yoffset() const { return m_yoffset; }
 	float xscale() const { return m_xscale; }
 	float yscale() const { return m_yscale; }
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	bool has_screen_update() const { return !m_screen_update_ind16.isnull() || !m_screen_update_rgb32.isnull() || !m_screen_update_rgb32_dirty.isnull(); }
+#else
 	bool has_screen_update() const { return !m_screen_update_ind16.isnull() || !m_screen_update_rgb32.isnull(); }
+#endif
 
 	// inline configuration helpers
 	void set_type(screen_type_enum type) { assert(!configured()); m_type = type; }
@@ -361,6 +370,22 @@ public:
 		m_screen_update_ind16 = screen_update_ind16_delegate(*this);
 		m_screen_update_rgb32.set(std::forward<T>(target), std::forward<F>(callback), name);
 	}
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	template <typename F>
+	void set_screen_update(F &&callback, const char *name) requires screen_update_rgb32_dirty_delegate::supports_callback<F>::value
+	{
+		m_screen_update_ind16 = screen_update_ind16_delegate(*this);
+		m_screen_update_rgb32 = screen_update_rgb32_delegate(*this);
+		m_screen_update_rgb32_dirty.set(std::forward<F>(callback), name);
+	}
+	template <typename T, typename F>
+	void set_screen_update(T &&target, F &&callback, const char *name) requires screen_update_rgb32_dirty_delegate::supports_callback<F>::value
+	{
+		m_screen_update_ind16 = screen_update_ind16_delegate(*this);
+		m_screen_update_rgb32 = screen_update_rgb32_delegate(*this);
+		m_screen_update_rgb32_dirty.set(std::forward<T>(target), std::forward<F>(callback), name);
+	}
+#endif
 
 	auto screen_vblank() { return m_screen_vblank.bind(); }
 	auto scanline() { m_video_attributes |= VIDEO_UPDATE_SCANLINE; return m_scanline_cb.bind(); }
@@ -461,6 +486,23 @@ private:
 	float               m_xscale, m_yscale;         // default X/Y scale factor
 	screen_update_ind16_delegate m_screen_update_ind16; // screen update callback (16-bit palette)
 	screen_update_rgb32_delegate m_screen_update_rgb32; // screen update callback (32-bit RGB)
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	screen_update_rgb32_dirty_delegate m_screen_update_rgb32_dirty; // screen update callback (32-bit RGB, reports changed regions)
+	render_dirty_rects  m_bitmap_dirty[2];          // regions of each bitmap changed since its texture was last set
+	bool                m_bitmap_dirty_valid[2];    // false if a bitmap changed in ways not in m_bitmap_dirty
+	u32 call_screen_update_rgb32(bitmap_rgb32 &bitmap, const rectangle &clip)
+	{
+		if (m_screen_update_rgb32_dirty.isnull())
+			return m_screen_update_rgb32(*this, bitmap, clip);
+		render_dirty_rects &dirty = m_bitmap_dirty[(&bitmap == &m_bitmap[1].as_rgb32()) ? 1 : 0];
+		const u32 flags = m_screen_update_rgb32_dirty(*this, bitmap, clip, dirty);
+		if (&bitmap != &m_bitmap[0].as_rgb32() && &bitmap != &m_bitmap[1].as_rgb32())
+			m_bitmap_dirty_valid[0] = m_bitmap_dirty_valid[1] = false;
+		return flags;
+	}
+#else
+	u32 call_screen_update_rgb32(bitmap_rgb32 &bitmap, const rectangle &clip) { return m_screen_update_rgb32(*this, bitmap, clip); }
+#endif
 	devcb_write_line    m_screen_vblank;            // screen vblank line callback
 	devcb_write32       m_scanline_cb;              // screen scanline callback
 	optional_device<device_palette_interface> m_palette; // our palette

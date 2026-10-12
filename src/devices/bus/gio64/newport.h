@@ -602,7 +602,11 @@ public:
 	uint64_t rex3_r(offs_t offset, uint64_t mem_mask = ~0);
 	void rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask = ~0);
 
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	uint32_t screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect, render_dirty_rects &dirty);
+#else
 	uint32_t screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect);
+#endif
 
 	void vrint_w(int state);
 	void update_screen_size(int state);

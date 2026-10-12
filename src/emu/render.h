@@ -166,6 +166,11 @@ struct render_texinfo
 	u64                 old_id;             // previously allocated id, if applicable
 	const rgb_t *       palette;            // palette for PALETTE16 textures, bcg lookup table for RGB32/YUY16
 	u32                 palette_length;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	u32                 content_seq;        // nonzero: identifies the contents (unchanged contents keep it)
+	u32                 dirty_base_seq;     // nonzero: contents differ from those of this content_seq only in dirty
+	render_dirty_rects  dirty;              // changed regions, relative to base, when dirty_base_seq is nonzero
+#endif
 };
 
 
@@ -330,6 +335,11 @@ public:
 
 	// configure the texture bitmap
 	void set_bitmap(bitmap_t &bitmap, const rectangle &sbounds, texture_format format);
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	// configure the texture bitmap, stating which regions of it changed
+	// since the previous set_bitmap of the same bitmap
+	void set_bitmap(bitmap_t &bitmap, const rectangle &sbounds, texture_format format, const render_dirty_rects &dirty);
+#endif
 
 	// set a unique identifier
 	void set_id(u64 id) { m_old_id = m_id; m_id = id; }
@@ -365,6 +375,11 @@ private:
 	void *              m_param;                    // scaling callback parameter
 	u32                 m_curseq;                   // current sequence number
 	scaled_texture      m_scaled[MAX_TEXTURE_SCALES];// array of scaled variants of this texture
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	u32                 m_content_seq = 0;          // contents identifier, 0 if not tracked
+	u32                 m_dirty_base_seq = 0;       // contents m_dirty is relative to, 0 if unknown
+	render_dirty_rects  m_dirty;                    // regions changed since m_dirty_base_seq
+#endif
 };
 
 

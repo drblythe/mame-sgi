@@ -58,10 +58,23 @@ typedef uint64_t HashT;
 #endif // !defined(OSD_WINDOWS && !defined(OSD_MAC)
 
 
+#include "rendertypes.h"
+
+// Upload a directly-sourced (nocopy) texture only when its contents
+// changed, and then only the regions the core reports as changed when the
+// GL texture holds the contents those regions are relative to.
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+#define MAME_SGI_OGL_DIRTY_RECTS
+#endif
+// Diagnostic: read each uploaded nocopy texture back and compare it with
+// its source; logs mismatching rows and upload statistics to stderr.
+//#define MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+
 // standard C headers
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <vector>
 #include <utility>
 
 
@@ -246,6 +259,9 @@ public:
 	uint32_t            pbo = 0;                        // pixel buffer object for this texture (DYNAMIC only!)
 	uint32_t            *data = nullptr;                // pixels for the texture
 	bool                data_own = false;               // do we own / allocated it ?
+#ifdef MAME_SGI_OGL_DIRTY_RECTS
+	uint32_t            content_seq = 0;                // contents last uploaded (render_texinfo::content_seq), 0 if unknown
+#endif
 	GLfloat             texCoord[8];
 	GLuint              texCoordBufferName;
 
@@ -2440,6 +2456,78 @@ static inline void copyline_yuy16_to_argb(uint32_t *dst, const uint16_t *src, in
 	}
 }
 
+#ifdef MAME_SGI_OGL_DIRTY_RECTS
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+static uint64_t v_uploads, v_full, v_partial, v_skipped, v_pixels_sent, v_pixels_total, v_bad_rows;
+#endif
+
+//============================================================
+//  texture_upload_nocopy
+//
+//  Uploads a nocopy texture straight from its source bitmap:
+//  only the changed regions when the texture holds the contents
+//  they are relative to, otherwise the whole texture.
+//============================================================
+
+static void texture_upload_nocopy(ogl_texture_info *texture, const render_texinfo *texsource)
+{
+	const int width = texture->rawwidth;
+	const int height = texture->rawheight;
+	const int pitch = texture->texinfo.rowpixels;
+	const uint32_t *const src = texture->data;
+
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch);
+	if (texsource->content_seq != 0 && texture->content_seq != 0 && texture->content_seq == texsource->dirty_base_seq)
+	{
+		for (int i = 0; i < texsource->dirty.count; i++)
+		{
+			rectangle r = texsource->dirty.rect[i];
+			r &= rectangle(0, width - 1, 0, height - 1);
+			if (r.empty())
+				continue;
+			glTexSubImage2D(texture->texTarget, 0, r.left(), r.top(), r.width(), r.height(),
+					GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, src + size_t(r.top()) * pitch + r.left());
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+			v_pixels_sent += uint64_t(r.width()) * r.height();
+#endif
+		}
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+		v_partial++;
+#endif
+	}
+	else
+	{
+		glTexSubImage2D(texture->texTarget, 0, 0, 0, width, height,
+				GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, src);
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+		v_full++;
+		v_pixels_sent += uint64_t(width) * height;
+#endif
+	}
+	texture->content_seq = texsource->content_seq;
+
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+	v_uploads++;
+	v_pixels_total += uint64_t(width) * height;
+	GLint tw = 0, th = 0;
+	glGetTexLevelParameteriv(texture->texTarget, 0, GL_TEXTURE_WIDTH, &tw);
+	glGetTexLevelParameteriv(texture->texTarget, 0, GL_TEXTURE_HEIGHT, &th);
+	std::vector<uint32_t> rb(size_t(tw) * th);
+	glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+	glPixelStorei(GL_PACK_ALIGNMENT, 4);
+	glGetTexImage(texture->texTarget, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, rb.data());
+	for (int y = 0; y < height && y < th; y++)
+		if (std::memcmp(&rb[size_t(y) * tw], src + size_t(y) * pitch, size_t(width) * sizeof(uint32_t)) != 0)
+			v_bad_rows++;
+	if ((v_uploads % 100) == 0)
+		fprintf(stderr, "OGL_DIRTY_RECTS uploads=%llu full=%llu partial=%llu skipped=%llu pixels_sent=%.1f%% bad_rows=%llu tex=%dx%d src=%dx%d\n",
+				(unsigned long long)v_uploads, (unsigned long long)v_full, (unsigned long long)v_partial,
+				(unsigned long long)v_skipped, 100.0 * v_pixels_sent / v_pixels_total,
+				(unsigned long long)v_bad_rows, tw, th, width, height);
+#endif
+}
+#endif
+
 //============================================================
 //  texture_set_data
 //============================================================
@@ -2521,6 +2609,13 @@ void renderer_ogl::texture_set_data(ogl_texture_info *texture, const render_texi
 		m_glActiveTexture(GL_TEXTURE0);
 		glBindTexture(texture->texTarget, texture->texture);
 
+#ifdef MAME_SGI_OGL_DIRTY_RECTS
+		if (texture->nocopy)
+		{
+			texture_upload_nocopy(texture, texsource);
+			return;
+		}
+#endif
 		if (texture->nocopy)
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, texture->texinfo.rowpixels);
 		else
@@ -2547,6 +2642,13 @@ void renderer_ogl::texture_set_data(ogl_texture_info *texture, const render_texi
 	{
 		glBindTexture(texture->texTarget, texture->texture);
 
+#ifdef MAME_SGI_OGL_DIRTY_RECTS
+		if (texture->nocopy)
+		{
+			texture_upload_nocopy(texture, texsource);
+			return;
+		}
+#endif
 		// give the card a hint
 		if (texture->nocopy)
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, texture->texinfo.rowpixels);
@@ -2815,6 +2917,17 @@ ogl_texture_info * renderer_ogl::texture_update(const render_primitive *prim, in
 
 		if ( shaderIdx==0 ) // redundant for subsequent multipass shader
 		{
+#ifdef MAME_SGI_OGL_DIRTY_RECTS
+			// contents already uploaded: nothing to copy
+			if (prim->texture.base != nullptr && texture->texinfo.seqid != prim->texture.seqid &&
+					prim->texture.content_seq != 0 && texture->content_seq == prim->texture.content_seq)
+			{
+				texture->texinfo.seqid = prim->texture.seqid;
+#ifdef MAME_SGI_OGL_DIRTY_RECTS_VERIFY
+				v_skipped++;
+#endif
+			}
+#endif
 			if (prim->texture.base != nullptr && texture->texinfo.seqid != prim->texture.seqid)
 			{
 				texture->texinfo.seqid = prim->texture.seqid;

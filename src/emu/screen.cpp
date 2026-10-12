@@ -544,6 +544,10 @@ screen_device::screen_device(const machine_config &mconfig, const char *tag, dev
 	, m_yscale(1.0f)
 	, m_screen_update_ind16(*this)
 	, m_screen_update_rgb32(*this)
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	, m_screen_update_rgb32_dirty(*this)
+	, m_bitmap_dirty_valid{ false, false }
+#endif
 	, m_screen_vblank(*this)
 	, m_scanline_cb(*this)
 	, m_palette(*this, finder_base::DUMMY_TAG)
@@ -680,7 +684,7 @@ void screen_device::device_validity_check(validity_checker &valid) const
 			osd_printf_error("Invalid display area\n");
 
 		// sanity check screen formats
-		if (m_screen_update_ind16.isnull() && m_screen_update_rgb32.isnull())
+		if (!has_screen_update())
 			osd_printf_error("Missing SCREEN_UPDATE function\n");
 	}
 	else
@@ -776,6 +780,9 @@ void screen_device::device_resolve_objects()
 	// bind our handlers
 	m_screen_update_ind16.resolve();
 	m_screen_update_rgb32.resolve();
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	m_screen_update_rgb32_dirty.resolve();
+#endif
 
 	// assign our format to the palette before it starts
 	if (m_palette)
@@ -1110,6 +1117,14 @@ void screen_device::realloc_screen_bitmaps()
 	}
 	m_texture[0]->set_bitmap(m_bitmap[0], m_visarea, m_bitmap[0].texformat());
 	m_texture[1]->set_bitmap(m_bitmap[1], m_visarea, m_bitmap[1].texformat());
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	// contents are unknown until each bitmap's next texture set
+	for (int i = 0; i < 2; i++)
+	{
+		m_bitmap_dirty[i].reset();
+		m_bitmap_dirty_valid[i] = false;
+	}
+#endif
 
 	allocate_scan_bitmaps();
 }
@@ -1221,7 +1236,7 @@ bool screen_device::update_partial(int scanline)
 				{
 					default:
 					case BITMAP_FORMAT_IND16:   flags |= m_screen_update_ind16(*this, *(bitmap_ind16 *)m_scan_bitmaps[m_curbitmap][y], scan_clip);   break;
-					case BITMAP_FORMAT_RGB32:   flags |= m_screen_update_rgb32(*this, *(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][y], scan_clip);   break;
+					case BITMAP_FORMAT_RGB32:   flags |= call_screen_update_rgb32(*(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][y], scan_clip);   break;
 				}
 
 				m_partial_updates_this_frame++;
@@ -1236,7 +1251,7 @@ bool screen_device::update_partial(int scanline)
 				{
 					default:
 					case BITMAP_FORMAT_IND16:   flags = m_screen_update_ind16(*this, curbitmap.as_ind16(), clip);   break;
-					case BITMAP_FORMAT_RGB32:   flags = m_screen_update_rgb32(*this, curbitmap.as_rgb32(), clip);   break;
+					case BITMAP_FORMAT_RGB32:   flags = call_screen_update_rgb32(curbitmap.as_rgb32(), clip);   break;
 				}
 			}
 			else
@@ -1244,7 +1259,7 @@ bool screen_device::update_partial(int scanline)
 				// optional screen_update callback before rendering svg (eg. for preparing outputs used by the svg)
 				// bitmap can be considered read-only, as it gets overwritten later
 				if (!m_screen_update_rgb32.isnull())
-					flags = m_screen_update_rgb32(*this, m_bitmap[m_curbitmap].as_rgb32(), clip);
+					flags = call_screen_update_rgb32(m_bitmap[m_curbitmap].as_rgb32(), clip);
 
 				if (~flags & UPDATE_HAS_NOT_CHANGED)
 					flags = m_svg->render(*this, m_bitmap[m_curbitmap].as_rgb32(), clip);
@@ -1342,7 +1357,7 @@ bool screen_device::update_partial(int vpos, int hpos)
 					{
 						default:
 						case BITMAP_FORMAT_IND16:   flags = m_screen_update_ind16(*this, *(bitmap_ind16 *)m_scan_bitmaps[m_curbitmap][m_last_partial_scan], clip);   break;
-						case BITMAP_FORMAT_RGB32:   flags = m_screen_update_rgb32(*this, *(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][m_last_partial_scan], clip);   break;
+						case BITMAP_FORMAT_RGB32:   flags = call_screen_update_rgb32(*(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][m_last_partial_scan], clip);   break;
 					}
 				}
 				else
@@ -1351,7 +1366,7 @@ bool screen_device::update_partial(int vpos, int hpos)
 					{
 						default:
 						case BITMAP_FORMAT_IND16:   flags = m_screen_update_ind16(*this, curbitmap.as_ind16(), clip);   break;
-						case BITMAP_FORMAT_RGB32:   flags = m_screen_update_rgb32(*this, curbitmap.as_rgb32(), clip);   break;
+						case BITMAP_FORMAT_RGB32:   flags = call_screen_update_rgb32(curbitmap.as_rgb32(), clip);   break;
 					}
 				}
 
@@ -1396,7 +1411,7 @@ bool screen_device::update_partial(int vpos, int hpos)
 				{
 					default:
 					case BITMAP_FORMAT_IND16:   flags = m_screen_update_ind16(*this, *(bitmap_ind16 *)m_scan_bitmaps[m_curbitmap][vpos], clip);   break;
-					case BITMAP_FORMAT_RGB32:   flags = m_screen_update_rgb32(*this, *(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][vpos], clip);   break;
+					case BITMAP_FORMAT_RGB32:   flags = call_screen_update_rgb32(*(bitmap_rgb32 *)m_scan_bitmaps[m_curbitmap][vpos], clip);   break;
 				}
 			}
 			else
@@ -1405,7 +1420,7 @@ bool screen_device::update_partial(int vpos, int hpos)
 				{
 					default:
 					case BITMAP_FORMAT_IND16:   flags = m_screen_update_ind16(*this, curbitmap.as_ind16(), clip);   break;
-					case BITMAP_FORMAT_RGB32:   flags = m_screen_update_rgb32(*this, curbitmap.as_rgb32(), clip);   break;
+					case BITMAP_FORMAT_RGB32:   flags = call_screen_update_rgb32(curbitmap.as_rgb32(), clip);   break;
 				}
 			}
 
@@ -1790,7 +1805,18 @@ bool screen_device::update_quads()
 				{
 					create_composited_bitmap();
 				}
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+				// pass the regions the update callback reported changed, when
+				// it reports them and nothing else wrote to the bitmap
+				if (!m_screen_update_rgb32_dirty.isnull() && m_bitmap_dirty_valid[m_curbitmap] && !(m_video_attributes & VIDEO_VARIABLE_WIDTH))
+					m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat(), m_bitmap_dirty[m_curbitmap]);
+				else
+					m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat());
+				m_bitmap_dirty[m_curbitmap].reset();
+				m_bitmap_dirty_valid[m_curbitmap] = true;
+#else
 				m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat());
+#endif
 				m_curtexture = m_curbitmap;
 				m_curbitmap = 1 - m_curbitmap;
 			}

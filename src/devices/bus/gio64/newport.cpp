@@ -1915,7 +1915,11 @@ TIMER_CALLBACK_MEMBER(newport_base_device::dcb_timeout_tick)
 	m_rex3.m_status &= ~STATUS_BACKBUSY;
 }
 
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect, render_dirty_rects &dirty)
+#else
 uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect)
+#endif
 {
 #ifdef MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
 	osd_ticks_t mame_sgi_composite_t0 = osd_ticks();
@@ -2137,6 +2141,27 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	}
 #else
 	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y, cliprect.min_x, cliprect.max_x };
+#endif
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	// Report what the walk below writes: each range's rows (only its
+	// columns when compositing spans, whole rows otherwise), plus the
+	// cursor box on those rows, which the cursor stamp rewrites.
+	{
+		int cx0 = 0, cy0 = 0, cx1 = -1, cy1 = -1;
+		if (m_vc2->cursor_enabled())
+			m_vc2->cursor_bounds(cx0, cy0, cx1, cy1);
+		for (int i = 0; i < num_row_ranges; i++)
+		{
+			const row_range_t &r = row_ranges[i];
+#ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
+			dirty.add(rectangle(r.x0, r.x1 - 1, r.y0, r.y1));
+#else
+			dirty.add(rectangle(cliprect.min_x, cliprect.max_x, r.y0, r.y1));
+#endif
+			if (cx1 >= cx0)
+				dirty.add(rectangle(std::max(cx0, cliprect.min_x), std::min(cx1, cliprect.max_x), std::max(cy0, r.y0), std::min(cy1, r.y1)));
+		}
+	}
 #endif
 #ifdef MAME_SGI_PENDING_RECTS_DIAG
 	if (g_pr_print)

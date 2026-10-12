@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "bitmap.h"
+
 #include <algorithm>
 
 
@@ -159,5 +161,52 @@ struct render_quad_texuv
 	render_texuv        bl;                 // bottom-left UV coordinate
 	render_texuv        br;                 // bottom-right UV coordinate
 };
+
+// Screen updates may report the regions of the screen bitmap they changed;
+// the renderer then needs to upload only those regions.
+#define MAME_SGI_RENDER_DIRTY_RECTS
+
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+// render_dirty_rects - regions of a bitmap that changed; when full, a new
+// region is merged into the rectangle whose bounds grow least
+struct render_dirty_rects
+{
+	static constexpr int MAX_RECTS = 8;
+
+	int count = 0;
+	rectangle rect[MAX_RECTS];
+
+	void reset() { count = 0; }
+	void add(const rectangle &r)
+	{
+		if (r.empty())
+			return;
+		if (count < MAX_RECTS)
+		{
+			rect[count++] = r;
+			return;
+		}
+		int best = 0;
+		s64 best_growth = -1;
+		for (int i = 0; i < count; i++)
+		{
+			rectangle u = rect[i];
+			u |= r;
+			const s64 growth = s64(u.width()) * u.height() - s64(rect[i].width()) * rect[i].height();
+			if (best_growth < 0 || growth < best_growth)
+			{
+				best = i;
+				best_growth = growth;
+			}
+		}
+		rect[best] |= r;
+	}
+	void add(const render_dirty_rects &other)
+	{
+		for (int i = 0; i < other.count; i++)
+			add(other.rect[i]);
+	}
+};
+#endif
 
 #endif // MAME_EMU_RENDERTYPES_H
