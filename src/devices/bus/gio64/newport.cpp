@@ -605,6 +605,10 @@ void cmap_device::device_reset()
 	m_status = 8;
 	m_palette_idx = 0;
 	std::fill(std::begin(m_palette), std::end(m_palette), 0);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	m_dirty_lo = 0;
+	m_dirty_hi = 0xffff;
+#endif
 }
 
 void cmap_device::serialize(FILE *file)
@@ -633,6 +637,10 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		break;
 	case 0x02:
 		m_palette[m_palette_idx] = data >> 8;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+		m_dirty_lo = std::min<uint32_t>(m_dirty_lo, m_palette_idx);
+		m_dirty_hi = std::max<uint32_t>(m_dirty_hi, m_palette_idx);
+#endif
 		if (m_palette_idx < 0x2000)
 			set_pen_color(m_palette_idx, rgb_t((uint8_t)(data >> 24), (uint8_t)(data >> 16), (uint8_t)(data >> 8)));
 		LOGMASKED(LOG_CMAP, "Palette Entry %04x Write: %08x\n", m_palette_idx, data >> 8);
@@ -1597,6 +1605,9 @@ gio64_xl24_device::gio64_xl24_device(const machine_config &mconfig, const char *
 void newport_base_device::device_start()
 {
 	m_dcb_timeout_timer = timer_alloc(FUNC(newport_base_device::dcb_timeout_tick), this);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	machine().save().register_postload(save_prepost_delegate(FUNC(newport_base_device::lut_fold_invalidate), this));
+#endif
 
 	// Triggered stat-counter registry (task #109, 2026-09-25) - see
 	// mame_sgi_stat_registry's own comment in newport.h for the full
@@ -1805,6 +1816,9 @@ void newport_base_device::device_reset()
 	memset(m_ramdac_lut_r, 0, sizeof(uint32_t) * 256);
 	memset(m_ramdac_lut_g, 0, sizeof(uint32_t) * 256);
 	memset(m_ramdac_lut_b, 0, sizeof(uint32_t) * 256);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	lut_fold_invalidate();
+#endif
 
 	m_rex3.m_draw_mode0 = 0x00000000;
 	m_rex3.m_draw_mode1 = 0x3002f001;
@@ -2015,7 +2029,12 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	{
 	const uint16_t cursor_msb = (uint16_t)m_xmap[0]->cursor_cmap() << 5;
 	const uint16_t popup_msb = (uint16_t)m_xmap[0]->popup_cmap() << 5;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	lut_fold_update();
+	const uint32_t *palette = m_lut_palette;
+#else
 	const uint32_t *palette = m_cmap[0]->palette_base();
+#endif
 
 	const int y_start = m_vc2->readout_y0();
 	const int y_end = m_vc2->readout_y1();
@@ -2392,21 +2411,33 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 							{
 								const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
 								const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+								*dest++ = m_lut_rgb4[pix_in & 0xf];
+#else
 								*dest++ = convert_4bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
 								break;
 							}
 							case 1: // 8bpp
 							{
 								const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 								const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+								*dest++ = m_lut_rgb8[pix_in];
+#else
 								*dest++ = convert_8bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
 								break;
 							}
 							case 2: // 12bpp
 							{
 								const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
 								const uint16_t pix_in = (uint16_t)(*src_rgbci >> shift);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+								*dest++ = m_lut_rgb12[pix_in & 0xfff];
+#else
 								*dest++ = convert_12bpp_bgr_to_24bpp_rgb(pix_in);
+#endif
 								break;
 							}
 							case 3: // 24bpp
@@ -2415,21 +2446,36 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								const uint8_t r = (uint8_t)(pix_in >> 0);
 								const uint8_t g = (uint8_t)(pix_in >> 8);
 								const uint8_t b = (uint8_t)(pix_in >> 16);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+								*dest++ = 0xff000000 | m_ramdac_lut_r[r] | m_ramdac_lut_g[g] | m_ramdac_lut_b[b];
+#else
 								*dest++ = (r << 16) | (g << 8) | b;
+#endif
 								break;
 							}
 						}
 						break;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+					case 2: // RGB Map1 (not yet supported)
+						*dest++ = ramdac_map(0xff00ff);
+						break;
+					case 3: // RGB Map2 (not yet supported)
+						*dest++ = ramdac_map(0x00ff00);
+						break;
+#else
 					case 2: // RGB Map1 (not yet supported)
 						*dest++ = 0xff00ff;
 						break;
 					case 3: // RGB Map2 (not yet supported)
 						*dest++ = 0x00ff00;
 						break;
+#endif
 				}
 			}
 
+#ifndef MAME_SGI_NEWPORT_LUT_FOLD
 			ramdac_remap(dest - 1);
+#endif
 
 			src_rgbci++;
 			src_cidaux++;
@@ -2459,7 +2505,9 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 						// was split out - omitting it here left the raw
 						// pre-LUT palette value on screen (wrong cursor
 						// color, e.g. white instead of red).
+#ifndef MAME_SGI_NEWPORT_LUT_FOLD
 						ramdac_remap(&dest);
+#endif
 					}
 				}
 			}
@@ -2524,6 +2572,33 @@ mame_sgi_composite_done:
 	return mame_sgi_result;
 }
 
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+void newport_base_device::lut_fold_update()
+{
+	uint32_t lo, hi;
+	const bool cmap_dirty = m_cmap[0]->take_dirty_range(lo, hi);
+	if (m_lut_fold_dirty)
+	{
+		lo = 0;
+		hi = 0xffff;
+		for (uint32_t i = 0; i < 0x10; i++)
+			m_lut_rgb4[i] = ramdac_map(convert_4bpp_bgr_to_24bpp_rgb(i));
+		for (uint32_t i = 0; i < 0x100; i++)
+			m_lut_rgb8[i] = ramdac_map(convert_8bpp_bgr_to_24bpp_rgb(i));
+		for (uint32_t i = 0; i < 0x1000; i++)
+			m_lut_rgb12[i] = ramdac_map(convert_12bpp_bgr_to_24bpp_rgb(i));
+		m_lut_fold_dirty = false;
+	}
+	else if (!cmap_dirty)
+	{
+		return;
+	}
+	const uint32_t *const palette = m_cmap[0]->palette_base();
+	for (uint32_t i = lo; i <= hi; i++)
+		m_lut_palette[i] = ramdac_map(palette[i]);
+}
+
+#endif
 void newport_base_device::ramdac_remap(uint32_t *dest)
 {
 	uint32_t out = 0xff000000;
@@ -2666,6 +2741,9 @@ void newport_base_device::ramdac_write(uint32_t data)
 		m_ramdac_lut_g[m_ramdac_lut_index] = (uint8_t)(data >> 16) << 8;
 		m_ramdac_lut_b[m_ramdac_lut_index] = (uint8_t)(data >> 24) << 0;
 		m_ramdac_lut_index++;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+		lut_fold_invalidate();
+#endif
 		LOGMASKED(LOG_RAMDAC, "RAMDAC LUT entry write: %08x\n", data);
 		break;
 	default:

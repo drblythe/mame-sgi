@@ -13,6 +13,12 @@
 
 #pragma once
 
+// Fold the RAMDAC's gamma LUTs into the compositor's colour tables (a
+// remapped copy of CMAP 0's palette plus the RGB-mode conversions),
+// updated when a palette entry or LUT entry changes, instead of running
+// every output pixel through the three LUTs.
+#define MAME_SGI_NEWPORT_LUT_FOLD
+
 #include "gio64.h"
 #include "screen.h"
 
@@ -285,6 +291,19 @@ public:
 
 	// Getters
 	const uint32_t *palette_base() const { return m_palette; }
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	// range of palette entries written since the last call; false if none
+	bool take_dirty_range(uint32_t &lo, uint32_t &hi)
+	{
+		if (m_dirty_lo > m_dirty_hi)
+			return false;
+		lo = m_dirty_lo;
+		hi = m_dirty_hi;
+		m_dirty_lo = 0x10000;
+		m_dirty_hi = 0;
+		return true;
+	}
+#endif
 
 	void serialize(FILE *file);
 	void deserialize(FILE *file);
@@ -304,6 +323,10 @@ private:
 	uint32_t m_revision;
 	uint16_t m_palette_idx;
 	uint32_t m_palette[0x10000];
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	uint32_t m_dirty_lo = 0;
+	uint32_t m_dirty_hi = 0xffff;
+#endif
 };
 
 DECLARE_DEVICE_TYPE(CMAP, cmap_device)
@@ -729,6 +752,14 @@ protected:
 	void do_rex3_command();
 
 	void ramdac_remap(uint32_t *dest);
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	uint32_t ramdac_map(uint32_t rgb) const
+	{
+		return 0xff000000 | m_ramdac_lut_r[(uint8_t)(rgb >> 16)] | m_ramdac_lut_g[(uint8_t)(rgb >> 8)] | m_ramdac_lut_b[(uint8_t)rgb];
+	}
+	void lut_fold_update();
+	void lut_fold_invalidate() { m_lut_fold_dirty = true; }
+#endif
 
 	// Marks the whole visible framebuffer region dirty (see
 	// m_pending_dirty below).
@@ -773,6 +804,14 @@ protected:
 	uint32_t m_ramdac_lut_g[256];
 	uint32_t m_ramdac_lut_b[256];
 	uint8_t m_ramdac_lut_index;
+#ifdef MAME_SGI_NEWPORT_LUT_FOLD
+	// derived from CMAP 0 and the LUTs, so not saved; rebuilt after a load
+	bool m_lut_fold_dirty = true;
+	uint32_t m_lut_palette[0x10000];    // CMAP 0 palette through the LUTs
+	uint32_t m_lut_rgb4[0x10];          // RGB Map0 conversions through the LUTs
+	uint32_t m_lut_rgb8[0x100];
+	uint32_t m_lut_rgb12[0x1000];
+#endif
 
 	// Dirty-region tracking for screen_update() (see newport_dirty_rect).
 	// m_pending_dirty accumulates everything dirtied since the previous
