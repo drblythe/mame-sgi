@@ -385,7 +385,9 @@ uint32_t sgi_mc_device::dma_translate(uint32_t address)
 		if ((address & 0xffc00000) == (m_dma_tlb_entry_hi[entry] & 0xffc00000))
 		{
 			const uint32_t vpn_lo = (address & 0x003ff000) >> 12;
-			const uint32_t pte = m_space->read_dword(((m_dma_tlb_entry_lo[entry] & 0x003fffc0) << 6) + (vpn_lo << 2));
+			// the low entry holds the page table's physical address >> 6
+			// (bits 25:6, bit 1 valid), like the PTE's own frame number
+			const uint32_t pte = m_space->read_dword(((m_dma_tlb_entry_lo[entry] & 0x03ffffc0) << 6) + (vpn_lo << 2));
 			const uint32_t offset = address & 0xfff;
 			return ((pte & 0x03ffffc0) << 6) + offset;
 		}
