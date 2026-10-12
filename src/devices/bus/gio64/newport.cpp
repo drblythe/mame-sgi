@@ -2744,6 +2744,8 @@ void newport_base_device::ramdac_write(uint32_t data)
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 		lut_fold_invalidate();
 #endif
+		// every displayed pixel goes through the LUTs
+		mark_full_dirty();
 		LOGMASKED(LOG_RAMDAC, "RAMDAC LUT entry write: %08x\n", data);
 		break;
 	default:
@@ -5458,9 +5460,14 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			case DCB_ADDR_CMAP01:
 				m_cmap[0]->write(m_rex3.m_dcb_reg_select, data32);
 				m_cmap[1]->write(m_rex3.m_dcb_reg_select, data32);
+				// a palette entry can be on screen anywhere: redraw it all
+				if (m_rex3.m_dcb_reg_select == 2)
+					mark_full_dirty();
 				break;
 			case DCB_ADDR_CMAP0:
 				m_cmap[0]->write(m_rex3.m_dcb_reg_select, data32);
+				if (m_rex3.m_dcb_reg_select == 2)
+					mark_full_dirty();
 				break;
 			case DCB_ADDR_CMAP1:
 				m_cmap[1]->write(m_rex3.m_dcb_reg_select, data32);
