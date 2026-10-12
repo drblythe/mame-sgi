@@ -108,6 +108,12 @@ public:
 	}
 	dac_device_base &set_output_range(sound_stream::sample_t vref) { return set_output_range(-vref, vref); }
 
+	// the stream runs at 48kHz x32 by default so that CPU-driven DACs keep
+	// sub-sample write timing; a device that writes the DAC at a fixed
+	// sample rate can run the stream at that rate instead, which saves
+	// generating and resampling the oversampled stream
+	void set_stream_sample_rate(u32 rate) { m_stream->set_sample_rate(rate); }
+
 private:
 	// internal state
 	sound_stream *m_stream;

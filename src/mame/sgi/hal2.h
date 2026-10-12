@@ -44,6 +44,7 @@ protected:
 	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
 
 	void update_clock_freq(int clock_gen);
+	void update_dac_rate();
 	void postload();  // MAME_SGI_HAL2_BRES_POSTLOAD_FIX - see device_start()'s comment
 
 	enum

@@ -93,6 +93,7 @@ void hal2_device::device_reset()
 		m_bres_clock_rate[i] = attotime::zero;
 	}
 	m_curr_dac = 0;
+	update_dac_rate();
 }
 
 uint16_t hal2_device::read(offs_t offset)
@@ -173,6 +174,7 @@ void hal2_device::write(offs_t offset, uint16_t data)
 							m_codeca_channel = m_idr[0] & 3;
 							m_codeca_clock = (m_idr[0] >> 3) & 3;
 							m_codeca_channel_count = (m_idr[0] >> 8) & 3;
+							update_dac_rate();
 						}
 						break;
 					case 2:
@@ -368,6 +370,7 @@ void hal2_device::update_clock_freq(int clock_gen)
 		default:
 			m_bres_clock_freq[clock_gen] = 0;
 			m_bres_clock_rate[clock_gen] = attotime::zero;
+			update_dac_rate();
 			return;
 	}
 
@@ -382,6 +385,23 @@ void hal2_device::update_clock_freq(int clock_gen)
 		m_bres_clock_rate[clock_gen] = attotime::from_ticks(1, m_bres_clock_freq[clock_gen]);
 	else
 		m_bres_clock_rate[clock_gen] = attotime::from_ticks(mod, m_bres_clock_freq[clock_gen] * m_bres_clock_inc[clock_gen]);
+	update_dac_rate();
+}
+
+// HPC3 DMA writes each DAC once per codec A sample, so run the DAC streams
+// at that rate rather than the DAC device's oversampled default (48kHz x32),
+// which otherwise costs a continuous ~3M samples/s of stream generation and
+// resampling whether or not anything is playing.
+void hal2_device::update_dac_rate()
+{
+	u32 rate = 48000;
+	if (m_codeca_clock > 0 && m_bres_clock_rate[m_codeca_clock - 1] != attotime::zero)
+		rate = u32(m_bres_clock_rate[m_codeca_clock - 1].as_hz() + 0.5);
+	// a stopped generator (period "never") has no rate; keep a valid stream
+	if (rate < 1000)
+		rate = 48000;
+	m_ldac->set_stream_sample_rate(rate);
+	m_rdac->set_stream_sample_rate(rate);
 }
 
 attotime hal2_device::get_rate(const uint32_t channel)
