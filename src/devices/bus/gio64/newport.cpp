@@ -277,8 +277,8 @@ namespace {
 #include "logmacro.h"
 
 namespace {
-// An underlay pixel shows only where the normal planes are zero: the
-// selected buffer's value at the mode's pixel size.
+// MAME_SGI_UNDERLAY_FIX: an underlay pixel shows only where the normal
+// planes are zero: the selected buffer's value at the mode's pixel size.
 inline bool normal_planes_zero(uint32_t table_entry, uint32_t pix)
 {
 	const bool buffer1 = BIT(table_entry, 0);
@@ -2224,6 +2224,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// vc2_dirty are merged together, not after (see the comment on
 	// rb2_dirty just below for why the two can't share one conversion
 	// applied later to the merged result).
+	// MAME_SGI_TOP_SCANLINE_FIX
 	const int top_scanline = (m_rex3.m_top_scanline == 0x3ff) ? 0 : (int)m_rex3.m_top_scanline;
 
 	// Gather this frame's fresh dirty contributions (framebuffer writes +
@@ -2274,7 +2275,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		for (int i = 0; i < rb2_dirty.count(); i++)
 		{
 			const auto &r = rb2_dirty.rect(i);
-			frame_dirty.add_rect(r.x0, std::max(r.y0 - top_scanline, 0), r.x1, r.y1 - top_scanline);
+			frame_dirty.add_rect(r.x0, std::max(r.y0 - top_scanline, 0), r.x1, r.y1 - top_scanline);	// MAME_SGI_TOP_SCANLINE_FIX
 		}
 		frame_dirty.add_rect(m_vc2->dirty());
 		m_rb2->clear_dirty();
@@ -2352,7 +2353,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	const int y_start = m_vc2->readout_y0();
 	const int y_end = m_vc2->readout_y1();
 
-	// REX3's "Top of Screen Scanline" register (m_top_scanline, set via
+	// MAME_SGI_TOP_SCANLINE_FIX: REX3's "Top of Screen Scanline" register (m_top_scanline, set via
 	// the 0x1320 write case below) tells real hardware which row of RB2's
 	// framebuffer RAM corresponds to the first visible display row - a
 	// pan/scroll register, not a drawing-coordinate offset (that's
@@ -2542,7 +2543,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	for (int y = row_start_y, sy = y_start + sy_offset; y <= row_end_y && sy < y_end; y++, sy++)
 	{
 		uint32_t *dest = &bitmap.pix(y, cliprect.min_x);
-		const int vram_row = std::min(y + top_scanline, RB2_MAX_ROW);
+		const int vram_row = std::min(y + top_scanline, RB2_MAX_ROW);	// MAME_SGI_TOP_SCANLINE_FIX
 		const uint32_t *src_rgbci = m_rb2->rgbci(vram_row);
 		const uint32_t *src_cidaux = m_rb2->cidaux(vram_row);
 
@@ -2682,7 +2683,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				{
 					switch (aux_pix_mode)
 					{
-						case 1: // 2-Bit Underlay, shown where the normal planes are zero
+						case 1: // 2-Bit Underlay, shown where the normal planes are zero (MAME_SGI_UNDERLAY_FIX)
 							if (normal_planes_zero(table_entry, *src_rgbci))
 							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
@@ -2718,7 +2719,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								*dest++ = palette[aux_msb | pix_in];
 								pixel_replaced = true;
 							}
-							else if (normal_planes_zero(table_entry, *src_rgbci))
+							else if (normal_planes_zero(table_entry, *src_rgbci))	// MAME_SGI_UNDERLAY_FIX
 							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 9) & 1)];
 								pixel_replaced = true;
@@ -2733,7 +2734,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				{
 					switch (aux_pix_mode)
 					{
-						case 1: // 8-Bit Underlay, shown where the normal planes are zero
+						case 1: // 8-Bit Underlay, shown where the normal planes are zero (MAME_SGI_UNDERLAY_FIX)
 							if (normal_planes_zero(table_entry, *src_rgbci))
 							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
@@ -2769,7 +2770,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								*dest++ = palette[aux_msb | pix_in];
 								pixel_replaced = true;
 							}
-							else if (normal_planes_zero(table_entry, *src_rgbci))
+							else if (normal_planes_zero(table_entry, *src_rgbci))	// MAME_SGI_UNDERLAY_FIX
 							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 12) & 0xf)];
 								pixel_replaced = true;
@@ -2798,7 +2799,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 							}
 							case 1: // 8bpp
 							{
-								// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+								// MAME_SGI_CI8_BUFSEL_FIX: buffer 1 of a double-buffered 8bpp visual is bits 8-15
 								const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 								*dest++ = palette[ci_msb | (uint8_t)(*src_rgbci >> shift)];
 								break;
@@ -3040,7 +3041,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 		}
 		case (0 << 2) | 1: // CI 8bpp
 		{
-			// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+			// MAME_SGI_CI8_BUFSEL_FIX: buffer 1 of a double-buffered 8bpp visual is bits 8-15
 			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 			for (int i = 0; i < count; i++)
 			{
@@ -3120,7 +3121,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			{
 				switch (aux_pix_mode)
 				{
-					case 1: // 2-Bit Underlay, shown where the normal planes are zero
+					case 1: // 2-Bit Underlay, shown where the normal planes are zero (MAME_SGI_UNDERLAY_FIX)
 						if (normal_planes_zero(table_entry, *src_rgbci))
 						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
@@ -3156,7 +3157,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							*dest++ = palette[aux_msb | pix_in];
 							pixel_replaced = true;
 						}
-						else if (normal_planes_zero(table_entry, *src_rgbci))
+						else if (normal_planes_zero(table_entry, *src_rgbci))	// MAME_SGI_UNDERLAY_FIX
 						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 9) & 1)];
 							pixel_replaced = true;
@@ -3171,7 +3172,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			{
 				switch (aux_pix_mode)
 				{
-					case 1: // 8-Bit Underlay, shown where the normal planes are zero
+					case 1: // 8-Bit Underlay, shown where the normal planes are zero (MAME_SGI_UNDERLAY_FIX)
 						if (normal_planes_zero(table_entry, *src_rgbci))
 						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
@@ -3207,7 +3208,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							*dest++ = palette[aux_msb | pix_in];
 							pixel_replaced = true;
 						}
-						else if (normal_planes_zero(table_entry, *src_rgbci))
+						else if (normal_planes_zero(table_entry, *src_rgbci))	// MAME_SGI_UNDERLAY_FIX
 						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 12) & 0xf)];
 							pixel_replaced = true;
@@ -3236,7 +3237,7 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 						}
 						case 1: // 8bpp
 						{
-							// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+							// MAME_SGI_CI8_BUFSEL_FIX: buffer 1 of a double-buffered 8bpp visual is bits 8-15
 							const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 							*dest++ = palette[ci_msb | (uint8_t)(*src_rgbci >> shift)];
 							break;
@@ -3499,7 +3500,7 @@ void newport_base_device::ramdac_write(uint32_t data)
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 		lut_fold_invalidate();
 #endif
-		// every displayed pixel goes through the LUTs
+		// MAME_SGI_CMAP_DIRTY_FIX: every displayed pixel goes through the LUTs
 		mark_full_dirty();
 		LOGMASKED(LOG_RAMDAC, "RAMDAC LUT entry write: %08x\n", data);
 		break;
@@ -6649,13 +6650,14 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			case DCB_ADDR_CMAP01:
 				m_cmap[0]->write(m_rex3.m_dcb_reg_select, data32);
 				m_cmap[1]->write(m_rex3.m_dcb_reg_select, data32);
-				// a palette entry can be on screen anywhere: redraw it all
+				// MAME_SGI_CMAP_DIRTY_FIX: a palette entry can be on screen
+				// anywhere: redraw it all
 				if (m_rex3.m_dcb_reg_select == 2)
 					mark_full_dirty();
 				break;
 			case DCB_ADDR_CMAP0:
 				m_cmap[0]->write(m_rex3.m_dcb_reg_select, data32);
-				if (m_rex3.m_dcb_reg_select == 2)
+				if (m_rex3.m_dcb_reg_select == 2)	// MAME_SGI_CMAP_DIRTY_FIX
 					mark_full_dirty();
 				break;
 			case DCB_ADDR_CMAP1:
