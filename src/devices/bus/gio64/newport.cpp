@@ -1561,6 +1561,26 @@ bool rb2_device::stored_value(uint32_t data, uint32_t &value) const
 // pixel, modulo 32), else bg when has_bg, else is left alone. The values
 // come from stored_value(). Same VRAM contents and dirty area as
 // write_pixel_xy() for each stored pixel.
+#ifdef MAME_SGI_REX3_MODE_CENSUS
+namespace {
+// store_row() pixels by loop: [fill/dither/pattern][direct/masked], with the
+// last masked write mask seen. Printed to stderr at exit.
+struct store_row_census
+{
+	uint64_t pixels[3][2] = {};
+	uint32_t masked_mask = 0;
+	~store_row_census()
+	{
+		static const char *const s_kind[3] = { "fill", "dither", "pattern" };
+		for (int k = 0; k < 3; k++)
+			fprintf(stderr, "REX3_STORE_ROW %-7s direct=%llu masked=%llu\n", s_kind[k],
+					(unsigned long long)pixels[k][0], (unsigned long long)pixels[k][1]);
+		fprintf(stderr, "REX3_STORE_ROW last masked write mask %08x\n", masked_mask);
+	}
+} s_store_row_census;
+} // anonymous namespace
+#endif
+
 void rb2_device::store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t pattern, int bit, bool has_bg, uint32_t bg)
 {
 #ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
@@ -1574,15 +1594,62 @@ void rb2_device::store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t
 	const bool direct = write_mask == m_global_mask;
 	uint32_t stored = 0;
 	int last = -1;
-	if (pattern == 0xffffffff && direct)
+	if (pattern == 0xffffffff)
 	{
-		for (int x = x0; x <= x1; x++)
-			row[x] = fg[x & 3] & write_mask;
+		// Every pixel stored: a fill (clears, flat spans) or a 4-pixel
+		// repeating dither. Masked stores keep the unwritten planes, e.g. the
+		// other buffer of a double-buffered 12bpp visual. Written in groups
+		// of four from a 4-aligned x so the compiler can use vector stores.
+		const uint32_t keep = direct ? 0 : ~write_mask;
+		const uint32_t v0 = fg[0] & write_mask, v1 = fg[1] & write_mask, v2 = fg[2] & write_mask, v3 = fg[3] & write_mask;
+		const uint32_t v[4] = { v0, v1, v2, v3 };
+		int x = x0;
+		if (v0 == v1 && v0 == v2 && v0 == v3)
+		{
+			if (direct)
+				std::fill(row + x0, row + x1 + 1, v0);
+			else
+				for (; x <= x1; x++)
+					row[x] = (row[x] & keep) | v0;
+		}
+		else
+		{
+			const auto dither = [&] (auto direct_store)
+			{
+				const auto put = [&] (int px, uint32_t pv)
+				{
+					row[px] = decltype(direct_store)::value ? pv : (row[px] & keep) | pv;
+				};
+				for (; x <= x1 && (x & 3); x++)
+					put(x, v[x & 3]);
+				for (; x + 3 <= x1; x += 4)
+				{
+					put(x + 0, v0);
+					put(x + 1, v1);
+					put(x + 2, v2);
+					put(x + 3, v3);
+				}
+				for (; x <= x1; x++)
+					put(x, v[x & 3]);
+			};
+			if (direct)
+				dither(std::true_type());
+			else
+				dither(std::false_type());
+		}
 		stored = x1 - x0 + 1;
 		last = x1;
+#ifdef MAME_SGI_REX3_MODE_CENSUS
+		s_store_row_census.pixels[(v0 == v1 && v0 == v2 && v0 == v3) ? 0 : 1][direct ? 0 : 1] += stored;
+		if (!direct)
+			s_store_row_census.masked_mask = write_mask;
+#endif
 	}
 	else
 	{
+#ifdef MAME_SGI_REX3_MODE_CENSUS
+		s_store_row_census.pixels[2][direct ? 0 : 1] += x1 - x0 + 1;
+#endif
 		for (int x = x0; x <= x1; x++, bit = (bit - 1) & 0x1f)
 		{
 			uint32_t v;
