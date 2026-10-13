@@ -4437,7 +4437,11 @@ uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 
 	if (!BIT(m_rex3.m_draw_mode1, 15)) // RGB
 	{
-		return get_default_color(m_rex3.m_curr_color_red);
+		// MAME_SGI_CI_SHADE_FIX: colour index: the integer part of the
+		// red/CI iterator, a 12.9 fixed-point value at 12bpp and 12.11
+		// otherwise (as the Red/CI register write decodes it)
+		const uint32_t ci = m_rex3.m_curr_color_red >> (m_rex3.m_plane_depth == 2 ? 9 : 11);
+		return get_default_color(ci);
 	}
 
 	if (BIT(m_rex3.m_draw_mode1, 16)) // Dithering
