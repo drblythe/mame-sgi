@@ -73,13 +73,12 @@
 
 // Small fixed-size (MAX_RECTS) list of disjoint-ish rectangles tracking
 // the Newport compositor's dirty region. Was a single running bounding
-// box until task #109 (2026-09-25) measured why that was costing real
+// box until a 2026-09-25 measurement showed why that was costing real
 // precision: an independently-moving cursor plus separately-updating
 // windows produce widely-separated dirty regions that a single bbox
 // coalesces into something close to the whole screen - confirmed live,
-// not just theorized (see wiki task #109's row for the perf-record
-// trace that found this). Kept behind the same narrow add_rect()/
-// valid()/clear() interface every caller already used, so rb2_device,
+// not just theorized (a perf record trace found it). Kept behind the
+// same narrow add_rect()/valid()/clear() interface every caller already used, so rb2_device,
 // vc2_device, and newport_base_device's own compositor all benefit
 // without their own call sites changing shape - only the few sites that
 // need to iterate per-rect (the rb2_dirty->frame_dirty top_scanline
@@ -196,8 +195,8 @@ private:
  *
  *************************************/
 
-// Named-counter registry for triggered measurement (task #109,
-// 2026-09-25). Motivation: this project repeatedly drew wrong
+// Named-counter registry for triggered measurement (2026-09-25).
+// Motivation: this project repeatedly drew wrong
 // conclusions from perf/diagnostic windows that turned out to still be
 // dominated by boot/login/window-creation transients, because a fixed
 // sleep/settle delay was treated as a validated proxy for "the system
@@ -863,10 +862,10 @@ protected:
 	// going through store_pixel(), the only other source of dirty-rect
 	// contributions - such a change is otherwise completely invisible to
 	// the compositor. Still used for the VC2 DID/VT-table RAM-word write
-	// case (see wiki task #108) and reset: a written RAM address could be
+	// case and reset: a written RAM address could be
 	// a DID entry, a VT entry, or cursor data, and mapping it to the
 	// display rows it affects is a reverse lookup through two levels of
-	// indirection - harder, not yet precisely mapped (task #109). The
+	// indirection - harder, not yet precisely mapped. The
 	// XMAP mode-table case below no longer uses this - see
 	// mark_dirty_for_xmap_slot().
 	void mark_full_dirty();
@@ -882,7 +881,7 @@ protected:
 	// reference it, and any such change already forces a full-screen
 	// recompute via mark_full_dirty() (the VC2 RAM-word case above),
 	// which revisits every row and keeps m_row_xmap_slot_mask in sync
-	// before that new reference could ever be missed. See wiki task #109.
+	// before that new reference could ever be missed.
 	void mark_dirty_for_xmap_slot(uint8_t slot);
 
 	// "sgistat reset" / "sgistat dump [name]" debugger console command -
