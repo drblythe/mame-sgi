@@ -276,6 +276,22 @@ namespace {
 #define VERBOSE         (0)
 #include "logmacro.h"
 
+namespace {
+// An underlay pixel shows only where the normal planes are zero: the
+// selected buffer's value at the mode's pixel size.
+inline bool normal_planes_zero(uint32_t table_entry, uint32_t pix)
+{
+	const bool buffer1 = BIT(table_entry, 0);
+	switch ((table_entry >> 10) & 3)
+	{
+	case 0:  return ((pix >> (buffer1 ? 4 : 0)) & 0x00f) == 0;
+	case 1:  return ((pix >> (buffer1 ? 8 : 0)) & 0x0ff) == 0;
+	case 2:  return ((pix >> (buffer1 ? 12 : 0)) & 0xfff) == 0;
+	default: return (pix & 0xffffff) == 0;
+	}
+}
+} // anonymous namespace
+
 // TEMPORARY diagnostic (2026-08-17) - passive watch for a candidate
 // mechanism behind a reported desktop black-to-white text/icon-color
 // regression (see journal.md and wiki/console.md's color-race entry).
@@ -2655,10 +2671,13 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				{
 					switch (aux_pix_mode)
 					{
-						case 1: // 2-Bit Underlay
-							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
-							pixel_replaced = true;
-							continue;
+						case 1: // 2-Bit Underlay, shown where the normal planes are zero
+							if (normal_planes_zero(table_entry, *src_rgbci))
+							{
+								*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
+								pixel_replaced = true;
+							}
+							break;
 						case 2: // 2-Bit Overlay
 						{
 							const uint32_t pix_in = (*src_cidaux >> 8) & 3;
@@ -2684,10 +2703,15 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 						{
 							const uint32_t pix_in = (*src_cidaux >> 8) & 1;
 							if (pix_in)
+							{
 								*dest++ = palette[aux_msb | pix_in];
-							else
+								pixel_replaced = true;
+							}
+							else if (normal_planes_zero(table_entry, *src_rgbci))
+							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 9) & 1)];
-							pixel_replaced = true;
+								pixel_replaced = true;
+							}
 							break;
 						}
 						default:
@@ -2698,9 +2722,12 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 				{
 					switch (aux_pix_mode)
 					{
-						case 1: // 8-Bit Underlay
-							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
-							pixel_replaced = true;
+						case 1: // 8-Bit Underlay, shown where the normal planes are zero
+							if (normal_planes_zero(table_entry, *src_rgbci))
+							{
+								*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
+								pixel_replaced = true;
+							}
 							break;
 						case 2: // 8-Bit Overlay
 						{
@@ -2727,10 +2754,15 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 						{
 							const uint32_t pix_in = (*src_cidaux >> 8) & 0xf;
 							if (pix_in)
+							{
 								*dest++ = palette[aux_msb | pix_in];
-							else
+								pixel_replaced = true;
+							}
+							else if (normal_planes_zero(table_entry, *src_rgbci))
+							{
 								*dest++ = palette[aux_msb | ((*src_cidaux >> 12) & 0xf)];
-							pixel_replaced = true;
+								pixel_replaced = true;
+							}
 							break;
 						}
 						default:
@@ -3077,10 +3109,13 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			{
 				switch (aux_pix_mode)
 				{
-					case 1: // 2-Bit Underlay
-						*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
-						pixel_replaced = true;
-						continue;
+					case 1: // 2-Bit Underlay, shown where the normal planes are zero
+						if (normal_planes_zero(table_entry, *src_rgbci))
+						{
+							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 3)];
+							pixel_replaced = true;
+						}
+						break;
 					case 2: // 2-Bit Overlay
 					{
 						const uint32_t pix_in = (*src_cidaux >> 8) & 3;
@@ -3106,10 +3141,15 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 					{
 						const uint32_t pix_in = (*src_cidaux >> 8) & 1;
 						if (pix_in)
+						{
 							*dest++ = palette[aux_msb | pix_in];
-						else
+							pixel_replaced = true;
+						}
+						else if (normal_planes_zero(table_entry, *src_rgbci))
+						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 9) & 1)];
-						pixel_replaced = true;
+							pixel_replaced = true;
+						}
 						break;
 					}
 					default:
@@ -3120,9 +3160,12 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			{
 				switch (aux_pix_mode)
 				{
-					case 1: // 8-Bit Underlay
-						*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
-						pixel_replaced = true;
+					case 1: // 8-Bit Underlay, shown where the normal planes are zero
+						if (normal_planes_zero(table_entry, *src_rgbci))
+						{
+							*dest++ = palette[aux_msb | ((*src_cidaux >> 8) & 0xff)];
+							pixel_replaced = true;
+						}
 						break;
 					case 2: // 8-Bit Overlay
 					{
@@ -3149,10 +3192,15 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 					{
 						const uint32_t pix_in = (*src_cidaux >> 8) & 0xf;
 						if (pix_in)
+						{
 							*dest++ = palette[aux_msb | pix_in];
-						else
+							pixel_replaced = true;
+						}
+						else if (normal_planes_zero(table_entry, *src_rgbci))
+						{
 							*dest++ = palette[aux_msb | ((*src_cidaux >> 12) & 0xf)];
-						pixel_replaced = true;
+							pixel_replaced = true;
+						}
 						break;
 					}
 					default:
