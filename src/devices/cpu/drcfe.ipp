@@ -24,7 +24,7 @@
 #include <algorithm>
 #include <cstdio>
 
-// TEMPORARY diagnostic (2026-09-10, mame-sgi task #84) - the user's
+// TEMPORARY diagnostic (2026-09-10) - the user's
 // insight: BEQL/BNEL/BLEZL/BGTZL ("branch likely") delay slots must be
 // ANNULLED (not executed) when the branch is not taken - unlike plain
 // BEQ/BNE/etc, whose delay slot always executes. mips3drc.cpp's case 0x04/
@@ -83,8 +83,8 @@ namespace {
 // where exactly one CPU type instantiates this template (true for
 // mame-sgi's SUBTARGET=sgi, not assumed true in general - would double-
 // count across CPU types sharing a process otherwise).
-// DISABLED (2026-09-11): tasks #39-42 concluded, wiki/drc-diagnostics.md
-// already carried this as "safe to disable/delete" (bucket C) - it had
+// DISABLED (2026-09-11): investigation concluded, and this was already
+// classed as safe to disable/delete - it had
 // just never actually been turned off, and its self-rate-limited (every
 // 50000-event) stderr print was still firing live during ordinary play.
 // Left in place, commented out, in case a future investigation into

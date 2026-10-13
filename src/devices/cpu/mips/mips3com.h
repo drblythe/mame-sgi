@@ -30,10 +30,9 @@
 // corruption bug - the crash reproduced with a byte-for-byte identical
 // signature either way, cleanly ruling this mechanism out. Reverted to (0).
 //
-// TEMPORARY (2026-09-04, task #84): set to (1) again for a different bug -
+// TEMPORARY (2026-09-04): set to (1) again for a different bug -
 // the intermittent guest cc1 "<built-in> predicate's answer is empty"
-// flake. Second Opus review (wiki/task84-exception-hypothesis-handoff-
-// 2026-09-04.md) traced the mechanism to $v0's fast-mapped host register
+// flake. A second Opus review (2026-09-04) traced the mechanism to $v0's fast-mapped host register
 // (r15/UML I4) going stale relative to m_core->r[2] across a
 // load_fast_iregs() reload triggered by an EXECUTE_MISSING_CODE
 // recompile - this flag removes the fast-mapping entirely as the most

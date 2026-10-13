@@ -40,11 +40,11 @@
 
 
 // Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
-// prints below (tasks #57/#65) - previously gated only by the general
+// prints below - previously gated only by the general
 // -verbose flag, which this project's own tooling passes by default
 // for unrelated reasons, so these fired on every launch regardless of
 // whether anyone was investigating mouse focus. Off by default;
-// task #65 (SDL mouse/keyboard focus after -state reload) is still
+// the SDL mouse/keyboard focus issue after -state reload is still
 // open, so re-enable if that needs revisiting rather than deleting.
 // #define MAME_SGI_MOUSEFOCUS_DIAG
 

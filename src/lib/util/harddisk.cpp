@@ -166,7 +166,7 @@ bool hard_disk_file::write(uint32_t lbasector, const void *buffer)
 /**
  * @fn  bool flush()
  *
- * @brief   Bug fix (task #72): hard disk flush - forces a real durability
+ * @brief   Bug fix: hard disk flush - forces a real durability
  *          barrier, for callers (e.g. a SCSI SYNCHRONIZE CACHE command)
  *          that need more than "still running" as their guarantee. See
  *          chd.cpp's chd_file::flush() for the full chain and rationale.

@@ -88,9 +88,9 @@ public:
 	void data_w(offs_t offset, uint8_t data);
 	uint8_t data_r(offs_t offset);
 
-	// Bug fix (task #98) accessor - see indy_indigo2.cpp's machine_reset()
-	// for the actual SGI-specific use and full rationale (the eventmond/
-	// "kernel modification time in the future" mechanism, wiki/README.md).
+	// Bug fix accessor - see indy_indigo2.cpp's machine_reset() for the
+	// actual SGI-specific use and full rationale (the eventmond/"kernel
+	// modification time in the future" mechanism).
 	// Opt-in direct override for the live year register, bypassing
 	// device_rtc_interface::set_time()'s generic "last two digits of the
 	// real year" assumption (year % 100) - wrong for callers whose actual

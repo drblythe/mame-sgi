@@ -42,8 +42,8 @@ namespace {
 // include order - catch drift here, where both are visible.
 static_assert(MIPS3_MIN_PAGE_SHIFT == 12, "dispatch_page_writable()'s hardcoded shift in mips3.h must match");
 
-// DISABLED (2026-08-21) - concluded, task #36 (measured ASID-switch vs
-// TLBWI/TLBWR mutation frequency) completed weeks ago; was left
+// DISABLED (2026-08-21) - concluded, the measurement of ASID-switch vs
+// TLBWI/TLBWR mutation frequency completed weeks ago; was left
 // enabled unconditionally since, firing fprintf(stderr) regularly with
 // no active investigation using it. TEMPORARY diagnostic toggle
 // (2026-08-07) - real frequency split between ASID-switch-triggered
@@ -58,8 +58,8 @@ static_assert(MIPS3_MIN_PAGE_SHIFT == 12, "dispatch_page_writable()'s hardcoded 
 // comment in mips3.h.
 // #define MAME_SGI_TLB_WRITE_DEDUP_DIAG
 
-// TEMPORARY diagnostic (2026-09-01): task #84's gcc <built-in>
-// "predicate's answer is empty" flake. Earlier work on this task ruled
+// TEMPORARY diagnostic (2026-09-01): the intermittent gcc <built-in>
+// "predicate's answer is empty" flake. Earlier work on this flake ruled
 // out on-disk/filesystem corruption (cmp/md5sum byte-identical) and
 // showed a plain buffered read of cc1 is always clean immediately after
 // an exec()-triggered failure (100% match, 0 mismatches over 22 real
@@ -87,7 +87,7 @@ static_assert(MIPS3_MIN_PAGE_SHIFT == 12, "dispatch_page_writable()'s hardcoded 
 // bug in DRC's own logic. Watches specifically for TLB installs
 // covering the guest virtual page containing the known failing string
 // (0x10343970, established via static analysis of the extracted cc1
-// binary - see wiki/console.md's task #84 section), and immediately
+// binary), and immediately
 // reads the physical memory the new mapping points at, to see directly
 // whether the promised bytes are actually there yet at install time.
 // RESULT (2026-09-02): ran against a matched-load compile loop that
@@ -96,10 +96,10 @@ static_assert(MIPS3_MIN_PAGE_SHIFT == 12, "dispatch_page_writable()'s hardcoded 
 // (including throughout the entire stuck streak), zero
 // ALL_ZERO_SUSPICIOUS hits. Physical memory is provably fine at every
 // TLB-install moment; this rules out the DMA-completion-race theory as
-// framed here. See wiki/console.md's task #84 section for the pivot
-// this motivated (checking whether DRC's own sequence-window compiler
-// ever misdecodes into this same page, in mips3drc.cpp - a different
-// mechanism that wouldn't touch this page's stored bytes at all).
+// framed here. This motivated a pivot to checking whether DRC's own
+// sequence-window compiler ever misdecodes into this same page, in
+// mips3drc.cpp - a different mechanism that wouldn't touch this page's
+// stored bytes at all.
 // #define MAME_SGI_CC1_RODATA_TLB_RACE_DIAG
 
 

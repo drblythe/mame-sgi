@@ -14,7 +14,7 @@ MIPS III/IV emulator.
 
 #pragma once
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - per user direction: stop
+// TEMPORARY diagnostic (2026-09-10) - per user direction: stop
 // chasing narrow, targeted hypotheses one at a time and instead build a
 // complete, end-to-end trace of DRC-level events (fresh compiles AND
 // re-entries into already-compiled code) across a whole cc1 invocation,
@@ -369,14 +369,14 @@ public:
 	void add_fastram(offs_t start, offs_t end, uint8_t readonly, void *base);
 	void clear_fastram(uint32_t select_start);
 	// Public wrapper for the otherwise-private code_flush_cache(), added
-	// for sgi/mc.cpp's task #119 use. Only ever called from a genuine
+	// for sgi/mc.cpp's use. Only ever called from a genuine
 	// scheduler-driven timer callback there (never synchronously from a
 	// device register write reached by the guest's own currently-
 	// executing JIT-compiled code), so this is safe by construction, not
 	// by timing luck - see mc.cpp's check_fastram_settle() for why that
 	// distinction mattered here.
 	void invalidate_fastram_cache() { code_flush_cache(); }
-	// Temporary, task #119: dumps the raw m_fastram[] table (every slot
+	// Temporary: dumps the raw m_fastram[] table (every slot
 	// up to m_fastram_select) to stderr - start/end/base exactly as
 	// stored, not as re-derived from the caller's own registration
 	// arithmetic, to rule out "the table holds something other than
@@ -391,8 +391,8 @@ public:
 	// needing manual PIE/ASLR address math (drcuml_state::get_codeptr's
 	// own wrapper gets inlined away in an optimized build, and computing
 	// the real runtime address by hand from `nm`'s static address once
-	// already caused a real SIGSEGV in this exact investigation - see
-	// the project journal, 2026-08-16). noinline guarantees a real,
+	// already caused a real SIGSEGV in this exact investigation,
+	// 2026-08-16). noinline guarantees a real,
 	// callable symbol regardless of optimization level. Not compiled in
 	// by default (see MIPS3_DEBUG_HELPERS below) since this is purely a
 	// debugging aid with no purpose in a normal build.
@@ -417,7 +417,7 @@ public:
 	// tried and found inconclusive - not exhaustive enough to rule
 	// anything in or out with confidence) or from -drc_log_uml/
 	// -drc_log_native (which, even filtered, produced a genuine
-	// disk-safety near-miss - see the same journal entry). Caller is
+	// disk-safety near-miss). Caller is
 	// responsible for `len` being a sane bound - this does no
 	// validation of the memory range itself, matching the trust level
 	// already implied by using host gdb to call this in the first
@@ -521,9 +521,8 @@ protected:
 		// recompiled 129,873 times in a single boot as competing
 		// short-lived rc-script processes evicted each other's cached
 		// code at shared conventional virtual addresses (74% of all
-		// USER-mode compiles in that run were pure redundant work - see
-		// wiki/performance.md's "USER-mode cross-process cache thrashing"
-		// section for the full measurement and design). Encoding: kernel
+		// USER-mode compiles in that run were pure redundant work).
+		// Encoding: kernel
 		// gets a fixed sentinel (just the FR bit, asid-component=0) that
 		// never varies with the live ASID - that constancy is what keeps
 		// kernel code's immunity to this whole problem intact; SUPER/USER
@@ -601,9 +600,8 @@ protected:
 		uint32_t        diag_tlb_write_degenerate;
 
 		// TEMPORARY diagnostic (2026-08-22) - resuming the 0x0fac5ffc
-		// validate_tlb() anomaly investigation (see wiki/performance.md's
-		// "Investigated extensively... still not resolved" section):
-		// every prior check confirmed both the live TLB entry and the
+		// validate_tlb() anomaly investigation (investigated extensively,
+		// still not resolved): every prior check confirmed both the live TLB entry and the
 		// compile-time-baked immediate are individually correct and
 		// stable, yet the JIT'd CMP still evaluates NE far more often
 		// than it should. This field lets an independent, unconditional
@@ -617,8 +615,8 @@ protected:
 		// of the same dispatch key.
 		uint32_t        diag_0fac5ffc_compile_gen;
 
-		// TEMPORARY diagnostic (2026-09-02) - task #84's gcc <built-in>
-		// flake, MAME_SGI_RODATA_LOAD_ADDR_DIAG (mips3drc.cpp). Must live
+		// TEMPORARY diagnostic (2026-09-02) - the intermittent gcc
+		// <built-in> flake, MAME_SGI_RODATA_LOAD_ADDR_DIAG (mips3drc.cpp). Must live
 		// here, not as plain file-scope statics - the x64 DRC backend
 		// addresses mem() operands RBP-relative to this struct, and a
 		// free-standing global elsewhere in the binary's BSS segment
@@ -634,7 +632,7 @@ protected:
 		uint32_t        diag_rodata_value;
 		uint32_t        diag_rodata_hit;
 
-		// MAME_SGI_FASTRAM_COMPARE_DIAG (mips3drc.cpp, task #119) - same
+		// MAME_SGI_FASTRAM_COMPARE_DIAG (mips3drc.cpp) - same
 		// RBP-relative-struct requirement as diag_rodata_* above, same
 		// reason (a free-standing global crashed the x64 DRC backend the
 		// same way). addr/size are stashed BEFORE static_generate_
@@ -650,25 +648,25 @@ protected:
 		uint32_t        diag_fastram_iswrite;
 		uint32_t        diag_fastram_masked;
 
-		// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - real
+		// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - real
 		// host wall-clock (not guest-cycle) duration of each
 		// code_compile_block()/code_flush_cache() call from execute_run().
 		// Motivation: this project's scheduler is purely cycle-count-driven
 		// (device_scheduler::timeslice() advances every device's clock from
-		// icount alone, never host time - confirmed task84.md 2026-09-xx),
+		// icount alone, never host time - confirmed 2026-09),
 		// so a compile/flush event doesn't distort the GUEST's own notion
 		// of elapsed time, but it does freeze the entire single emulation
 		// thread in REAL time - already measured once, ad hoc, as a 373.9ms
-		// freeze directly correlated with a full drc_cache flush (task #75
-		// "Bug B", console.md) via two separate indirect diagnostics
+		// freeze directly correlated with a full drc_cache flush (the
+		// console "Bug B" stall) via two separate indirect diagnostics
 		// (MAME_SGI_KBD_SCAN_RATE_DIAG + MAME_SGI_DRC_COMPILE_RATE_DIAG)
 		// matched by timestamp after the fact - no direct instrument existed
 		// for this until now. This is a genuinely different axis from
 		// perf_ab_stats.sh's aggregate instructions/cycles comparison, which
 		// can't distinguish "374ms in one lump" from "374ms spread across
 		// many small pieces" - only a real wall-clock stall-duration measure
-		// can see that difference, which is exactly what task #81
-		// (segmented DRC cache) would need to demonstrate its value.
+		// can see that difference, which is exactly what a segmented DRC
+		// cache would need to demonstrate its value.
 		// _over_threshold_count counts events exceeding
 		// MAME_SGI_STALL_DIAG_THRESHOLD_NS (mips3.cpp) - the DoS-relevant
 		// bucket a human would perceive as a stutter/dropped input, as
@@ -682,7 +680,7 @@ protected:
 		uint32_t        diag_flush_stall_over_threshold_count;
 		uint32_t        diag_flush_stall_event_count;
 
-		// MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG (2026-09-16, task #97 QoS
+		// MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG (2026-09-16, QoS
 		// follow-up) - is a long compile a function of how far describe_code()
 		// had to traverse (window_limit/branch-driven sequence length), or
 		// something else? code_compile_block() (mips3drc.cpp) counts the total
@@ -700,7 +698,7 @@ protected:
 		// than a coefficient alone.
 		uint32_t        diag_last_compile_instruction_count;
 
-		// Fix (2026-09-17, task #97 QoS follow-up, found while interpreting
+		// Fix (2026-09-17, QoS follow-up, found while interpreting
 		// stall_ab_stats.sh's pearson_r/outlier output): code_compile_block()
 		// (mips3drc.cpp) has a third code_flush_cache() call site - the
 		// abort_compilation catch block inside its own while(!succeeded)
@@ -726,7 +724,7 @@ protected:
 		// loop hits abort_compilation more than once in a single call.
 		uint64_t        diag_last_compile_flush_ns;
 
-		// TEMPORARY diagnostic (2026-09-17, task #97 QoS follow-up,
+		// TEMPORARY diagnostic (2026-09-17, QoS follow-up,
 		// continuing the investigation once the flush-attribution fix
 		// above ruled out the internal-flush mechanism as the cause of
 		// the ~10-13ms "long compile" outliers still seen after that fix).
@@ -765,7 +763,7 @@ protected:
 		uint64_t        diag_describe_code_total_ns;
 		uint64_t        diag_compile_longest_describe_ns;
 
-		// Duration histogram (2026-09-17, task #97 QoS follow-up) - added
+		// Duration histogram (2026-09-17, QoS follow-up) - added
 		// after describe_code() was directly measured and ruled out as the
 		// outlier cause (0.01-0.16% share of the ~11-14ms events), to
 		// answer a prior question before drilling further: are these truly
@@ -777,7 +775,7 @@ protected:
 		// subtracted) per-event ns already fed to diag_compile_corr_*.
 		uint64_t        diag_compile_duration_histogram[6];
 
-		// TEMPORARY diagnostic (2026-09-17, task #101 Phase 0) - real
+		// TEMPORARY diagnostic (2026-09-17, fixed-checkpoint checkints experiment, Phase 0) - real
 		// host wall-clock frequency of the two mechanisms that can deliver
 		// an interrupt under DRC: static_generate_entry_point()'s
 		// unconditional per-re-entry check, and static_generate_out_of_
@@ -785,7 +783,7 @@ protected:
 		// through entry_point almost always follows it - see this diag's
 		// own comment in mips3drc.cpp for the full motivation). Answers a
 		// question this project's own 2026-07-26 investigation
-		// (wiki/assets.md, the mrupdatef livelock) left unexplained: given
+		// (the mrupdatef livelock) left unexplained: given
 		// entry-point's check was already active then and still missed a
 		// real interrupt for 10 real wall-clock seconds, how often does
 		// host C++ actually regain control in practice? Lightweight
@@ -802,7 +800,7 @@ protected:
 		uint64_t        diag_entry_interval_min_ns;      // starts at UINT64_MAX, see reset in device_start()
 		uint64_t        diag_out_of_cycles_count;
 
-		// Added 2026-09-17 (task #101, fasthz A/B) - alongside the wall-
+		// Added 2026-09-17 (fasthz A/B) - alongside the wall-
 		// clock interval above, also snapshot device_execute_interface::
 		// total_cycles() (real guest cycles executed, cumulative) at every
 		// re-entry, and remember the guest-cycle delta specifically for
@@ -821,16 +819,15 @@ protected:
 		// code_compile_block()'s null-seqlast fallback fires (the
 		// permanent fix itself is unconditional, see its own comment) and
 		// the seqhead PC of the most recent occurrence. Reported once as
-		// a clean-exit summary in device_stop() (mips3.cpp). See
-		// wiki/assets.md's "first DRC bug" section for the full root
-		// cause (build_sequence() in drcfe.ipp discarding a reclaimed
-		// branch-likely description's end_sequence() flag).
+		// a clean-exit summary in device_stop() (mips3.cpp). Root cause:
+		// build_sequence() in drcfe.ipp discarding a reclaimed
+		// branch-likely description's end_sequence() flag.
 		uint32_t        diag_null_seqlast_count;
 		uint32_t        diag_null_seqlast_last_pc;
 
 		// Standing counters (2026-08-22, not a temporary diagnostic -
-		// this is the fix itself, task #8, MAME_SGI_TLB_MISMATCH_REFRESH_
-		// FIX): how often static_generate_tlb_mismatch()'s skip branch
+		// this is the fix itself, MAME_SGI_TLB_MISMATCH_REFRESH_FIX):
+		// how often static_generate_tlb_mismatch()'s skip branch
 		// was able to redispatch through the hash table instead of
 		// falling through to EXECUTE_MISSING_CODE (refresh_hits -
 		// recompile avoided) out of every arrival at that branch
@@ -839,7 +836,7 @@ protected:
 		uint32_t        diag_tlb_mismatch_skip_total;
 		uint32_t        diag_tlb_mismatch_refresh_hits;
 
-		// Part of MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8) - the last
+		// Part of MAME_SGI_TLB_MISMATCH_REFRESH_FIX - the last
 		// guest PC the shared tlb_mismatch handler redispatched rather
 		// than recompiling. Read back on the next arrival at that
 		// handler's skip branch: if it is the same PC, the redispatch
@@ -850,7 +847,7 @@ protected:
 		// word-aligned PC. See static_generate_tlb_mismatch().
 		uint32_t        tlb_mismatch_retry_pc;
 
-		// Standing counters (2026-09-16, task #97 investigation -
+		// Standing counters (2026-09-16, QoS investigation -
 		// MAME_SGI_NOCODE_REFRESH_FIX): the shared nocode handler
 		// (static_generate_nocode_handler) is the universal fallthrough for
 		// every UML_HASHJMP miss in this file, not just the tlb_mismatch
@@ -1042,7 +1039,7 @@ protected:
 		uint32_t        diag_ctc1_mxcsr_fmod;        /* TEMPORARY (2026-08-24): the fmod value (uml::float_rounding_mode) that CTC1 just requested via UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_ctc1_mxcsr_real_rc;     /* TEMPORARY (2026-08-24): real live MXCSR RC bits actually observed right after that UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_sd_pc;                  /* TEMPORARY (2026-07-27): desc->pc of the SD instruction, for func_sd_value_probe to report */
-		uint64_t        diag_task84_save_count;      /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG - incremented by save_fast_iregs() itself (covers all 4 active call sites by construction), read alongside diag_task84_load_count to check the save/load structural balance the user proposed - see wiki/task84.md's matching entry. */
+		uint64_t        diag_task84_save_count;      /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG - incremented by save_fast_iregs() itself (covers all 4 active call sites by construction), read alongside diag_task84_load_count to check the save/load structural balance the user proposed. */
 		uint64_t        diag_task84_load_count;      /* TEMPORARY (2026-09-05): companion to diag_task84_save_count, incremented by load_fast_iregs() (the single active call site, static_generate_entry_point). Expected to stay within {0,1} of diag_task84_save_count if save/load structurally alternate as assumed - an imbalance beyond that would be a genuine, previously-unverified structural finding. */
 		uint64_t        diag_task84_bracket_save_entry; /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BRACKET_DIAG - snapshot of diag_task84_save_count taken at cpp_get_token's own call site (0x1007df48), so func_task84_saveload_bracket_exit (at the return site, 0x1007df50) can compute the exact save/load activity delta for ONE invocation in guest-instruction order, not wall-clock. */
 		uint64_t        diag_task84_bracket_load_entry; /* TEMPORARY (2026-09-05): companion to diag_task84_bracket_save_entry, for diag_task84_load_count. */
@@ -1187,7 +1184,7 @@ protected:
 	// finds - see code_compile_block() for where this is consulted/updated.
 	std::unordered_set<offs_t> m_checkints_addrs;
 
-	// TEMPORARY diagnostic (2026-09-17, task #100 scoping) - what fraction
+	// TEMPORARY diagnostic (2026-09-17, checkints scoping) - what fraction
 	// of all distinct compiled PCs actually end up in m_checkints_addrs
 	// above? Answers the open scoping question directly rather than
 	// guessing between "bound growth via clear-on-flush" (sound if this is
@@ -1233,7 +1230,7 @@ protected:
 
 	// MAME_SGI_RECOMPILE_STUDY_DIAG (mips3drc.cpp): classifies every
 	// USER-mode compile request by cause and records the code content, for
-	// the recompile study (task #8). Populated in code_compile_block(),
+	// the recompile study. Populated in code_compile_block(),
 	// written to a TSV file by recompile_study_dump() from device_stop().
 	struct recompile_study_key
 	{
@@ -1307,8 +1304,8 @@ protected:
 	// TEMPORARY diagnostic (2026-08-08): measures whether a 1-slot
 	// per-call-site inline cache would actually hit at jmpdest (JR/JALR),
 	// the hottest HASHJMP dispatch site - the deciding question before
-	// implementing the self-patching/inline-caching redesign discussed in
-	// journal.md 2026-08-08 (targets HASHJMP's 3-dependent-load table walk,
+	// implementing the self-patching/inline-caching redesign discussed
+	// 2026-08-08 (targets HASHJMP's 3-dependent-load table walk,
 	// shown to cost DRC 38.6x more cache-misses/instruction than the
 	// interpreter on identical guest work). Keyed by desc->pc (this JR/JALR
 	// instruction's own guest address - the call-site identity, stable
@@ -1331,8 +1328,7 @@ protected:
 	std::unordered_map<uint32_t, callsite_ic_entry> m_diag_callsite_ic_state;
 
 	// PROTOTYPE (2026-08-08): per-call-site guard-based inline cache for
-	// the jmpdest HASHJMP site - see journal.md 2026-08-08 for the full
-	// design rationale and history (targets the measured 38.6x cache-
+	// the jmpdest HASHJMP site (targets the measured 38.6x cache-
 	// miss/instruction gap between DRC and the interpreter, traced to
 	// HASHJMP's 3 sequential dependent loads through large, sparse
 	// global tables). Two full redesigns preceded this one: (1) a
@@ -1604,7 +1600,7 @@ private:
 	// own page (indistinguishable from a legitimately-shared one under
 	// WRITE_ALLOWED alone) got misclassified as shareable, poisoning the
 	// shared key with a degenerate page-fault stub. Reproduced a real
-	// livelock immediately (journal.md 2026-08-06/07) - reverted to
+	// livelock immediately (2026-08-06/07) - reverted to
 	// FETCH_ALLOWED-aware for both pages, the proven-safe version.
 	// page_shareable() used for both pc and pc+4 in dispatch_page_writable()
 	// below.
@@ -1623,10 +1619,9 @@ private:
 	// nothing and is always correct to require). This one function is
 	// the single choke point every registration/lookup site in this file
 	// funnels through (directly, or via static_dispatch_key()/
-	// live_dispatch_key() below) - see wiki/performance.md and
-	// journal.md 2026-08-06 for two earlier, narrower attempts that
-	// instead special-cased the fix at the registration site only,
-	// causing a registration/lookup key mismatch and an infinite
+	// live_dispatch_key() below). Two earlier, narrower attempts
+	// (2026-08-06) instead special-cased the fix at the registration
+	// site only, causing a registration/lookup key mismatch and an infinite
 	// EXECUTE_MISSING_CODE/recompile livelock. generate_select_
 	// dispatch_key() (mips3drc.cpp) is the one call site that can't
 	// route through this host-side function (it needs the equivalent
@@ -1637,11 +1632,11 @@ private:
 	// A/B toggle (2026-08-06, reverted to off 2026-08-07) - undefined to
 	// run dispatch_page_writable() (and generate_select_dispatch_key()'s
 	// matching JIT'd codegen, mips3drc.cpp) on the original single-page,
-	// WRITE_ALLOWED-only check (pre-2026-08-06, the wiki's 2026-08-02
+	// WRITE_ALLOWED-only check (pre-2026-08-06, the 2026-08-02
 	// baseline config: 13-15 flushes for a full boot). The two-page,
 	// FETCH_ALLOWED-aware check is the *more correct* one (closes a real
-	// delay-slot race - journal.md 2026-08-06), but journal.md 2026-08-07
-	// 00:14-00:52 measured that FETCH_ALLOWED-awareness itself - not page
+	// delay-slot race, 2026-08-06), but 2026-08-07 00:14-00:52
+	// measurements showed that FETCH_ALLOWED-awareness itself - not page
 	// count - is what's expensive: a single-page variant that kept
 	// FETCH_ALLOWED (`ab_singlepage2`, still calling page_shareable())
 	// was just as slow (415s) as the two-page version (424s) at the
@@ -1652,8 +1647,8 @@ private:
 	// trades back in has never been observed to cause anything worse than
 	// an extra, self-correcting recompile (a stale stub throws EXH, a
 	// fresh compile follows) - never a crash or wrong result - so until
-	// the epoch/generation-counter redesign (journal.md 2026-08-07,
-	// "Fix 3") lands, paying the smaller known cost is the better trade.
+	// the epoch/generation-counter redesign (2026-08-07, "Fix 3")
+	// lands, paying the smaller known cost is the better trade.
 	// Re-define to switch back to the FETCH_ALLOWED-aware, two-page,
 	// slower-but-more-correct behavior.
 // #define MAME_SGI_DISPATCH_TWO_PAGE_CHECK

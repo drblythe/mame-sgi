@@ -333,7 +333,7 @@ public:
 	// file close
 	void close();
 
-	// Bug fix (task #72): flush any pending writes to the underlying
+	// Bug fix: flush any pending writes to the underlying
 	// storage - see chd.cpp's chd_file::flush() for the full chain.
 	std::error_condition flush() noexcept;
 

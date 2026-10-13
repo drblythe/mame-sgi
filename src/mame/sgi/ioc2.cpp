@@ -39,9 +39,9 @@
 // interrupt genuinely stuck asserted, Local0 would stay latched with kbdc
 // completely quiet. This counts both sources' calls/state to check.
 // DISABLED (2026-07-31): investigation resolved, real fix is the kbd_int_w/
-// aux_int_w change replacing the input_merger_device wiring above - see
-// wiki/assets.md. Left in place, gated, in case future work needs it again.
-// RE-ENABLED (2026-08-15): task #65 live repro - checking whether the
+// aux_int_w change replacing the input_merger_device wiring above. Left
+// in place, gated, in case future work needs it again.
+// RE-ENABLED (2026-08-15): live repro - checking whether the
 // SDL-side mouse/keyboard freeze coincides with a similar stuck-latched
 // interrupt pattern on the guest side.
 #define MAME_SGI_IOC2_STORM_DIAG

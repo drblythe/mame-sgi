@@ -156,7 +156,7 @@ public:
 
 	virtual std::error_condition flush() noexcept override
 	{
-		// Bug fix (task #72): no user-space buffering on unistd I/O, but
+		// Bug fix: no user-space buffering on unistd I/O, but
 		// callers relying on flush() as a real durability barrier (e.g.
 		// CHD's SCSI SYNCHRONIZE CACHE handling) need more than "already
 		// handed to the kernel" - fsync() forces dirty pages actually out

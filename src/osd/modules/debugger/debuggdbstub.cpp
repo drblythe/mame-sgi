@@ -872,7 +872,7 @@ int debug_gdbstub::readchar()
 		m_readbuf_len = m_socket.read(m_readbuf, sizeof(m_readbuf), err);
 		if ( m_readbuf_len == 0 )
 		{
-			// FIX (2026-09-12, task #90): "no data yet, still waiting" (a
+			// FIX (2026-09-12): "no data yet, still waiting" (a
 			// non-blocking poll with nothing ready) reports actual == 0
 			// WITH an operation_would_block error - err is set, ignore it
 			// below exactly as before this fix, just retry. A genuinely
@@ -1300,7 +1300,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_m(const char *buf)
 		// crosses a page boundary), while the same guest address read via
 		// gdb attached natively inside the guest (unaffected by this code
 		// at all) came back correct - see tools/gdb_session.py's --hookrun
-		// mode and task #84's investigation for how this was found.
+		// mode for how this was found.
 		offs_t offset = address + i;
 		address_space *tspace;
 		if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_READ, offset, tspace) )

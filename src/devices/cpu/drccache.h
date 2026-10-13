@@ -54,7 +54,7 @@ public:
 	// getters
 	drccodeptr near() const { return m_near; }
 	drccodeptr top() const { return m_top; }
-	uint32_t flush_count() const { return m_flush_count; }  // task #8 standing feature - see mips3drc.cpp's code_compile_block() for the full rationale
+	uint32_t flush_count() const { return m_flush_count; }  // standing feature - see mips3drc.cpp's code_compile_block() for the full rationale
 	uint64_t generation() const { return m_generation; }    // bumped by every flush, never reset: code addresses are only reused across generations
 
 	// pointer checking
@@ -72,9 +72,9 @@ public:
 	// a test run) skips the destructor entirely, so without this a real
 	// cache-thrashing regression (a full permanent cache and hundreds of
 	// flushes reached within seconds of boot, say) can run for an entire
-	// session without ever being visible - see mame-sgi's journal.md
-	// 2026-08-07 for the ~5x regression this print would have caught
-	// immediately instead of after an extended, unrelated investigation.
+	// session without ever being visible (a ~5x regression on 2026-08-07
+	// would have been caught immediately by this print instead of after
+	// an extended, unrelated investigation).
 	void print_statistics() noexcept;
 
 	// resets the running counters (flush count, max transient high-water

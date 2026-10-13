@@ -3,8 +3,7 @@
 /*
  * nwd33c9x.cpp
  *
- * See nwd33c9x.h for the full design rationale (task #7, wiki/tasks.md,
- * wiki/scsi-coarse-schedule-scoping.md). Short version: this is a fork of
+ * See nwd33c9x.h for the full design rationale. Short version: this is a fork of
  * machine/wd33c9x.cpp's initiator half (kept near-verbatim - only the
  * m_scsi_bus-touching call sites change, to direct calls into the target
  * half below instead of through nscsi_bus_device) plus a hand-ported,
@@ -34,7 +33,7 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// TEMPORARY diagnostic (2026-10-10, task #128): when $MAME_SGI_SCSI_LOG names
+// TEMPORARY diagnostic (2026-10-10): when $MAME_SGI_SCSI_LOG names
 // a file, log each command start (with the CDB for select-and-transfer) and
 // each interrupt raised or held back, with emulated time, to find a request
 // that never completes.
@@ -71,8 +70,8 @@ static constexpr uint32_t MAME_SGI_SCSI_COARSE_MAX_ITERATIONS = 65536;
 // "off" configuration for this constant.
 static constexpr uint32_t MAME_SGI_SCSI_DELAY_SCALE = 500;
 
-// TEMPORARY diagnostic (task #7, added 2026-09-27): answers this task's own
-// open prerequisite for the CD-ROM path specifically - does IRIX's real
+// TEMPORARY diagnostic (added 2026-09-27): answers an open prerequisite
+// of this device's fast path for the CD-ROM path specifically - does IRIX's real
 // driver ever put the CD-ROM target into POLLED mode, or read AUXILIARY_
 // STATUS mid-transfer, the way it might need to if it ever observes
 // intermediate per-byte state there? The disk-only answer (BURST-only,
@@ -86,7 +85,7 @@ static constexpr uint32_t MAME_SGI_SCSI_DELAY_SCALE = 500;
 // attribute each CONTROL write / AUXILIARY_STATUS read to whichever target
 // is actually selected at that moment, so disk and CD-ROM traffic can be
 // told apart even without a perfectly quiescent test window. Revert once
-// the answer is recorded in wiki/tasks.md's task #7 row.
+// the answer is recorded.
 // #define MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
 #ifdef MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
 namespace {
@@ -1952,7 +1951,7 @@ void nwd33c9x_device::clear_drq()
 // (T_TARGET_SELECT_WAIT_BUS_SETTLE) to actually fire before the
 // initiator's own arbitration timeout gives up. This is a correctness
 // requirement, not a boot-time optimization - the earlier note here
-// (and the discussion in wiki/tasks.md's task #7 row) conflated it with
+// conflated it with
 // the separate, narrower finding that widening SCALE further (50->500)
 // doesn't measurably change boot time once *some* adequate margin exists.
 // MAME_SGI_SCSI_DELAY_EXPERIMENT/MAME_SGI_SCSI_DELAY_SCALE restored below,
@@ -2263,7 +2262,7 @@ void nwd33c9x_device::t_step(bool timeout)
 void nwd33c9x_device::t_target_recv_byte()
 {
 #ifdef MAME_SGI_SCSI_BURST_FASTPATH
-	// Task #118 fast path (DATA_OUT direction) - see nwd33c9x.h's own
+	// Fast path (DATA_OUT direction) - see nwd33c9x.h's own
 	// comment on MAME_SGI_SCSI_BURST_FASTPATH for the full rationale and
 	// the live-traced synchronous call chain this relies on. Only takes
 	// over once this function has already been reached normally at least
@@ -2341,7 +2340,7 @@ void nwd33c9x_device::t_target_send_byte(uint8_t val)
 void nwd33c9x_device::t_target_send_buffer_byte()
 {
 #ifdef MAME_SGI_SCSI_BURST_FASTPATH
-	// Task #118 fast path (DATA_IN direction) - see nwd33c9x.h's own
+	// Fast path (DATA_IN direction) - see nwd33c9x.h's own
 	// comment on MAME_SGI_SCSI_BURST_FASTPATH for the full rationale and
 	// the live-traced synchronous call chain this relies on. Only takes
 	// over once this function has already been reached normally at least
@@ -2350,8 +2349,8 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 	// below, same as the last byte (loop condition excludes it).
 	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
 		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
-			// Root-caused 2026-10-01 (single-command isolation, see
-			// wiki/performance.md task #118 section): the original version
+			// Root-caused 2026-10-01 (single-command isolation): the
+			// original version
 			// of this loop skipped the initiator-side per-byte bookkeeping
 			// entirely, not just the timer/scheduler overhead the already-
 			// shipped MAME_SGI_SCSI_COARSE_SCHEDULE feature already strips
@@ -2375,8 +2374,8 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 			set_i_state(INIT_XFR_WAIT_REQ);
 		}
 	}
-	// Root-caused 2026-10-01 (single-command isolation, see
-	// wiki/performance.md task #118 section): T_TARGET_WAIT_DATA_IN_BYTE's
+	// Root-caused 2026-10-01 (single-command isolation):
+	// T_TARGET_WAIT_DATA_IN_BYTE's
 	// own dispatch in t_step() is normally the ONLY place that sets
 	// m_t_state to T_TARGET_NEXT_CONTROL once m_t_data_buffer_pos reaches
 	// the last index, and it does so BEFORE calling this function for the

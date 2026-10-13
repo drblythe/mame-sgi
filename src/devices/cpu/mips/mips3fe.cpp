@@ -20,7 +20,7 @@
 // gets included here), so host-gdb breakpoints/locals resolve reliably
 // instead of landing in the wrong inlined frame under -O3. No effect on
 // JIT-generated guest code. Undefined by default - only enable for a
-// deliberate host-gdb investigation session (see wiki/debugging.md).
+// deliberate host-gdb investigation session.
 // #define MAME_SGI_HOST_DEBUG_NOOPT
 #ifdef MAME_SGI_HOST_DEBUG_NOOPT
 #pragma GCC optimize("O0")

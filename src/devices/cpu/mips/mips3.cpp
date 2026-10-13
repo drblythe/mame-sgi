@@ -10,14 +10,14 @@
 
 // TEMPORARY diagnostic (2026-08-13): triggers a one-shot machine().save()
 // at total_cycles() >= this value, from inside execute_run() itself - lets
-// the -state save/restore corruption investigation (see wiki/assets.md and
-// the mousetest_state/pausecheck/racecheck saves) repro against an early
+// the -state save/restore corruption investigation (the mousetest_state/
+// pausecheck/racecheck saves) repro against an early
 // PROM-execution moment (seconds of real boot, not 6+ minutes to login),
 // instead of always needing a full boot to reach a save point. Undefined
 // by default - set to a real cycle count (e.g. 1000, 10000) to arm it for
 // one test run.
-// DISABLED (2026-08-18) - task #66 (what this was built for) is done,
-// task #65 has since had a clean resume result too (see journal.md). Was
+// DISABLED (2026-08-18) - the -state save/restore investigation this was
+// built for is done, and has since had a clean resume result too. Was
 // left armed well past its intended one-shot use, silently doing a real
 // unconditional disk write (a full save-state) partway through every
 // single boot test since 2026-08-13, not just the one deliberate run it
@@ -26,12 +26,12 @@
 // #define MAME_SGI_EARLY_SAVE_DIAG 2829794
 
 // Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s and
-// mame_sgi_presave_diag()'s prints - concluded alongside task #66
-// above, was unconditionally wired via register_postload()/
+// mame_sgi_presave_diag()'s prints - concluded alongside the save/restore
+// investigation above, was unconditionally wired via register_postload()/
 // register_presave() (so fired on every single save/load, forever),
 // and both prints were mislabeled "MOUSEFOCUS_DIAG:" (an unrelated
 // copy-paste leftover, now fixed to their own name). Off by default;
-// re-enable if task #66's area needs revisiting.
+// re-enable if -state save/restore needs revisiting.
 // #define MAME_SGI_MIPS3_SAVE_DIAG
 
 // TEMPORARY diagnostic (2026-08-14): periodic PC/SR/Cause/k0/k1 trace, every
@@ -43,7 +43,7 @@
 // diagnostic's first-hit cycle, have both reproduced to the exact cycle
 // across independent runs today) to find the first point of actual
 // DIVERGENCE, rather than bisecting on the eventual observable failure
-// (which task #66/journal.md's 2026-08-14 entries found can be tens of
+// (which the 2026-08-14 investigation found can be tens of
 // millions of cycles downstream of whatever actually went wrong - a
 // bisection on failure alone can't distinguish "this save point is the
 // problem" from "this save point just takes longer to reach the same
@@ -55,7 +55,7 @@
 #define MAME_SGI_PC_TRACE_STEP 20
 #endif
 
-// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - see
+// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - see
 // diag_compile_stall_total_ns's comment in mips3.h for the full
 // motivation. Real host wall-clock timing around execute_run()'s own
 // code_compile_block()/code_flush_cache() call sites - the events that
@@ -73,8 +73,8 @@
 // threshold at all (every ns of stall is equally, permanently additive
 // drift, since the throttle-sleep mechanism tying the virtual attotime
 // timeline to real seconds only ever slows an over-fast run down, never
-// speeds an under-fast one back up - wiki/performance.md's `-nothrottle`
-// section) - the right metric for THAT is the _total field, not this
+// speeds an under-fast one back up, even under `-nothrottle`) - the
+// right metric for THAT is the _total field, not this
 // threshold. This threshold instead answers the complementary question:
 // can a single stall discretely miss a transient real-world event (Bug
 // B's actual mechanism - a host keyboard pulse needs the host SDL
@@ -93,7 +93,7 @@
 // itself is disabled, breaking that unconditional print's own compile.
 #define MAME_SGI_STALL_DIAG_THRESHOLD_NS 10'000'000ULL
 
-// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - see
+// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - see
 // diag_last_compile_instruction_count's comment in mips3.h. Self-defined
 // here too, matching mips3drc.cpp's own copy - see that file's comment on
 // this same macro for why (shared "optional" project, sgi.lua's defines{}
@@ -159,7 +159,7 @@ std::string mame_sgi_wallclock_timestamp()
 // macro's block defines). Real root cause: drcbex64.cpp's DRC entry point
 // never resyncing m_state.fmod (MAME_SGI_FMOD_ENTRY_RESYNC_FIX), a missing
 // write invisible to this record-and-compare technique regardless of
-// checkpoint density. See wiki/drc-bugfixes.md section D.
+// checkpoint density.
 // #define MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
 #ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
 void mame_sgi_mxcsr_diag_record();
@@ -248,8 +248,8 @@ void mame_sgi_mxcsr_diag_check(const char *checkpoint);
 // cause in the eviction/sizing logic itself.
 //
 // Tested 4x again (2026-08-08, briefly, reverted): even a healthy,
-// low-redundancy boot still flushes 15-17 times (wiki/performance.md,
-// 2026-08-01 baseline) - tried a 512MB cache to see whether cache-size
+// low-redundancy boot still flushes 15-17 times (2026-08-01
+// baseline) - tried a 512MB cache to see whether cache-size
 // pressure explains a meaningful share of DRC Compilation's ~28-32%-
 // of-busy-time cost (g_profiler, 2026-08-08). Result: flush count did
 // drop 4x (16 -> 4 for a full boot), but wall time was unchanged
@@ -259,8 +259,7 @@ void mame_sgi_mxcsr_diag_check(const char *checkpoint);
 // dominated by genuine first-time compilation, not cache-pressure-
 // driven redundancy - unlike the 2026-07-28 bump above, which fixed an
 // actual pathological thrashing hang, not just ordinary flush count.
-// Reverted to 128MB; a bigger cache alone isn't the lever here. See
-// journal.md 2026-08-08 for the full A/B.
+// Reverted to 128MB; a bigger cache alone isn't the lever here.
 #define DRC_CACHE_SIZE              (128 * 1024 * 1024)
 
 // MAME_SGI_DRC_CACHE_OPTION: -drc_cache_mb (command line, mame.ini or a
@@ -481,7 +480,7 @@ void mips3_device::device_stop()
 						: 100.0 * double(m_checkints_addrs.size()) / double(m_diag_checkints_all_compiled_pcs.size()));
 	}
 
-	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8) -
+	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX -
 	// see diag_tlb_mismatch_skip_total's comment in mips3.h. This used to
 	// be a live, self-rate-limited stderr print inside code_compile_block()
 	// (mips3drc.cpp); moved here 2026-09-11 per this project's hygiene
@@ -498,7 +497,7 @@ void mips3_device::device_stop()
 				100.0 * double(m_core->diag_tlb_mismatch_refresh_hits) / double(m_core->diag_tlb_mismatch_skip_total));
 	}
 
-	// Clean-exit summary for MAME_SGI_NOCODE_REFRESH_FIX (task #97) - see
+	// Clean-exit summary for MAME_SGI_NOCODE_REFRESH_FIX - see
 	// diag_nocode_skip_total's comment in mips3.h. Same shape as the
 	// TLB_MISMATCH_REFRESH_FIX summary above; the fix's own counters are
 	// incremented in static_generate_nocode_handler().
@@ -511,11 +510,11 @@ void mips3_device::device_stop()
 				100.0 * double(m_core->diag_nocode_refresh_hits) / double(m_core->diag_nocode_skip_total));
 	}
 
-	// Clean-exit summary for MAME_SGI_STALL_DURATION_DIAG (task #97 QoS
+	// Clean-exit summary for MAME_SGI_STALL_DURATION_DIAG (QoS
 	// follow-up) - see diag_compile_stall_total_ns's comment in mips3.h.
 	// Real host wall-clock time the single emulation thread spent inside
 	// code_compile_block()/code_flush_cache(), the events Bug B's 373.9ms
-	// freeze (console.md, task #75) was traced to - a different axis from
+	// console freeze was traced to - a different axis from
 	// the instructions/cycles-based perf_ab_stats.sh comparisons above.
 	if (m_core->diag_compile_stall_event_count != 0)
 	{
@@ -870,7 +869,7 @@ void mips3_device::mame_sgi_postload_diag()
 	// reading it later via a live trace hook (which only tells you what's
 	// there several thousand cycles after resume, leaving room for
 	// something else having touched it in between), this is the actual,
-	// unambiguous, race-free restored value. See task #66/journal.md.
+	// unambiguous, race-free restored value.
 	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
 	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 postload IMMEDIATE: PC=%08X SR=%08X Cause=%08X EPC=%08X | ioc2 local0=%08X local1=%08X mapstat=%08X | k0=%08X%08X k1=%08X%08X ra=%08X%08X | stack_slot@087FEF7C=%08X\n",
 		m_core->pc, m_core->cpr[0][COP0_Status], m_core->cpr[0][COP0_Cause], m_core->cpr[0][COP0_EPC],
@@ -893,7 +892,6 @@ void mips3_device::mame_sgi_presave_diag()
 	// same instant). Closes the other half of the round-trip verification:
 	// mame_sgi_postload_diag() already confirmed LOAD restores exactly
 	// what's in the file; this confirms SAVE wrote exactly what was live.
-	// See task #66/journal.md.
 #ifdef MAME_SGI_MIPS3_SAVE_DIAG
 	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
 	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 presave: PC=%08X SR=%08X Cause=%08X | stack_slot@087FEF7C=%08X\n",
@@ -921,7 +919,7 @@ void mips3_device::device_start()
 	// immediately above: memset() leaves this 0, a real guest PC.
 	m_core->nocode_retry_pc = 0xffffffff;
 	m_core->stub_site_pc = 0xffffffff;      // MAME_SGI_STALE_STUB_FIX: no stub pending
-	// Task #101 Phase 0 diag - memset() leaves this 0, which would make
+	// Fixed-checkpoint checkints experiment (Phase 0) diag - memset() leaves this 0, which would make
 	// the very first interval look like a 0ns minimum forever after.
 	m_core->diag_entry_interval_min_ns = ~uint64_t(0);
 
@@ -971,8 +969,7 @@ void mips3_device::device_start()
 	// nominal range since drc_hash_table's L1 tables are lazily allocated
 	// only for values actually seen at runtime, not this whole range.
 	// COMPILE_FORWARDS_BYTES (last arg) is upstream 0.289's new
-	// max_sequence_length parameter backing hash_invalidate_range() -
-	// see Finding 1, mame-sgi wiki/tasks.md 2026-09-15 port survey.
+	// max_sequence_length parameter backing hash_invalidate_range().
 	m_drcuml = std::make_unique<drcuml_state>(*this, m_drc_cache, flags, 2048, 32, 2, COMPILE_FORWARDS_BYTES);
 
 	/* add symbols for our stuff */
@@ -2752,8 +2749,7 @@ inline void mips3_device::set_cop1_creg(int idx, uint64_t val)
 		// anything guest-visible. Without this, the interpreter silently
 		// ignores CTC1-requested rounding modes and always rounds to
 		// nearest - unlike the DRC, whose UML_SETFMOD (driven by this
-		// same RM field via m_fpmode) does apply it. See wiki/drc-
-		// bugfixes.md task #83.
+		// same RM field via m_fpmode) does apply it.
 		fesetround(fesetround_source[val & 3]);
 	}
 }
@@ -6168,7 +6164,7 @@ void mips3_device::execute_run()
 			// broad cycle safety range, rather than a narrow cycle window -
 			// used to find where a CONTINUOUS boot's own visit(s) to this
 			// exact instruction land, for comparison against the -state
-			// reload's corrupted $ra=0 there (see task #66/journal.md).
+			// reload's corrupted $ra=0 there.
 			if (cyc <= 6000000 && m_core->pc == 0xbfc1174c)
 			{
 				osd_printf_verbose("MAME_PC_TRACE_INSN: cyc=%llu PC=%08X SR=%08X Cause=%08X k0=%08X%08X k1=%08X%08X sp=%08X%08X ra=%08X%08X\n",

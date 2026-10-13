@@ -5,7 +5,7 @@
 #include "emumem_hea.h"
 #include "emumem_hem.h"
 
-// TEMPORARY DIAGNOSTIC (2026-09-30, task #119). sgi/mc.cpp's add_fastram()
+// TEMPORARY DIAGNOSTIC (2026-09-30). sgi/mc.cpp's add_fastram()
 // registration (CPU-side DRC fast path) never sees a write that
 // genuinely lands at physical 0x1014 (or its two RAM aliases,
 // 0x08001014/0x0c001014) - confirmed by instrumenting the DRC's own

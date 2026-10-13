@@ -41,7 +41,7 @@
 
 // DISABLED (2026-08-14, same day): already served its purpose (built the
 // offset map used to identify the HPC3 PBUS DMA channel 1/2 arm-timing
-// finding - see task #66/journal.md). Left the implementation in place
+// finding). Left the implementation in place
 // (dump_registry() below) in case another offset-map needs to be pulled
 // later, but re-enable deliberately - firing unconditionally on every boot
 // interleaves with other stderr-writing diagnostics (confirmed live: torn/
@@ -546,7 +546,7 @@ void save_manager::dump_registry() const
 	// on VERBOSE being nonzero) - printed in save-stream order, so a running
 	// cumulative sum of typesize*typecount*blockcount gives the exact byte
 	// offset of each entry, for correlating a raw binary diff of two .sta
-	// files against real device/field names. See task #66.
+	// files against real device/field names.
 	uint64_t cum = 0;
 	for (auto &entry : m_entry_list)
 	{

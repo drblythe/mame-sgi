@@ -169,7 +169,7 @@ public:
 	// mips3.h's debug_get_codeptr() host-gdb helper (gated by the
 	// separate MIPS3_DEBUG_HELPERS, which is defined/active). Originally
 	// added alongside mips3drc.cpp's guard-based per-call-site inline
-	// cache prototype (see wiki/drc-optimizations.md) - that consumer is
+	// cache prototype - that consumer is
 	// currently disabled (MAME_SGI_CALLSITE_IC_PROTOTYPE commented out,
 	// confirmed not compiled into the binary), but this accessor stayed
 	// since the debug helper still needs it. Implemented in every

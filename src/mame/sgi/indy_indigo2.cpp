@@ -92,19 +92,19 @@
 // unconditional), currently enabled.
 #define MAME_SGI_RTC_HOST_RESYNC
 
-// Opt-in/toggleable test switch (task #7, wiki/tasks.md): swaps the boot-
+// Opt-in/toggleable test switch: swaps the boot-
 // disk SCSI controller from the stock WD33C93B+NSCSI_BUS+NSCSI_HARDDISK
 // setup for nwd33c9x_device (src/mame/sgi/nwd33c9x.h/.cpp), the flat
 // single-object reimplementation built to eliminate the per-byte cost
 // measured in nscsi_full_device::step() and nscsi_bus_device::regen_ctrl()
-// (wiki/performance.md's 2026-09-20 entry). Supports up to 8 embedded
+// (measured 2026-09-20). Supports up to 8 embedded
 // disks (slot index == SCSI ID, zero per-byte dispatch overhead - the
 // actual performance target) and CD-ROMs via its own internal real
 // NSCSI_BUS bridge (100% of MAME's stock CD-ROM emulation, unmodified -
 // never the performance target, so not worth reimplementing - see
 // nwd33c9x.h's header comment). Enabled by default as of 2026-09-20 (the
-// validated ~2.9x real disk-throughput win over the stock device, task #7's
-// own row); comment out to A/B back against the stock device instead.
+// validated ~2.9x real disk-throughput win over the stock device);
+// comment out to A/B back against the stock device instead.
 #define MAME_SGI_USE_NWD33C9X
 
 namespace {
@@ -394,7 +394,7 @@ TIMER_CALLBACK_MEMBER(ip24_state::rtc_host_resync)
 	m_rtc->set_current_time(live_time);
 
 	// set_current_time() re-triggers device_rtc_interface::set_time()'s
-	// generic "year % 100" encoding on every call, undoing the task #98
+	// generic "year % 100" encoding on every call, undoing the
 	// year-BCD fix below (real hardware here uses years-since-1940, not
 	// years-since-2000) every time this timer fires - confirmed live: the
 	// guest's own `date` jumped to 1996 the first time this ran, exactly
@@ -424,7 +424,7 @@ void ip24_state::machine_reset()
 	// codegen, unrelated to either of these options.
 	//m_maincpu->mips3drc_set_options(MIPS3DRC_COMPATIBLE_OPTIONS | MIPS3DRC_CHECK_OVERFLOWS);
 
-	// TEMPORARY diagnostic (2026-08-17, task #69/#71): MIPS3DRC_STRICT_COP1
+	// TEMPORARY diagnostic (2026-08-17): MIPS3DRC_STRICT_COP1
 	// forces check_cop1_access() to actually raise a BADCOP exception when
 	// SR.CU1 is clear, instead of being a no-op (mips3drc.cpp:6951-6957) -
 	// the interpreter has no equivalent check at all (grepped mips3.cpp for
@@ -437,14 +437,13 @@ void ip24_state::machine_reset()
 	// source constant and the load's native codegen both verified correct)
 	// but reads back 0.0 after a sighold() syscall sits in between, exactly
 	// the kind of point a real kernel context switch could occur.
-	// Task #84 bisection (2026-09-02): both MIPS3DRC_STRICT_VERIFY
+	// Bisection (2026-09-02): both MIPS3DRC_STRICT_VERIFY
 	// (26/100 vs 29/100 baseline) and MIPS3DRC_DISABLE_INTRABLOCK
 	// (20/100) made no measurable difference, each tested alone - both
 	// within this project's own established run-to-run noise band.
 	// Reverted to the normal STRICT_COP1-only state (a real, needed fix -
 	// see the comment above); bisection continues in mips3drc.cpp against
-	// the three local dispatch/validation patches instead. See
-	// wiki/console.md task #84 section for results as each step lands.
+	// the three local dispatch/validation patches instead.
 	m_maincpu->mips3drc_set_options(MIPS3DRC_STRICT_COP1);
 
 	// TEMPORARY diagnostic (2026-07-28): enable MAME's own built-in profiler
@@ -456,8 +455,8 @@ void ip24_state::machine_reset()
 	// part of the "DRC still nowhere near 10x faster than -nodrc" investigation.
 	g_profiler.enable(true);
 
-	// Bug fix (task #98): correct the RTC's year register (2026-08-15).
-	// Likely resolves wiki/README.md's still-open eventmond/"kernel
+	// Bug fix: correct the RTC's year register (2026-08-15).
+	// Likely resolves the still-open eventmond/"kernel
 	// modification time in the future" item - not yet directly
 	// reconfirmed live against that specific symptom. running_machine::start()
 	// unconditionally seeds every battery-backed RTC from real host time via
@@ -542,14 +541,13 @@ DEVICE_INPUT_DEFAULTS_END
 
 void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 {
-// TEMPORARY experiment (task #101, 2026-09-17): tightens the scheduler's
+// TEMPORARY experiment (2026-09-17): tightens the scheduler's
 // standing quantum ceiling below the stock 60Hz default (schedule.cpp's
 // own machine().config().maximum_quantum(attotime::from_hz(60)) fallback)
 // to test whether bounding worst-case interrupt-check latency at the
 // scheduler level can substitute for mips3drc.cpp's compile-time
 // self-loop/backward-branch heuristic (see MAME_SGI_DISABLE_CHECKINTS_
-// HEURISTIC_EXPERIMENT in that file) - see wiki/drc-fault-redesign-
-// scoping.md. Throwaway: never leave this defined in a committed build.
+// HEURISTIC_EXPERIMENT in that file). Throwaway: never leave this defined in a committed build.
 #ifdef MAME_SGI_QUANTUM_EXPERIMENT
 	config.set_maximum_quantum(attotime::from_hz(MAME_SGI_QUANTUM_EXPERIMENT));
 #endif

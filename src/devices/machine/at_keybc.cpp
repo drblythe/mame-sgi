@@ -98,8 +98,8 @@
 // re-request the aux IRQ, to see whether the embedded i8042 firmware is
 // genuinely re-asserting the request every cycle (vs. some other cause).
 // DISABLED (2026-07-31): investigation resolved, see ioc2.cpp's
-// kbd_int_w/aux_int_w and wiki/assets.md. Left in place, gated, in case
-// future work needs it again.
+// kbd_int_w/aux_int_w. Left in place, gated, in case future work needs
+// it again.
 // #define MAME_SGI_KBDC_STORM_DIAG
 
 #define LOG_COMMAND (1U << 1)

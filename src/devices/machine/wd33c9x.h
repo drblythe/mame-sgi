@@ -27,8 +27,8 @@
 // effect the guest can actually observe still happens once per byte,
 // identically either way - only how the "wait, then resume" step
 // between bytes is driven changes. Enabled by default as of 2026-09-19
-// after validation (real-world data-integrity and throughput testing,
-// see wiki/scsi-coarse-schedule-scoping.md): read determinism confirmed,
+// after validation (real-world data-integrity and throughput testing):
+// read determinism confirmed,
 // ~2x real disk throughput measured, boot-to-login regression clean.
 // The plain one-real-timer-per-byte path below remains the permanent
 // fallback and is what runs whenever this is undefined - a reversible,

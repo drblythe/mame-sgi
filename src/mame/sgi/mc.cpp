@@ -29,15 +29,14 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// Task #119, ON by default since 2026-09-30. Registers the MIPS3 DRC's
+// ON by default since 2026-09-30. Registers the MIPS3 DRC's
 // add_fastram() fast path for main RAM once PROM's boot-time autosizing
 // settles. Four real correctness bugs were found and fixed along the
 // way (stale JIT code after a runtime fastram change; flushing
 // synchronously from inside a device register write; a missing/wrong
 // endianness byte-lane swizzle in mips3drc.cpp's fastram accessor for
 // sizes 1/2/4; the same bug's size==8 counterpart, which was the cause
-// of a TLB-miss infinite loop) - see wiki task #119 for the full
-// investigation trail. Re-measured end to end before flipping this on:
+// of a TLB-miss infinite loop). Re-measured end to end before flipping this on:
 // boot-to-login shows a real, statistically significant ~10% reduction
 // in total instructions and ~6% in cycles (n=5 each side, Welch's
 // t-test p<0.0001 on both) - a universal win, every boot. A steady-
@@ -190,9 +189,9 @@ void sgi_mc_device::device_start()
 
 	// MAME_SGI_RAM_SAVESTATE_FIX: allocate installed memory here (once, for
 	// the device's whole lifetime) rather than in device_reset() - moved so
-	// save_pointer() below can register it. Confirmed live 2026-08-14
-	// (task #66/journal.md) that main system RAM was NEVER part of the
-	// save-state schema at all: device_reset() re-allocated m_ram[] fresh
+	// save_pointer() below can register it. Confirmed live 2026-08-14 that
+	// main system RAM was NEVER part of the save-state schema at all:
+	// device_reset() re-allocated m_ram[] fresh
 	// (make_unique value-initializes to zero) every device_reset() -
 	// including the implicit one every -state LOAD performs on a brand-new
 	// process - with no save_pointer() registration anywhere, so a -state
@@ -279,7 +278,7 @@ void sgi_mc_device::device_start()
 	// through MMIO, which a continuous boot's PROM naturally does early in
 	// POST, but a -state LOAD skips entirely (no MMIO write ever
 	// happens - it's a snapshot resume, not a re-execution of PROM's init).
-	// Confirmed live via a real repro (task #66/journal.md): a presave hook
+	// Confirmed live via a real repro: a presave hook
 	// reading a specific RAM address showed a genuine, real value there
 	// (0xBFC0F0E0) at the exact moment of save; a postload hook reading the
 	// SAME address after reload showed 0x00000000 - the raw bytes DID
@@ -948,8 +947,7 @@ void sgi_mc_device::write(offs_t offset, uint32_t data, uint32_t mem_mask)
 void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 {
 #ifdef MAME_SGI_RAM_FASTRAM
-	// Permanent safety check, not gated behind VERBOSE - see task #119's
-	// wiki row. Skipped during machine_phase::RESET, where pc() reads 0
+	// Permanent safety check, not gated behind VERBOSE. Skipped during machine_phase::RESET, where pc() reads 0
 	// (outside PROM ROM) before the CPU has resumed real execution.
 	if (machine().phase() != machine_phase::RESET)
 	{
@@ -1031,8 +1029,9 @@ void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 }
 
 #ifdef MAME_SGI_RAM_FASTRAM
-// Task #119. Deliberately NOT called from memcfg_w() itself - see this
-// task's wiki row for the two bugs found doing it there directly. This
+// Deliberately NOT called from memcfg_w() itself - doing it there
+// directly hit two bugs (stale JIT code after the fastram change, and
+// flushing synchronously from inside a device register write). This
 // timer is the only thing that ever touches fastram, and only fires
 // from a genuine scheduler callback, never nested inside guest code.
 TIMER_CALLBACK_MEMBER(sgi_mc_device::check_fastram_settle)
@@ -1050,14 +1049,12 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::check_fastram_settle)
 }
 
 // Registers add_fastram() for every region the install loop above has
-// ALREADY mapped via install_ram(). See task #119's wiki row for the
-// full rationale (why a full rebuild across both memcfg offsets, why
-// each region is bounded to its real backing bytes rather than any
-// mirrored window, why MIPS3_MAX_FASTRAM=3 silently degrading past its
-// limit is not a correctness issue) AND for the still-unresolved bug
-// this implementation hits (a hang shortly after PROM hands off to the
-// kernel - not yet root-caused; see the wiki row's full investigation
-// trail before re-enabling this).
+// ALREADY mapped via install_ram(). Design points: a full rebuild across
+// both memcfg offsets; each region bounded to its real backing bytes
+// rather than any mirrored window; MIPS3_MAX_FASTRAM=3 silently
+// degrading past its limit is not a correctness issue. The hang once
+// seen shortly after PROM hands off to the kernel was the size==8
+// fastram accessor bug described at the top of this file.
 void sgi_mc_device::rebuild_fastram()
 {
 	mips3_device &cpu = downcast<mips3_device &>(*m_maincpu);

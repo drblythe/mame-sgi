@@ -71,9 +71,8 @@
 // didn't hold once boot got far enough to reach it during heavy, normal
 // interrupt/kernel activity: 186,000+ synchronous fprintf+fflush calls
 // in under a minute of real time on one run, the same performance
-// problem already documented in wiki/console.md's "-str interacts badly
-// with verbose diagnostics" section. Their investigation concluded
-// (see wiki/assets.md's full eret-race writeup) - re-enable only if
+// problem seen whenever -str interacts with verbose diagnostics. Their
+// investigation concluded (the eret-race investigation) - re-enable only if
 // that specific mechanism needs re-examining again.
 // #define MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES
 
@@ -85,9 +84,9 @@
 // pfdat 0x%x" (rmap_delmap_nolock, irix/kern/os/rmap.c) - i.e. immediately
 // before a kernel panic that halts the machine anyway. Not a hot path by
 // construction; safe to leave on unconditionally. rmap_del's own root cause
-// was never determined in this investigation (see wiki/assets.md) - this
+// was never determined in this investigation - this
 // captures pfdp/pdep/caller at the actual panic site the next time it's hit.
-// RESTORED (2026-08-17) - task #69/#71 concluded (MIPS3DRC_STRICT_COP1
+// RESTORED (2026-08-17) - the stock-vs-modified A/B concluded (MIPS3DRC_STRICT_COP1
 // was the real fix).
 #define MAME_SGI_RMAP_DEL_PANIC_DIAG
 
@@ -96,10 +95,10 @@
 // operation - see mips3.h's comment on m_diag_usermode_recompile_counts
 // for the full mechanism/hypothesis. Counts recompile events per
 // (mode, pc), USER mode only, dumped at clean exit from mips3.cpp's
-// device_stop(). RESTORED (2026-08-17) - task #69/#71 concluded - at the
+// device_stop(). RESTORED (2026-08-17) - stock-vs-modified A/B concluded - at the
 // time judged "cheap... safe to leave on for a normal test run" on an
 // amortized-cost basis (one hash-map insert per compile).
-// DISABLED, THEN RE-ENABLED WITH A FIX (2026-09-17, task #97 QoS
+// DISABLED, THEN RE-ENABLED WITH A FIX (2026-09-17, QoS
 // follow-up) - that "cheap" judgment used the wrong success metric for
 // what this investigation actually needs. Amortized-O(1) insert cost is
 // real in aggregate, but says nothing about the periodic O(n) rehash
@@ -111,11 +110,11 @@
 // m_diag_usermode_recompile_counts (an unordered_map<uint64_t,uint32_t>,
 // never cleared, growing for the whole session) rehashing to 351,061
 // buckets was one of two real causes found for MAME_SGI_COMPILE_LENGTH_
-// CORRELATION_DIAG's ~11-13ms "long compile" outliers - see wiki/
-// performance.md's "Root cause found" subsection, describe_code()/
-// histogram/gdb-backtrace follow-up, for the other (m_checkints_addrs,
-// mips3.h - unconditional production code, not diagnostic-gated, spun
-// off as its own task since it needs a real fix, not just a toggle).
+// CORRELATION_DIAG's ~11-13ms "long compile" outliers - the other,
+// found by describe_code()/histogram/gdb-backtrace follow-up, was
+// m_checkints_addrs (mips3.h - unconditional production code, not
+// diagnostic-gated, spun off as its own task since it needs a real fix,
+// not just a toggle).
 // Re-enabled after adding a one-time reserve() at the insert site (see
 // its own comment below) that converts the periodic rehash stalls into
 // one predictable upfront allocation - verified via boot test that
@@ -123,7 +122,7 @@
 // this diagnostic active again.
 #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
-// TEMPORARY diagnostic (2026-10-09, task #8 recompile study): classifies
+// TEMPORARY diagnostic (2026-10-09, recompile study): classifies
 // every USER-mode compile request by cause - first compile of its key, after
 // a full cache flush, hash miss without a flush, rejected by the checksum
 // guard (nocode exit with the block still registered), or rejected by the
@@ -142,14 +141,14 @@
 // next to the TSV with .trace/.validate/.handler suffixes.
 // #define MAME_SGI_RECOMPILE_STUDY_DIAG
 
-// TEMPORARY diagnostic (2026-10-10, task #128): when $MAME_SGI_SYSCALL_LOG
+// TEMPORARY diagnostic (2026-10-10): when $MAME_SGI_SYSCALL_LOG
 // names a file, log every SYSCALL exception there - total cycles, ASID,
 // syscall number (v0) and a0-a3, plus the path string for calls whose
 // first or second argument is a path - to find what a guest process sleeps
 // in. Costs a C call per syscall when built in.
 // #define MAME_SGI_SYSCALL_LOG_DIAG
 
-// Diagnostic (2026-10-09, task #8): report the DRC hash table's footprint
+// Diagnostic (2026-10-09): report the DRC hash table's footprint
 // just before every cache flush and at exit - populated dispatch modes and
 // L2 tables in use, split into shared keys (mode < 8) and per-ASID keys
 // (MAME_SGI_DISPATCH_MODE_ASID_FIX composites), plus the L1/L2 tables
@@ -170,7 +169,7 @@
 // so later entries through the hash table reach fresh code.
 #define MAME_SGI_STALE_STUB_FIX
 
-// TEMPORARY diagnostic (2026-09-17, task #100 scoping) - see
+// TEMPORARY diagnostic (2026-09-17, checkints scoping) - see
 // m_diag_checkints_all_compiled_pcs's comment in mips3.h. Answers whether
 // m_checkints_addrs's per-PC sticky-set design is even the right shape:
 // if most compiled PCs end up armed anyway, tracking membership precisely
@@ -180,7 +179,7 @@
 // leave on for a normal test run while this scoping question is open.
 // #define MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
 
-// Originally a temporary diagnostic (2026-09-17, task #101 Phase 0) -
+// Originally a temporary diagnostic (2026-09-17, Phase 0) -
 // see diag_entry_reentry_count's comment in mips3.h. Real wall-clock
 // frequency of static_generate_entry_point()'s per-re-entry interrupt
 // check and static_generate_out_of_cycles()'s exit, measured directly
@@ -193,10 +192,10 @@
 // #define MAME_SGI_TASK101_REENTRY_FREQ_DIAG
 
 // See the full rationale (test evidence, caveats) at the use site
-// (code_compile_block()'s checkints arming block) and in this project's
-// own task #101 tracking. Confirmed live: disabling the entire dynamic
-// checkints heuristic apparatus produced zero measurable interrupt-
-// latency/drift regression against indirect_loop.s (the heuristic's own
+// (code_compile_block()'s checkints arming block). Confirmed live:
+// disabling the entire dynamic checkints heuristic apparatus produced
+// zero measurable interrupt-latency/drift regression against
+// indirect_loop.s (the heuristic's own
 // hardest case - an indirect-jump loop with no calls, so it gets none
 // of the front-end's own call-boundary sequence-ending protection
 // either), and an ordinary full boot produced no hang and nothing
@@ -216,10 +215,10 @@
 
 // TEMPORARY FIX, DISABLED BY DEFAULT (2026-08-01, refined 2026-08-02) -
 // see the full comment at its use site, generate_update_mode()
-// (mips3drc.cpp), and wiki/performance.md's "USER-mode cross-process
-// cache thrashing" section. Widens the DRC dispatch key to include
-// ASID, fixing cross-process cache collisions for private/writable code
-// while leaving kernel code's ASID-immunity intact.
+// (mips3drc.cpp). Addresses USER-mode cross-process cache thrashing.
+// Widens the DRC dispatch key to include ASID, fixing cross-process
+// cache collisions for private/writable code while leaving kernel
+// code's ASID-immunity intact.
 //
 // Numeric toggle, not a plain #define, specifically so all three
 // development states stay one line away during this still-in-progress
@@ -242,8 +241,7 @@
 //                against real IRIX kernel source ($IRIXSRC's
 //                exec.c/execmap(): "non-writable mappings... set up as
 //                MAP_SHARED", i.e. IRIX's own kernel already uses
-//                exactly this signal to decide what's safe to share) -
-//                see wiki/performance.md for the full source citation.
+//                exactly this signal to decide what's safe to share).
 // RESTORED (2026-08-06/07): the clean-baseline check (undefined) confirmed
 // ~103.5s to /.oldtmp, matching the original ~92.7s baseline - conclusively
 // showing the regression tracked back to this mechanism, not the two-page-
@@ -252,23 +250,22 @@
 // BOTH pages in dispatch_page_writable()/generate_select_dispatch_key(),
 // not just the delay-slot page that actually needs it - see
 // own_page_needs_asid()'s comment in mips3.h. Fixed there; this stays 2.
-// RESTORED to 2 (2026-08-17) after the task #69 ASID-vs-symptom A/B test:
+// RESTORED to 2 (2026-08-17) after the ASID-vs-symptom A/B test:
 // busy-loop reproduced identically with this disabled, confirming it's
 // not the cause (consistent with the earlier -nodrc result) - back to
 // the normal, validated-correctness-fix state.
 //
-// Task #84 bisection (2026-09-02): tested undefined - 18/100 failures,
+// cc1 <built-in> flake bisection (2026-09-02): tested undefined - 18/100 failures,
 // within this project's own established run-to-run noise band, same as
 // every other flag tested so far. Restored to 2 (the normal,
-// validated-correctness-fix state) - see wiki/console.md task #84
-// section for the result.
-// Task #84 forced-trigger retest (2026-09-02): undefined and tested
+// validated-correctness-fix state).
+// Flake forced-trigger retest (2026-09-02): undefined and tested
 // against the new 100%-reliable native-gdb repro trigger (not just the
 // earlier ~30% natural rate) - 30/30 failures, no change. Restored to 2.
-// Task #84 forced-trigger retest (2026-09-02): undefined and tested
+// Flake forced-trigger retest (2026-09-02): undefined and tested
 // against the new 100%-reliable native-gdb repro trigger (not just the
 // earlier ~30% natural rate) - 30/30 failures, no change. Restored to 2.
-// Task #84 natural-rate retest (2026-09-03): undefined again and tested
+// Flake natural-rate retest (2026-09-03): undefined again and tested
 // against the NATURAL (non-forced) rate this time - 30 iterations,
 // 3/30 failures (10%, one consecutive burst at i=19-21) - lower than
 // the established ~29-36% baseline with this fix enabled, and the same
@@ -277,7 +274,7 @@
 // its rate - rules out both "this fix's mere presence causes the bug"
 // and "more compile churn causes more failures" as explanations.
 // Restored to 2.
-// Task #84 natural-rate retest w/ passive polling (2026-09-03, later
+// Flake natural-rate retest w/ passive polling (2026-09-03, later
 // same day): undefined again to capture live mode/dispatch_mode/r19
 // telemetry (via /proc/pid/mem polling, no gdb) around the residual
 // failures - the as/sh/expr/gcc cross-binary-collision hypothesis was
@@ -300,12 +297,12 @@
 // check, not the checkints/mode machinery, turned out to be the actual
 // trigger for code_compile_block's "override" recompile path).
 // DISABLED (2026-08-06): investigation concluded, root cause identified
-// and fixed (see Fix 0, journal.md). Left as a toggle, not deleted -
+// and fixed. Left as a toggle, not deleted -
 // re-enable if generate_checksum_block's mismatch behavior needs
 // re-investigating.
 // #define MAME_DRC_CHECKSUM_MISMATCH_DIAG
 
-// TEMPORARY diagnostic (2026-09-03, task #84): same question as
+// TEMPORARY diagnostic (2026-09-03): same question as
 // MAME_DRC_CHECKSUM_MISMATCH_DIAG above (genuine self-modification vs.
 // a stale physical-address resolution baked into the compiled block),
 // retargeted at the "predicate's answer is empty" flake's own hot PCs
@@ -319,7 +316,7 @@
 // half isn't needed here.
 // #define MAME_SGI_CHECKSUM_MISMATCH_DIAG_TASK84
 
-// TEMPORARY diagnostic (2026-09-03, task #84): checksum-mismatch is
+// TEMPORARY diagnostic (2026-09-03): checksum-mismatch is
 // ruled out (5/5 forced reproductions, zero hits from the diagnostic
 // above) - this instead tracks, per watched PC, how many times
 // code_compile_block() has been called for it this process's whole
@@ -342,7 +339,7 @@
 // macros were checked, not an exhaustive pass.
 // #define MAME_SGI_RECOMPILE_TRACKING_TASK84
 
-// TEMPORARY diagnostic (2026-09-04, task #84 Opus-review followup #2):
+// TEMPORARY diagnostic (2026-09-04, Opus-review followup #2):
 // watches two specific registers at two specific PCs on every execution
 // through cc1's parse_answer() loop - $v0/r2 (fast-mapped to a host
 // register, per the Opus review's finding that this project's earlier
@@ -360,7 +357,7 @@
 // bigtest.c loop.
 // #define MAME_SGI_TASK84_V0_S3_DIAG
 
-// TEMPORARY diagnostic (2026-09-04, task #84 isolation test): the full
+// TEMPORARY diagnostic (2026-09-04, isolation test): the full
 // diagnostic above (save_fast_iregs()+UML_CALLC at both probe points)
 // turned out to completely and reproducibly SUPPRESS the bug (80/80
 // clean cc1-on-/dev/null runs, vs 60/60 failures with neither active) -
@@ -374,7 +371,7 @@
 // codegen/scheduling, not the register value.
 // #define MAME_SGI_TASK84_SAVEFASTIREGS_ONLY
 
-// TEMPORARY diagnostic (2026-09-04, task #84 control test): the sync-only
+// TEMPORARY diagnostic (2026-09-04, control test): the sync-only
 // variant above ALSO completely suppressed the bug (60/60 clean), but
 // save_fast_iregs() only writes the live host register to memory - it
 // doesn't reload it, so nothing about the register's own content changes.
@@ -394,7 +391,7 @@
 // in mips3com.h, confirmed 260/260 clean with fast registers off entirely).
 // #define MAME_SGI_TASK84_INERT_ONLY
 
-// TEMPORARY diagnostic (2026-09-04, task #84, second Opus review Test 1 -
+// TEMPORARY diagnostic (2026-09-04, second Opus review Test 1 -
 // the "poison store" test). Fast registers are back ENABLED for this test
 // (DISABLE_FAST_REGISTERS reverted to (0) in mips3com.h) - this writes an
 // obviously-wrong value into m_core->r[2] at 0x1007df50, the exact point
@@ -410,13 +407,13 @@
 // subtle "predicate's answer is empty" text - a decisive, unambiguous
 // result either way, not another narrowing step.
 // Disabled (2026-09-04) - CONFIRMED: 46/60 (76.7%) predicate failures vs
-// ~10% baseline, 0 crashes/segfaults. Clean dose-response result (see
-// journal.md 2026-09-04 18:44) - superseded by MAME_SGI_TASK84_WINDOW_TRACE
+// ~10% baseline, 0 crashes/segfaults. Clean dose-response result
+// (2026-09-04 18:44) - superseded by MAME_SGI_TASK84_WINDOW_TRACE
 // below, which goes looking for the actual missing/mismatched sync rather
 // than further demonstrating the mechanism is real.
 // #define MAME_SGI_TASK84_POISON_R2
 
-// TEMPORARY diagnostic (2026-09-04, task #84): two-sided trace to catch
+// TEMPORARY diagnostic (2026-09-04): two-sided trace to catch
 // the actual defect in the act, not just demonstrate it exists (per the
 // user's own sharp question - the poison/inert/disable-fast-regs tests
 // above all *demonstrate* the mechanism, none of them *locate* it).
@@ -443,7 +440,7 @@
 // (found a genuinely uninstrumented exit path).
 // #define MAME_SGI_TASK84_WINDOW_TRACE
 
-// TEMPORARY diagnostic (2026-09-04, task #84): the decisive save-vs-reload
+// TEMPORARY diagnostic (2026-09-04): the decisive save-vs-reload
 // audit. Resolves a hard contradiction the investigation reached: the
 // A/B/C/D experiments jointly imply m_core->r[2]'s MEMORY image goes stale
 // and is reloaded into r15 (writing the correct live value there = 0/140
@@ -471,7 +468,7 @@
 // clean run falsifies the deduction above and forces the search elsewhere.
 // #define MAME_SGI_TASK84_SAVE_RELOAD_AUDIT
 
-// TEMPORARY diagnostic (2026-09-05, task #84): does cpp_get_token's page
+// TEMPORARY diagnostic (2026-09-05): does cpp_get_token's page
 // actually get MAME_SGI_DISPATCH_MODE_ASID_FIX's shared, ASID-independent
 // dispatch key, or the full ASID-scoped one? See the use site
 // (code_compile_block(), ~line 1573) for the full rationale and the
@@ -484,7 +481,7 @@
 // (WRITE_ALLOWED clear), and all 7 observed hits in one run carried the
 // identical mode value (759) rather than varying per-ASID - the shared,
 // ASID-independent key genuinely is what's in effect here, not just the
-// fix's design intent. See journal.md's matching 2026-09-05 entry.
+// fix's design intent.
 // RE-ENABLED and EXTENDED (2026-09-05, same day) - causal-connection
 // follow-up: also logs the raw, unresolved m_core->dispatch_mode (ASID
 // composite) per compile of a given pc, to check whether it actually
@@ -500,13 +497,12 @@
 // at n=500 - narrowing AWAY from process/load complexity INCREASED the
 // hit rate, the opposite of what "more ASID transitions/load is the
 // trigger" would predict), significantly weakens the whole ASID-sharing/
-// process-count causal direction rather than confirming it. See
-// journal.md's matching 2026-09-05 entry for the full reasoning.
+// process-count causal direction rather than confirming it.
 // RE-ENABLED again (2026-09-05, same day) - genuine-concurrency follow-up:
 // prior test only ever had ONE process (cc1) active at a time, sequentially
 // re-executed - explaining the zero ASID variation found. This run adds
 // real concurrent background load (mxcsrtest/fcvtrepro/fpload/fputest2,
-// recovered into test/ this session - see wiki/README.md's $TEST entry)
+// recovered into test/ this session)
 // running alongside cc1_null_loop.sh, to test whether genuine multi-process
 // concurrency (as opposed to sequential reuse of one binary) produces
 // different ASID/recompile behavior.
@@ -517,7 +513,7 @@
 // sitting underneath every experiment run today.
 // #define MAME_SGI_TASK84_CPPGETTOKEN_ASID_DIAG
 
-// Task #84 (2026-09-05): direct experimental control over whether
+// cc1 flake (2026-09-05): direct experimental control over whether
 // cpp_get_token's own compiled sequence (seqhead 0x10076008) gets
 // interrupt-check preambles woven in at its interior branch targets.
 // Mutually exclusive - define at most one at a time (neither defined:
@@ -536,7 +532,7 @@
 // checkints behavior, not a forced-off build.
 // #define MAME_SGI_TASK84_FORCE_CHECKINTS_OFF
 
-// Task #84 (2026-09-05): logs every genuine interrupt delivery through
+// cc1 flake (2026-09-05): logs every genuine interrupt delivery through
 // static_generate_entry_point()'s unconditional check when the resume PC
 // falls inside cpp_get_token's window - the one interrupt-delivery
 // mechanism not yet ruled out after the checkints experiments above. See
@@ -544,7 +540,7 @@
 // for the full rationale.
 // #define MAME_SGI_TASK84_ENTRY_IRQ_DIAG
 
-// Task #84 (2026-09-05): user-proposed structural check - maintain running
+// cc1 flake (2026-09-05): user-proposed structural check - maintain running
 // counts of save_fast_iregs()/load_fast_iregs() call executions and look
 // for an imbalance. Counters live in m_core (diag_task84_save_count/
 // diag_task84_load_count, mips3.h) so a host-side gdb attach can read them
@@ -558,7 +554,7 @@
 // direct bug detector.
 // #define MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG
 
-// Task #84 (2026-09-05): precise, guest-instruction-order bracket around
+// cc1 flake (2026-09-05): precise, guest-instruction-order bracket around
 // ONE cpp_get_token() invocation's save/load activity - see
 // cfunc_task84_saveload_bracket_entry/_exit's own comment
 // (generate_sequence_instruction's use site) for the full rationale. This
@@ -571,7 +567,7 @@
 // this brackets).
 // #define MAME_SGI_TASK84_SAVELOAD_BRACKET_DIAG
 
-// Task #84 (2026-09-06): direct seqhead-boundary/checkints diagnostic for
+// cc1 flake (2026-09-06): direct seqhead-boundary/checkints diagnostic for
 // the stress_v0_split increment - logs every seqhead compiled within
 // stress_v0_split's own address window (0x10001000-0x10002000, shared
 // with the -drc_log_native address filter already repurposed for this
@@ -586,7 +582,7 @@
 // really does come up checkints=false as predicted.
 // #define MAME_SGI_TASK84_SEQHEAD_CHECKINTS_DIAG
 
-// TEMPORARY diagnostic (2026-09-07, task #84, third Opus review's §7.3 -
+// TEMPORARY diagnostic (2026-09-07, third Opus review's §7.3 -
 // "the single test that can settle the fast-register hypothesis in either
 // direction"): a continuous $v0 shadow-divergence detector. Nothing in this
 // investigation has ever directly asserted that r15 (when fast-mapped) still
@@ -649,10 +645,10 @@
 // the shadow-divergence line of investigation specifically.
 // #define MAME_SGI_TASK84_V0_SHADOW_DIAG
 
-// TEMPORARY diagnostic (2026-09-09, task #84) - direction 2 of the two
+// TEMPORARY diagnostic (2026-09-09) - direction 2 of the two
 // the user picked after cpp_get_token's AND parse_answer's own compiled
 // bytes were proven identical between passing and failing instances
-// (wiki/task84.md, 2026-09-09 "direct answer" entry): cpp_get_token is
+// (2026-09-09): cpp_get_token is
 // itself reached via a real GOT-indirect call (`lw $t9,-0x7998($gp)` /
 // `jalr $t9` at 0x1007df44/0x1007df48, confirmed via fresh disassembly -
 // not a plain direct `jal`). $t9/r25 is NOT fast-mapped on this build
@@ -667,7 +663,7 @@
 // probe.
 // #define MAME_SGI_TASK84_T9_GOT_DIAG
 
-// TEMPORARY diagnostic (2026-09-09, task #84) - a real EXECUTION-order
+// TEMPORARY diagnostic (2026-09-09) - a real EXECUTION-order
 // call trace, not the compile-order proxy used earlier today
 // (COMPILE_ORDER_DIAG logs when a PC is first JIT-compiled, once per
 // code region; this logs every actual JAL/JALR execution, which is what
@@ -682,9 +678,9 @@
 // pass/fail-correlated batch the way every other probe here is.
 // #define MAME_SGI_TASK84_CALL_TRACE_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - find the actual call
+// TEMPORARY diagnostic (2026-09-10) - find the actual call
 // site that decides between the ordinary-processing path and the
-// cpp_error path found via wiki/task84.md's 2026-09-10 OK-vs-PREDICATE
+// cpp_error path found via the 2026-09-10 OK-vs-PREDICATE
 // call-trace diff (divergence at ~line 160085, OK calling cpp_lookup vs
 // PREDICATE calling cpp_error at the same relative position). Static
 // disassembly can't resolve this: cc1 calls cpp_error (like
@@ -698,7 +694,7 @@
 // directly IS the call site, no $ra capture needed.
 // #define MAME_SGI_TASK84_CPPERROR_CALLSITE_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - static_generate_tlb_mismatch()
+// TEMPORARY diagnostic (2026-09-10) - static_generate_tlb_mismatch()
 // is a completely separate shared handler from static_generate_exception()
 // (the one MAME_SGI_TASK84_DRC_EVENT_LOG's log_drc_exception() already
 // hooks) - found live that task84_drc_events.log therefore has ZERO
@@ -711,12 +707,11 @@
 // static disassembly alone.
 // #define MAME_SGI_TASK84_TLB_MISMATCH_ENTRY_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - trace $v1 (the token
+// TEMPORARY diagnostic (2026-09-10) - trace $v1 (the token
 // type byte just fetched via cpp_get_token, read at 0x1007de90) and $s1
 // (a value saved from this function's own $a2 argument at entry) back
 // to their origin. Hooked at the first of the three `beq` checks
-// (0x1007de98) that decide whether to fall through to cpp_error - see
-// wiki/task84.md 2026-09-10 for the full disassembly this targets.
+// (0x1007de98) that decide whether to fall through to cpp_error.
 // Fires on EVERY execution of this check, not just cpp_error-triggering
 // ones, so an OK run's sequence of v1/s1 values at this exact call site
 // can be diffed directly against a PREDICATE run's - if cpp_get_token's
@@ -726,10 +721,10 @@
 // specific call, not its code.
 // #define MAME_SGI_TASK84_CPPERROR_COND_TRACE_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - direct empirical test of
+// TEMPORARY diagnostic (2026-09-10) - direct empirical test of
 // the source-text-buffer-corruption hypothesis raised by re-reading real
-// GCC 3.3 source (gcc/cpplib.c, cached at this session's scratchpad -
-// see wiki/task84.md 2026-09-10): parse_answer() is the SAME shared code
+// GCC 3.3 source (gcc/cpplib.c, cached at this session's scratchpad):
+// parse_answer() is the SAME shared code
 // for both #assert (registration) and #if #predicate() (testing), and
 // the flush/recompile experiment (2026-09-08 entry) already proved the
 // outcome is tied to the HOST-side compiled instance, not per-process
@@ -752,29 +747,28 @@
 // session's earlier string-offset mistake.
 // #define MAME_SGI_TASK84_SOURCE_TEXT_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - the decisive follow-up
+// TEMPORARY diagnostic (2026-09-10) - the decisive follow-up
 // proposed back on 2026-09-10 (this file's own "traced state before the
-// first (loop) cpp_get_token call" work, and wiki/task84.md's matching
-// entry) and never built until now: read $s3 a SECOND time, right at the
-// actual `beql $s3,$zero,0x1007e020` compare itself (0x1007DFFC), not
-// just at the loop's call site (SOURCE_TEXT_DIAG's own $s3 capture,
-// 0x1007df44/48) - a much earlier session found $s3 progressing 0 then 1
-// at the call site even in a confirmed-failing run, directly contradicting
-// cc1's own "answer is empty" report, and flagged this as a real,
-// unresolved anomaly rather than trusted. User pushed to revisit this
-// with fresh eyes ("does this bring us back to the $s3 issue") after
-// every other lead (fast registers, tlb_mismatch/compiler_page_fault,
-// compiled-code identity, $v0 corruption) was independently closed this
-// session. Deliberately narrow and PC-gated - same low-risk shape as
-// every other point-diagnostic in this file, not a system-wide change
-// (ruled out MAME's own -debug/gdbstub machinery for this exact reason:
-// enabling it changes codegen, via an extra UML_DEBUG call, on EVERY
-// compiled instruction system-wide, not just at a breakpoint - a real,
-// unavoidable perturbation of the very thing being measured, per the
-// user's own direct pushback).
+// first (loop) cpp_get_token call" work) and never built until now:
+// read $s3 a SECOND time, right at the actual `beql $s3,$zero,0x1007e020`
+// compare itself (0x1007DFFC), not just at the loop's call site
+// (SOURCE_TEXT_DIAG's own $s3 capture, 0x1007df44/48) - a much earlier
+// session found $s3 progressing 0 then 1 at the call site even in a
+// confirmed-failing run, directly contradicting cc1's own "answer is empty"
+// report, and flagged this as a real, unresolved anomaly rather than
+// trusted. User pushed to revisit this with fresh eyes ("does this bring us
+// back to the $s3 issue") after every other lead (fast registers,
+// tlb_mismatch/compiler_page_fault, compiled-code identity, $v0 corruption)
+// was independently closed this session. Deliberately narrow and PC-gated -
+// same low-risk shape as every other point-diagnostic in this file, not a
+// system-wide change (ruled out MAME's own -debug/gdbstub machinery for this
+// exact reason: enabling it changes codegen, via an extra UML_DEBUG call, on
+// EVERY compiled instruction system-wide, not just at a breakpoint - a real,
+// unavoidable perturbation of the very thing being measured, per the user's
+// own direct pushback).
 // #define MAME_SGI_TASK84_BEQL_S3_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - the user's delay-slot/
+// TEMPORARY diagnostic (2026-09-10) - the user's delay-slot/
 // page-crossing hypothesis, tested directly. static_generate_tlb_mismatch()
 // is a SHARED trampoline (emitted once, at device-start) reached from
 // every UML_EXH/UML_EXHc in the whole compiled program. Its "the saved PC
@@ -802,7 +796,7 @@
 // system-wide, since this is a shared handler.
 // #define MAME_SGI_TASK84_TLBMISS_REDISPATCH_DIAG
 
-// TEMPORARY diagnostic (2026-09-09, task #84) - the direct follow-up to
+// TEMPORARY diagnostic (2026-09-09) - the direct follow-up to
 // CALL_TRACE_DIAG's own finding: cpp_get_token is called exactly 17
 // times in every single trace (18 captured, 16 OK/2 PREDICATE), with
 // zero exceptions - the call COUNT never varies, so whatever decides
@@ -817,7 +811,7 @@
 // to find exactly which one first differs.
 // #define MAME_SGI_TASK84_TOKEN_RESULT_DIAG
 
-// TEMPORARY diagnostic (2026-09-10, task #84) - PID-filter calibration.
+// TEMPORARY diagnostic (2026-09-10) - PID-filter calibration.
 // User's challenge: the kernel itself knows exactly which process is
 // running at any moment, and this project has real leaked IRIX 6.5.7m
 // kernel source ($IRIXSRC) plus the guest's own installed headers - so
@@ -853,23 +847,23 @@
 // are known, replace this with a direct two-read filter.
 // #define MAME_SGI_TASK84_PID_CALIBRATION_DIAG
 
-// Standing counter (2026-09-10, task #84) - measured how often
+// Standing counter (2026-09-10) - measured how often
 // generate_likely_branch_skip_fixup()'s compile-time condition
 // (compiler_page_fault() on a BEQL-class delay slot) actually fires in
 // realistic use, to inform the Fix A vs. Fix B (general drcfe.ipp fix)
-// discussion - see wiki/task84.md's "cost estimate" entry. Confirmed
+// discussion. Confirmed
 // firing at 20-35% of explicit-flush cc1 cycles (matching the historical
 // pre-fix PREDICATE rate, as expected) with zero added recompile cost
-// over the healthy baseline. Its job is done; disabled now that task #84
-// is closed out (2026-09-10) - re-enable if the Fix A/B question ever
+// over the healthy baseline. Its job is done; disabled now that the cc1
+// flake is closed out (2026-09-10) - re-enable if the Fix A/B question ever
 // needs revisiting for a different call site.
 // #define MAME_SGI_TASK84_FIXUP_DIAG
 
-// TEMPORARY diagnostic (2026-09-03, task #84 Opus-review followup):
+// TEMPORARY diagnostic (2026-09-03, Opus-review followup):
 // re-run of the review's recommendation #4 - watch tlb_mismatch arrivals
 // specifically, not the TLBLOAD/TLBSTORE_FILL exception handlers this
 // investigation originally watched (which the review found miss 96.2%
-// of the real traffic, per journal.md 2026-08-23's own measurement at
+// of the real traffic, per the 2026-08-23 measurement at
 // the compiler_page_fault() site below). Filtered at the two UML_EXH/
 // UML_EXHc call sites in generate_sequence_instruction() (compile-time
 // desc->pc range check, zero runtime cost outside the critical window)
@@ -887,7 +881,7 @@
 // diagnostics could be responsible for the newly-found segfault.
 // #define MAME_SGI_TASK84_TLB_MISMATCH_DIAG
 
-// CANDIDATE FIX under test (2026-09-05, task #84): static_generate_exception()
+// CANDIDATE FIX under test (2026-09-05): static_generate_exception()
 // (below, ~line 5445) calls save_fast_iregs() before handing off to the
 // guest exception vector - added 2026-07-30 specifically because $v0 is
 // fast-mapped to a host register (I4) and would otherwise never get
@@ -900,7 +894,7 @@
 // beinfo.direct_iregs=5 clears only the ">4" gate - $v0/I4 is the ONLY
 // fast-mapped GPR here; $v1/$a0 stay ordinary memory operands. Verified
 // directly (mips3.cpp:786-807, drcbex64.cpp:397-404,1754-1755), not
-// assumed - see journal.md's matching 2026-09-05 entry. load_fast_iregs() has
+// assumed. load_fast_iregs() has
 // exactly one call site in this file (static_generate_entry_point, the
 // one-time C++-scheduler-to-DRC entry per timeslice - verified via a
 // correctly-scoped grep across mips3drc.cpp AND the headers, not repeating
@@ -914,13 +908,12 @@
 // interrupt-handler code ran in between will very plausibly have written
 // its own values into I4 for its own purposes - meaning the resumed code
 // sees the handler's leftover value, not its own. This directly matches
-// task #84's established facts (DRC-only; $v0/r15-specific; suppressed by
+// the cc1 flake's established facts (DRC-only; $v0/r15-specific; suppressed by
 // DISABLE_FAST_REGISTERS=1) and today's finding that failure correlates
 // with compiled instances carrying MORE interior interrupt-check
 // insertion points. Testing whether adding the missing reload here
-// changes the failure rate - see wiki/task84.md for the full methodology
-// (confounds, sample size, what each outcome would mean) before reading
-// too much into a bare rate change.
+// changes the failure rate - mind the confounds and sample size before
+// reading too much into a bare rate change.
 //
 // REVERTED (2026-09-05, same day): caused an immediate PANIC: KERNEL
 // FAULT (PC=0xff00) on the very first state-restore resume tested - not
@@ -942,11 +935,10 @@
 // reading it directly while control is in the exception vector, not
 // because anything needs to be pushed back INTO the fast registers on
 // the way out. Kept here, commented out, as a record of a specific,
-// tested, and refuted hypothesis - see wiki/task84.md for the full
-// writeup and where the investigation goes next.
+// tested, and refuted hypothesis.
 // #define MAME_SGI_TASK84_ERET_FASTREG_RELOAD_FIX
 
-// TEMPORARY diagnostic (2026-09-01): task #84's gcc <built-in>
+// TEMPORARY diagnostic (2026-09-01): the gcc <built-in>
 // "predicate's answer is empty" flake. Built to cross-check m_prptr()'s
 // raw pointer against m_program->read_dword() for the same physical
 // address at compile time, for user-mode blocks. DISABLED (2026-09-01,
@@ -959,9 +951,8 @@
 // valid only where IT sits, before that reassignment) never passes
 // there. The "zero events across 160 iterations" result this produced
 // was reported as a real negative finding and used to argue DRC's
-// cache-pointer path was clean; that conclusion has been retracted -
-// see wiki/console.md's 2026-09-01 update for the correction and the
-// (unrelated, more fundamental) finding that the missing content lives
+// cache-pointer path was clean; that conclusion has been retracted.
+// The (unrelated, more fundamental) finding: the missing content lives
 // in cc1's .rodata as data, never fetched as an instruction, so DRC's
 // instruction-fetch checksum/m_prptr machinery was never going to be
 // the right place to look regardless of the gate bug. Left as a toggle,
@@ -970,25 +961,24 @@
 // target changed to seqhead->opptr rather than a second live read).
 // #define MAME_DRC_USERMODE_OVERRIDE_STALE_CHECK_DIAG
 
-// TEMPORARY diagnostic (2026-09-02): task #84's gcc <built-in>
+// TEMPORARY diagnostic (2026-09-02): the gcc <built-in>
 // "predicate's answer is empty" flake. Follows a live discussion that
 // reframed the leading theory: cc1's .rodata page is confirmed (via a
-// separate mips3com.cpp diagnostic - see wiki/console.md) to be mapped
-// FETCH_ALLOWED, sharing one executable segment with .text (common for
-// static non-PIE binaries) - so from DRC's TLB-permission point of view
-// it is indistinguishable from real code, even though PC never
-// legitimately lands there. This project's own prior measurement work
-// (tasks #39-42: sequence-length distribution, termination-reason
-// categorization, window-edge vs branch-target vs max-sequence-cap
-// termination) already established describe_code()'s sequence-window
-// walk as a genuinely nontrivial area. If a compiled sequence's window
-// ever walks past the true end of reachable code into the following
-// .rodata bytes - misinterpreting string/table data as opcodes - a
-// misdecoded "instruction" there could itself look like a branch and
-// send the describe-ahead walk arbitrarily further into the data
-// region (not just a small fixed overrun), which would explain
-// reaching content ~110KB past the .text/.rodata boundary without
-// requiring every offset in between to be independently corrupted.
+// separate mips3com.cpp diagnostic) to be mapped FETCH_ALLOWED, sharing
+// one executable segment with .text (common for static non-PIE binaries)
+// - so from DRC's TLB-permission point of view it is indistinguishable
+// from real code, even though PC never legitimately lands there. This
+// project's own prior measurement work (sequence-length distribution,
+// termination-reason categorization, window-edge vs branch-target vs
+// max-sequence-cap termination) already established describe_code()'s
+// sequence-window walk as a genuinely nontrivial area. If a compiled
+// sequence's window ever walks past the true end of reachable code into the
+// following .rodata bytes - misinterpreting string/table data as opcodes - a
+// misdecoded "instruction" there could itself look like a branch and send
+// the describe-ahead walk arbitrarily further into the data region (not just
+// a small fixed overrun), which would explain reaching content ~110KB past
+// the .text/.rodata boundary without requiring every offset in between to be
+// independently corrupted.
 // This would never touch the .rodata bytes' own storage (matching the
 // TLB-race diagnostic's clean result) and would be DRC-only by
 // construction (the interpreter fetches one instruction at a time from
@@ -996,7 +986,7 @@
 // overrun). Checks, at every code_compile_block() call, whether the
 // compiled sequence's endpoint (codelast) ever reaches into cc1's
 // .rodata VA range (established via static analysis of the extracted
-// binary - see wiki/console.md's task #84 section) - if this fires at
+// binary) - if this fires at
 // all, and especially if it clusters around the same drc_cache-flush-
 // heavy windows the actual gcc failures already cluster around, that
 // would directly support the mechanism proposed for why a
@@ -1007,15 +997,15 @@
 // RESULT (2026-09-02): ran against a matched-load compile loop, 100
 // iterations, 47 real failures across several bursts - zero overrun
 // events. DRC never once decoded an instruction from within .rodata
-// during any of these failures. Rules this theory out too. See wiki/
-// console.md's task #84 section for the pivot this motivated: from
+// during any of these failures. Rules this theory out too. This
+// motivated a pivot: from
 // "is the memory content wrong" (now tested and ruled out every way
 // this investigation could find) to "is the ADDRESS being read wrong" -
 // cc1 itself computing a corrupted offset/index and landing on a
 // different, still-validly-mapped .rodata location than intended.
 // #define MAME_SGI_RODATA_SEQUENCE_OVERRUN_DIAG
 
-// TEMPORARY diagnostic (2026-09-02, continued): task #84's gcc
+// TEMPORARY diagnostic (2026-09-02, continued): the gcc
 // <built-in> "predicate's answer is empty" flake. Every prior
 // diagnostic tested whether memory CONTENT at a known-correct address
 // was ever wrong - all came back clean. This tests the complementary
@@ -1030,14 +1020,13 @@
 // the known string at 0x10343970), both the address actually read and
 // the value the CPU's own compiled load instruction actually saw.
 // Deliberately does NOT rely on knowing which guest PC performs the
-// lookup (find_string_xref() found no direct literal reference - see
-// the console.md entry on that dead end - meaning it's reached through
-// an indexed/computed path, not a fixed instruction address this
-// diagnostic could target directly). If, during a failure, this shows
-// reads from an address OTHER than 0x10343970 within this page, that
-// directly confirms address-computation corruption. If it only ever
-// shows 0x10343970 with a correct value even during a failure, that
-// would mean the corruption manifests even later - after the load
+// lookup (find_string_xref() found no direct literal reference -
+// meaning it's reached through an indexed/computed path, not a fixed
+// instruction address this diagnostic could target directly). If, during a
+// failure, this shows reads from an address OTHER than 0x10343970 within
+// this page, that directly confirms address-computation corruption. If it
+// only ever shows 0x10343970 with a correct value even during a failure,
+// that would mean the corruption manifests even later - after the load
 // itself completes correctly - narrowing things further still.
 // FOUND AND FIXED A REAL BUG in this diagnostic's first version: the
 // post-read check originally lived only in static_generate_memory_
@@ -1073,10 +1062,10 @@
 // through a completely separate UML code-generation path in this file
 // (COP1 load/store, not the integer static_generate_memory_accessor()
 // this diagnostic hooks), so a read via that path would be invisible
-// here. See wiki/console.md's task #84 section for the full writeup.
+// here.
 // #define MAME_SGI_RODATA_LOAD_ADDR_DIAG
 
-// TEMPORARY DIAGNOSTIC (2026-09-30, task #119). sgi/mc.cpp registers
+// TEMPORARY DIAGNOSTIC (2026-09-30). sgi/mc.cpp registers
 // add_fastram() regions for main RAM once PROM's own boot-time RAM
 // autosizing settles - a hang was observed right after that handoff
 // (a TLB-miss exception looping forever), and rather than keep guessing
@@ -1166,7 +1155,7 @@
 // starts.
 // DISABLED (2026-07-31): investigation resolved, real cause was
 // ioc2_device's input_merger_device wiring, not pckm_mutex contention
-// itself - see wiki/assets.md. Left in place, gated, in case future work
+// itself. Left in place, gated, in case future work
 // needs it again.
 // #define MAME_SGI_PCKM_MUTEX_DIAG
 
@@ -1202,7 +1191,7 @@
 // confirmed need: with -O3, a host-gdb session hit -O3-inlined STL
 // frames ("this=<optimized out>", locals unresolvable) trying to break
 // on a single line deep inside code_compile_block, even with full DWARF
-// info present (see wiki/debugging.md) - a genuinely different failure
+// info present - a genuinely different failure
 // mode than the earlier "no debug info at all" gap, needing a different
 // fix. Undefined by default - only enable for a deliberate host-gdb
 // investigation session, not as a standing default (compile-time DRC
@@ -1220,7 +1209,7 @@
 // the hottest path in the system (65M+ occurrences measured in a partial
 // boot alone) - only worth paying for a deliberate re-measurement, not as
 // a standing default.
-// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// DISABLED (2026-08-17) for the stock-vs-modified A/B
 // test; not re-enabled since.
 // #define MAME_SGI_JMPDEST_SAMEPAGE_DIAG
 
@@ -1228,27 +1217,27 @@
 // count, see diag_validate_tlb_total's comment in mips3.h. Paired with
 // the toggle above for the same measurement; same off-by-default
 // reasoning (real per-occurrence cost on a hot path).
-// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// DISABLED (2026-08-17) for the stock-vs-modified A/B
 // test; not re-enabled since.
 // #define MAME_SGI_VALIDATE_TLB_FREQ_DIAG
 
 // TEMPORARY diagnostic toggle (2026-08-22) - resuming the 0x0fac5ffc
-// validate_tlb() anomaly investigation (wiki/performance.md's
-// "Investigated extensively... still not resolved" section). Runs an
+// validate_tlb() anomaly investigation (investigated extensively, still
+// not resolved). Runs an
 // independent, unconditional C-side re-check on every dispatch through
 // this one PC's validate_tlb site - see diag_0fac5ffc_compile_gen's
 // comment in mips3.h and cfunc_0fac5ffc_anomaly_diag below. Scoped to a
 // single, compile-time-known PC (not a general hot-path cost), so left
 // enabled by default while this investigation is active.
 // DISABLED (2026-08-22, later same session) - its question is fully
-// answered (see wiki/performance.md), and its output would just add
+// answered, and its output would just add
 // noise alongside MAME_SGI_VALIDATE_TLB_MISMATCH_CLASS_DIAG below,
 // which generalizes the same measurement to every address. Re-enable
 // if the 0x0fac5ffc-specific generation-staleness check is needed
 // again.
 // #define MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG
 
-// TEMPORARY diagnostic (2026-09-16, task #97 QoS follow-up) - see
+// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - see
 // diag_last_compile_instruction_count's comment in mips3.h. Self-defined
 // here too (not just mips3.cpp) since this file compiles as part of the
 // shared "optional" project, not the mame_sgi project sgi.lua's defines{}
@@ -1258,7 +1247,7 @@
 // field the other side never reads.
 // #define MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
 
-// Fix (2026-09-17, task #97 QoS follow-up) - same cross-TU gotcha as
+// Fix (2026-09-17, QoS follow-up) - same cross-TU gotcha as
 // above, needed here too now: code_compile_block()'s own abort_compilation
 // catch block (below) times its internal code_flush_cache() call using
 // this file's own MAME_SGI_STALL_DURATION_DIAG/MAME_SGI_STALL_DIAG_
@@ -1271,7 +1260,7 @@
 // #define MAME_SGI_STALL_DURATION_DIAG
 #define MAME_SGI_STALL_DIAG_THRESHOLD_NS 10'000'000ULL
 
-// THE FIX (2026-08-22, task #8; reworked 2026-08-23) -
+// THE FIX (2026-08-22; reworked 2026-08-23) -
 // static_generate_tlb_mismatch()'s "skip" branch, reached when the live
 // TLB entry for this PC's page is mapped again by the time the handler
 // runs, unconditionally EXITs to EXECUTE_MISSING_CODE. That throws away
@@ -1298,14 +1287,14 @@
 // Toggle-numbered (not a plain #define) per this project's established
 // convention for changes in this exact code region, which has already
 // livelocked twice via two different structurally-unrelated approaches
-// (see wiki/performance.md's full writeup) - keeps every state one line
+// - keeps every state one line
 // away without needing to rediscover this comment block to revert.
 //
-// Task #84 bisection (2026-09-02): tested undefined - 16/100 failures,
+// cc1 <built-in> flake bisection (2026-09-02): tested undefined - 16/100 failures,
 // within this project's own established run-to-run noise band, same as
 // every other flag tested in this bisection. Restored to 1 (the normal
-// state) - see wiki/console.md task #84 section for the result.
-// Task #84 forced-trigger retest (2026-09-02): undefined and tested
+// state).
+// Flake forced-trigger retest (2026-09-02): undefined and tested
 // against the new 100%-reliable native-gdb repro trigger (not just the
 // earlier ~30% natural rate) - 30/30 failures, no change. Restored to 1.
 #define MAME_SGI_TLB_MISMATCH_REFRESH_FIX 1
@@ -1321,16 +1310,15 @@
 // committing to implementing it. Unconditional per-dispatch C call
 // across every address using the shared-key fast path - real overhead,
 // only meant to run for one measurement boot, not left on.
-// DISABLED (2026-08-23) - task #8 concluded and this measurement
-// question fully answered (96.2%/3.8%/0.0% call-site split, see
-// wiki/performance.md's "tlb_mismatch handler redispatch" section);
+// DISABLED (2026-08-23) - the tlb_mismatch redispatch work concluded and
+// this measurement question fully answered (96.2%/3.8%/0.0% call-site split);
 // was still costing ~199M unconditional C calls/boot. Re-enable only
 // if that split needs re-measuring after some other change to the
 // TLB-mismatch paths.
 // #define MAME_SGI_VALIDATE_TLB_MISMATCH_CLASS_DIAG
 
 // TEMPORARY diagnostic (2026-08-23) - keyboard-drop investigation
-// (Bug B, see wiki/console.md): msnat.cpp's MAME_SGI_KBD_SCAN_RATE_DIAG
+// (Bug B): msnat.cpp's MAME_SGI_KBD_SCAN_RATE_DIAG
 // found a single ~354ms real-time gap where the embedded keyboard-
 // controller's own matrix scan didn't run at all - this correlates that
 // against DRC compile activity to check whether a recompile burst is
@@ -1339,8 +1327,7 @@
 // as the keyboard-side diagnostics so the two logs can be lined up by
 // eye directly. DISABLED (2026-08-23) - answered its question (a
 // drc_cache flush landed in the same one-second window as the worst
-// scan gap - see wiki/console.md's Bug B writeup); task #75
-// reopened-investigation paused.
+// scan gap); the reopened keyboard-drop investigation is paused.
 // #define MAME_SGI_DRC_COMPILE_RATE_DIAG
 
 #ifdef MAME_SGI_DRC_COMPILE_RATE_DIAG
@@ -1363,7 +1350,7 @@ std::string drc_compile_rate_timestamp()
 // TEMPORARY diagnostic toggle (2026-08-07) - compiled-sequence length
 // distribution, see diag_seq_count's comment in mips3.h. Cheap (counted
 // once per compile, not per dispatch).
-// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// DISABLED (2026-08-17) for the stock-vs-modified A/B
 // test; not re-enabled since.
 // #define MAME_SGI_SEQUENCE_LENGTH_DIAG
 
@@ -1373,13 +1360,13 @@ std::string drc_compile_rate_timestamp()
 // counters above - this is a real UML_CALLC (full C++ call + hash-map
 // lookup) on every jmpdest dispatch (~115M/boot partial-boot measurement,
 // 2026-08-07), specifically to answer one question before committing to
-// the self-patching/inline-caching redesign (journal.md 2026-08-08): does
+// the self-patching/inline-caching redesign (2026-08-08): does
 // a 1-slot per-call-site cache actually hit, or does JR $ra (polymorphic
 // return, ~26% of indirect_jump terminations) thrash it. Wall time under
 // this diagnostic is expected to be significantly distorted (same
 // methodology caveat as -debug) - only the hit/miss ratio is meaningful,
 // not absolute timing. Off by default.
-// DISABLED (2026-08-17) for the task #69/#71 stock-vs-modified A/B
+// DISABLED (2026-08-17) for the stock-vs-modified A/B
 // test; not re-enabled since.
 // #define MAME_SGI_CALLSITE_IC_HITRATE_DIAG
 
@@ -1393,10 +1380,10 @@ std::string drc_compile_rate_timestamp()
 // directly through a per-slot memory address with no table walk and no
 // byte patching - the rsp-reset invariant that made byte-patching unsafe
 // is handled correctly inside the new op itself, mirroring op_hashjmp's
-// own preamble. See journal.md 2026-08-08.
+// own preamble.
 // #define MAME_SGI_CALLSITE_IC_PROTOTYPE
 
-// TEMPORARY diagnostic (2026-08-17, task #69/#71) - three independent
+// TEMPORARY diagnostic (2026-08-17, stock-vs-modified A/B) - three independent
 // binary-level techniques (a conditioned host watchpoint, a manual
 // disassembly-text search, and an exhaustive byte-level immediate
 // scan via mips3_device::debug_scan_for_immediate - see mips3.h) all
@@ -1423,12 +1410,12 @@ std::string drc_compile_rate_timestamp()
 // new diagnostic specifically so continuing $f20 work can passively
 // catch and confirm the color-race mechanism as a side effect, without
 // a dedicated repro session.
-// DISABLED (2026-08-17) - task #69/#71 concluded. The store this probe
+// DISABLED (2026-08-17) - the A/B concluded. The store this probe
 // was built to check turned out to be correctly emitted all along (the
 // investigation's byte-level scans were reading transient DRC cache
 // memory well after compile-time, which churns constantly - not a real
 // codegen omission); the real root cause was MIPS3DRC_STRICT_COP1 never
-// being enabled (see drc-bugfixes.md). Commented out, not deleted.
+// being enabled. Commented out, not deleted.
 // #define MAME_SGI_LWC1_DELAYSLOT_PROBE
 #ifdef MAME_SGI_LWC1_DELAYSLOT_PROBE
 #define MAME_SGI_LWC1_DELAYSLOT_PROBE_PC 0x10024d2c
@@ -1474,19 +1461,19 @@ bool g_mame_sgi_lwc1_target_block = false;
 #endif
 
 // TEMPORARY diagnostic (2026-08-24) - MXCSR-desync investigation
-// (fcvt_r/%f leading-digit corruption, wiki/performance.md and
-// journal.md). Scheduler-level checkpoints (before/after exec->run(),
-// before/after every named timer callback) found zero hits despite
-// confirmed ongoing corruption during the same window - too coarse
-// relative to the actual vulnerable window. This checks at every single
-// guest instruction boundary instead: compares the real, live host MXCSR
-// rounding-control bits (read via the repurposed GETFMOD in drcbex64.cpp,
-// see MAME_SGI_GETFMOD_REAL_MXCSR_DIAG there) against what CCR1(31)'s
-// guest RM field predicts. The inline compare (getfmod+shr+and+and+load+
-// cmp+jmpc) runs unconditionally per instruction but only escalates to a
-// CALLC on an actual mismatch, keeping the steady-state cost to a handful
-// of x86 instructions rather than a full C call - real overhead on a very
-// hot path, only meant to run for one diagnostic boot, not left on.
+// (fcvt_r/%f leading-digit corruption). Scheduler-level checkpoints
+// (before/after exec->run(), before/after every named timer callback)
+// found zero hits despite confirmed ongoing corruption during the same
+// window - too coarse relative to the actual vulnerable window. This checks
+// at every single guest instruction boundary instead: compares the real,
+// live host MXCSR rounding-control bits (read via the repurposed GETFMOD in
+// drcbex64.cpp, see MAME_SGI_GETFMOD_REAL_MXCSR_DIAG there) against what
+// CCR1(31)'s guest RM field predicts. The inline compare
+// (getfmod+shr+and+and+load+cmp+jmpc) runs unconditionally per instruction
+// but only escalates to a CALLC on an actual mismatch, keeping the
+// steady-state cost to a handful of x86 instructions rather than a full C
+// call - real overhead on a very hot path, only meant to run for one
+// diagnostic boot, not left on.
 // DISABLED (2026-08-24, same day) - this per-guest-instruction check adds
 // enough overhead (unconditional stmxcsr+shr+and+and+load+cmp+jmpc on
 // every single instruction) to measurably perturb host-thread timing:
@@ -1523,14 +1510,13 @@ static const uint8_t s_mxcsr_desync_expected_rc[4] = { 0, 3, 2, 1 };
 // UML_SETFMOD this CTC1 case emits - far rarer than every instruction
 // (guest code doesn't change rounding mode continuously), so shouldn't
 // perturb timing the way the per-instruction version did, while directly
-// targeting the suspected skip-optimization failure mode. See wiki/
-// performance.md and journal.md for the full investigation.
+// targeting the suspected skip-optimization failure mode.
 // DISABLED (2026-09-01) - investigation concluded. Root cause was the DRC
 // entry point never resyncing m_state.fmod (see MAME_SGI_FMOD_ENTRY_RESYNC_FIX
 // in drcbex64.cpp, the actual permanent fix), not this CTC1 site - this
 // check's own "zero mismatches" result was correct but pointed at the wrong
 // SETFMOD call site (this one can never stale-match; the entry-point one
-// can). See wiki/drc-bugfixes.md section D.
+// can).
 // #define MAME_SGI_CTC1_MXCSR_CHECK_DIAG
 #ifdef MAME_SGI_CTC1_MXCSR_CHECK_DIAG
 // Indexed by fmod (uml::float_rounding_mode: TRUNC=0,ROUND=1,CEIL=2,
@@ -1552,13 +1538,11 @@ static const uint8_t s_ctc1_mxcsr_expected_rc[4] = { 3, 0, 2, 1 };
 // ground truth immediately before ADD.S/D, SUB.S/D, and MUL.S/D - the
 // three ops that trick actually uses - narrowing the window from "the
 // whole guest instruction stream" to "just FP arithmetic ops", which
-// should still be far less frequent than every single instruction. See
-// wiki/performance.md and journal.md for the full investigation.
+// should still be far less frequent than every single instruction.
 // DISABLED (2026-09-01) - investigation concluded, real root cause found
 // and fixed elsewhere (MAME_SGI_FMOD_ENTRY_RESYNC_FIX, drcbex64.cpp). This
 // check also turned out to Heisenbug on its own repro workload (mxcsrtest's
-// inner loop is almost entirely the three ops it checks) - see
-// wiki/drc-bugfixes.md section D for the full writeup.
+// inner loop is almost entirely the three ops it checks).
 // #define MAME_SGI_FPOP_MXCSR_CHECK_DIAG
 #ifdef MAME_SGI_FPOP_MXCSR_CHECK_DIAG
 // Indexed by guest RM (CCR1(31)&3), giving the expected real x86 MXCSR RC
@@ -1748,7 +1732,7 @@ void mips3_device::add_fastram(offs_t start, offs_t end, uint8_t readonly, void 
 	}
 }
 
-// Temporary, task #119 - see this method's own declaration comment.
+// Temporary - see this method's own declaration comment.
 // Writes to its own dedicated file rather than stderr - stderr is
 // shared with the flood of per-access MAME_SGI_FASTRAM_COMPARE_DIAG
 // output when that diagnostic is also active, and this one-time dump
@@ -2397,7 +2381,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// test run - skips drc_cache's own destructor entirely, so a real
 	// cache-thrashing regression can run for an entire session without
 	// ever becoming visible; this is exactly what happened investigating
-	// the ASID_FIX==2 regression (journal.md 2026-08-07: 997 flushes by
+	// the ASID_FIX==2 regression (2026-08-07: 997 flushes by
 	// /.oldtmp vs 7 for the same milestone with the mechanism disabled -
 	// found only via a special clean-exit run, not from any routine
 	// boot test's log). Checking flush_count() here is cheap (one
@@ -2436,7 +2420,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	}
 #endif
 
-// Standing counter report for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (task #8,
+// Standing counter report for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (
 // diag_tlb_mismatch_skip_total/refresh_hits, see their comment in mips3.h)
 // used to live here as a self-rate-limited live print every time the
 // totals changed meaningfully. Moved to a single clean-exit summary in
@@ -2461,7 +2445,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// build/runtime failure.
 	if (((mode >> 2) != 0) && ((mode & 0x02) != 0))
 	{
-		// Fix (2026-09-17, task #97 QoS follow-up) - see this macro's own
+		// Fix (2026-09-17, QoS follow-up) - see this macro's own
 		// enable comment above for the full story: this map's incremental
 		// rehashing (libstdc++ growing its bucket array, observed reaching
 		// 351,061 buckets mid-boot via a live gdb backtrace) was the exact
@@ -2485,7 +2469,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 
 #ifdef MAME_SGI_TASK84_CPPGETTOKEN_ASID_DIAG
-	// TEMPORARY diagnostic (2026-09-05, task #84): does cpp_get_token's
+	// TEMPORARY diagnostic (2026-09-05): does cpp_get_token's
 	// page actually get MAME_SGI_DISPATCH_MODE_ASID_FIX's shared,
 	// ASID-independent dispatch key in practice, or the full ASID-scoped
 	// one? dispatch_page_writable(pc) (mips3.h:1265) is the single
@@ -2587,13 +2571,12 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// never progresses. A correct fix needs static_dispatch_key()/
 	// live_dispatch_key() updated in lockstep with this site, not just
 	// this site alone - reverted back to the original single-page check
-	// pending that. See journal.md 2026-08-06 for the two failed
-	// attempts and this diagnosis.
+	// pending that.
 #ifdef MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG
 	// TEMPORARY diagnostic (2026-08-22, continued) - the validate_tlb
 	// mismatch mechanism found and fixed above only accounts for ~0.24%
-	// of this pc's total recompile volume (149 of 62018 in one boot -
-	// see wiki/performance.md). This checks whether the dominant driver
+	// of this pc's total recompile volume (149 of 62018 in one boot).
+	// This checks whether the dominant driver
 	// is a lookup-vs-registration key mismatch: does a hash entry exist
 	// under the RAW incoming mode (what execute_run() passed in), vs.
 	// under the OVERRIDDEN/shared key (what this function actually
@@ -2712,8 +2695,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// before it's ever read, or something else entirely - is still
 	// unknown. A third attempt at this class of fix needs that mechanism
 	// actually understood first, not just a structurally-different
-	// reason to expect it might work this time - see wiki/performance.md
-	// for the full writeup. Left as dead code, not deleted, per this
+	// reason to expect it might work this time. Left as dead code, not deleted, per this
 	// project's convention - the drcuml_state::set_codeptr() API added
 	// for this remains in place (harmless on its own, unused unless
 	// called) since it may still be useful groundwork for a future,
@@ -2781,8 +2763,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	// safeguard entirely instead of only replacing it for the specific
 	// TLB-refill case it was reasoning about. Left as a comment, not
 	// silently deleted, so the next attempt doesn't re-derive the same
-	// wrong assumption from scratch - see wiki/performance.md and the
-	// project journal for the fuller writeup. A real fix here would need
+	// wrong assumption from scratch. A real fix here would need
 	// to distinguish the TLB-refill-only case from a genuine staleness
 	// case before skipping, not treat hash_exists() alone as sufficient.
 #if 0
@@ -2826,9 +2807,8 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #ifdef MAME_SGI_RODATA_SEQUENCE_OVERRUN_DIAG
 	// See this define's own comment above. Target range is cc1's
 	// .rodata section (guest VA 0x10328000, size 0x73f902, established
-	// via static analysis of the extracted binary - see wiki/
-	// console.md's task #84 section) - generous enough to catch any
-	// sequence window reaching into it, not just the exact failing
+	// via static analysis of the extracted binary) - generous enough to
+	// catch any sequence window reaching into it, not just the exact failing
 	// string's address. Checks every desc in the chain, not just
 	// codelast, since a runaway walk-through-misdecoded-data could in
 	// principle produce a non-monotonic pc sequence.
@@ -2869,8 +2849,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				uint32_t nextpc;
 
 #if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-				// TEMPORARY diagnostic (2026-08-02, continued) - see
-				// journal 2026-08-02 15:20 entry. Traces the actual
+				// TEMPORARY diagnostic (2026-08-02, continued). Traces the actual
 				// composition of the multi-sequence batch for this
 				// investigation's compile, to find how an unrelated
 				// address (0x10002d64, ~5.5MB away, impossible under the
@@ -2924,15 +2903,14 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					// under its own sub-macro (not bare MAME_DRC_BUGFIXES)
 					// per this project's own hygiene convention of never
 					// leaving a diagnostic's output ungated inside a
-					// permanent fix's own block - see drc-diagnostics.md's
-					// close-out checklist, item 1.
+					// permanent fix's own block.
 					//
 					// Was: unconditional per-event fprintf with a running
 					// count, "remove once the frequency/pattern is
 					// understood" (2026-07-23). It now is - three-way
 					// comparison the same week confirmed the fallback is
 					// genuinely rare (zero fires across an 11+ minute
-					// live run, see wiki/assets.md) - so reworked
+					// live run) - so reworked
 					// 2026-09-11 to a silent counter, reported once as a
 					// clean-exit summary in device_stop() instead of
 					// per-event, matching
@@ -3099,7 +3077,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				bool const task84_seqhead_was_sticky = m_checkints_addrs.count(seqhead->pc) != 0;
 #endif
 #if defined(MAME_SGI_TASK84_FORCE_CHECKINTS_ON) || defined(MAME_SGI_TASK84_FORCE_CHECKINTS_OFF)
-				// Task #84 (2026-09-05): direct experimental override, scoped
+				// cc1 flake (2026-09-05): direct experimental override, scoped
 				// to cpp_get_token's own seqhead only (0x10076008) - NOT a
 				// blanket force, which already caused a 100%-reproducible
 				// early-boot TLBMISS regression once (see this file's own
@@ -3110,8 +3088,8 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				// under our direct control across every recompile,
 				// independent of this process's execution history (unlike
 				// the natural mechanism, confirmed sticky-forever once
-				// triggered - see wiki/task84.md's 2026-09-05 "23 consecutive
-				// LONG cycles" entry). Exists to get real causal A/B data on
+				// triggered - 23 consecutive LONG cycles observed 2026-09-05).
+				// Exists to get real causal A/B data on
 				// whether this specific interrupt-check-preamble mechanism
 				// affects cpp_get_token's pass/fail rate, instead of
 				// continuing to infer it from whatever this process's
@@ -3154,7 +3132,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 // (generate_set_cop0_reg(), ERET handling) are untouched and stay fully
 // active, as does static_generate_entry_point()'s own unconditional
 // per-re-entry check (stock MAME code, not gated by this macro at all).
-// Originally built (task #101, 2026-09-17) to test whether the standing
+// Originally built (2026-09-17) to test whether the standing
 // entry-point recheck plus deterministic COP0-write arming is already
 // sufficient on its own, without this heuristic's extra in-sequence
 // checks. Tested and left enabled by deliberate choice - see this
@@ -3245,7 +3223,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				// window happens to trigger them, consult this instead of
 				// re-deriving it from scratch and sometimes missing it.
 				//
-				// Fix (2026-09-17, task #100 scoping step 1) - reserve a
+				// Fix (2026-09-17, checkints scoping step 1) - reserve a
 				// large bucket count on first insert, same mitigation
 				// already proven on m_diag_usermode_recompile_counts this
 				// session: converts periodic incremental-rehash stalls
@@ -3253,9 +3231,8 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				// rehashing to 351,061 buckets mid-boot) into one
 				// predictable upfront allocation. 1,000,000 is headroom
 				// above that observed mid-boot count, not a proven bound
-				// for arbitrarily long real sessions - see wiki/tasks.md
-				// task #100 for why a fixed reserve is a stopgap, not a
-				// full fix, and what would be needed for one.
+				// for arbitrarily long real sessions - a fixed reserve is a
+				// stopgap, not a full fix.
 				if (compiler.checkints)
 				{
 					if (m_checkints_addrs.empty())
@@ -3272,16 +3249,16 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				// a since-closed synthetic-assembly investigation) to
 				// cpp_get_token's own function window, matching the
 				// FORCE_CHECKINTS override's window a few lines above - this
-				// session's flush/recompile experiment (wiki/task84.md,
-				// 2026-09-08) established that whatever decides pass/fail is
-				// settled once, at the moment this PC region gets freshly
-				// compiled (e.g. right after a code_flush_cache()), and is then
-				// 100% sticky for every execution thereafter. This checks
-				// whether checkints/is_branch_target/was_sticky - the one
-				// piece of compile-time-decided, non-machine-code state
-				// already known to exist and already instrumented - actually
-				// varies between a "good" and a "bad" fresh compile of this
-				// region, or is a fixed constant either way.
+				// session's flush/recompile experiment (2026-09-08) established
+				// that whatever decides pass/fail is settled once, at the moment
+				// this PC region gets freshly compiled (e.g. right after a
+				// code_flush_cache()), and is then 100% sticky for every
+				// execution thereafter. This checks whether
+				// checkints/is_branch_target/was_sticky - the one piece of
+				// compile-time-decided, non-machine-code state already known
+				// to exist and already instrumented - actually varies between
+				// a "good" and a "bad" fresh compile of this region, or is a
+				// fixed constant either way.
 				if (seqhead->pc >= 0x10076000 && seqhead->pc <= 0x10076400)
 				{
 					static FILE *s_seqhead_diag_log = nullptr;
@@ -3343,7 +3320,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 					// assumption a stale-m_prptr bug would show up as a
 					// checksum-mismatch-triggered recompile. Live-tested
 					// against a real, reproduced 14-failure burst (i=10-23,
-					// task #84's bigtest.c compile loop) with this exact
+					// the cc1 flake's bigtest.c compile loop) with this exact
 					// build - ZERO override events fired despite 4 real
 					// drc_cache flushes happening during the same window.
 					// That's a genuine negative result: whatever's wrong
@@ -3680,9 +3657,9 @@ void mips3_device::func_fastram_compare_diag()
 	uint32_t const masked = m_core->diag_fastram_masked;
 	uint64_t const value = m_core->diag_fastram_value;
 
-	// Task #119, widened (2026-09-30): the address-restricted version above
-	// confirmed the ONE specific byte this task started with is now clean
-	// (zero mismatches, task #119/journal.md), but a NEW, further-
+	// Widened (2026-09-30): the address-restricted version above
+	// confirmed the ONE specific byte this investigation started with is
+	// now clean (zero mismatches), but a NEW, further-
 	// downstream TLB-miss frozen loop appeared once that fix landed -
 	// plausibly a corrupted pointer/page-table-entry fed by a REMAINING,
 	// different fastram bug elsewhere, not the one already fixed. Widened
@@ -5020,7 +4997,7 @@ void mips3_device::func_interrupt_delivery_probe()
 // DISABLED (2026-07-28): same performance-tax pattern already caught and
 // disabled for the andi_ori/mtcz/fault_store_mode probe family above (see
 // that macro's own comment) - this eret-race investigation concluded
-// (wiki/assets.md) but this probe, unlike its siblings, was never gated
+// but this probe, unlike its siblings, was never gated
 // behind MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES and kept firing unconditionally
 // on every matching instruction all night, including throughout the entire
 // DRC-cache-thrashing investigation. Confirmed via the "DRC still isn't
@@ -5631,7 +5608,7 @@ static void cfunc_printf_debug(void *param)
     cfunc_0fac5ffc_anomaly_diag - resumed
     2026-08-22 investigation into the still-
     unexplained validate_tlb() mismatch storm at
-    pc=0x0fac5ffc (see wiki/performance.md). Runs an
+    pc=0x0fac5ffc. Runs an
     independent, C-side re-verification of the exact
     same comparison the JIT'd CMP is about to make,
     on every single dispatch through that site - not
@@ -6172,8 +6149,8 @@ void mips3_device::func_call_trace_diag()
 		return;
 	fprintf(s_f, "%08x\n", m_core->diag_call_trace_target);
 	// Flush far more often than the old 4096-call threshold (2026-09-10,
-	// same root-cause class as MAME_SGI_TASK84_TOKEN_RESULT_DIAG's fix -
-	// see wiki/task84.md 2026-09-10). This diagnostic fires ~163,000 times
+	// same root-cause class as MAME_SGI_TASK84_TOKEN_RESULT_DIAG's fix).
+	// This diagnostic fires ~163,000 times
 	// per cc1 invocation, so 4096 never looked dangerous the way
 	// token_result's ~17-64-per-run did - but every cross-cycle
 	// comparison this investigation has drawn from call_trace's TOTAL
@@ -6326,7 +6303,7 @@ void mips3_device::func_source_text_diag()
 		// diagnostics used for $v0+6 token-type reads, which may only
 		// have "worked" by address-range coincidence rather than genuine
 		// translation (see this session's own KSEG2/3 translation-bug
-		// finding, wiki/task84.md 2026-09-10) - not worth the same risk
+		// finding, 2026-09-10) - not worth the same risk
 		// here.
 		for (int i = 0; i < 40; i++)
 		{
@@ -6584,7 +6561,7 @@ void mips3_device::func_token_result_diag()
 	// visible file only whenever that buffer happened to fill on its own
 	// (unrelated to any test cycle's boundary), which is what caused the
 	// entire 17-vs-131/39/64/48 "discrepancy" this investigation chased
-	// for two sessions - see wiki/task84.md 2026-09-10. A single write
+	// for two sessions (resolved 2026-09-10). A single write
 	// here is cheap; don't reintroduce the throttle.
 	fflush(s_f);
 }
@@ -6743,8 +6720,8 @@ static void cfunc_log_tlb_mismatch_entry(void *param)
     is proc_t.p_pid. CROSS-VALIDATED live against two
     independent real cc1 invocations (captured via the test
     harness's own `cc1pid=$!`): pid 3661 and pid 3657 both
-    read back correctly at this exact offset pair. See
-    wiki/task84.md 2026-09-10 for the full derivation.
+    read back correctly at this exact offset pair
+    (2026-09-10).
 -------------------------------------------------*/
 
 uint32_t mips3_device::read_current_pid()
@@ -7122,10 +7099,9 @@ static void cfunc_unimplemented(void *param)
     actually about to be delivered there), right
     before the CALLH into the exception handler.
     This is the ONE interrupt-delivery mechanism left
-    unfalsified after today's checkints experiments -
-    see wiki/task84.md's 2026-09-05 "entry-point
-    interrupt check" entry for why this specific site
-    matters: it's the only place under DRC where a
+    unfalsified after today's checkints experiments
+    (2026-09-05). This specific site matters because
+    it's the only place under DRC where a
     pending interrupt actually gets delivered, since
     execute_run()'s DRC path never calls check_irqs(),
     and today's controlled MAME_SGI_TASK84_FORCE_CHECKINTS_OFF
@@ -7233,7 +7209,7 @@ static void cfunc_task84_saveload_bracket_exit(void *param)
 // correlation technique already used for the compile-duration outliers
 // earlier this session.
 //
-// Threshold history: originally 5ms for task #101 Phase 0's own
+// Threshold history: originally 5ms for Phase 0's own
 // characterization work, where seeing every outlier in detail was the
 // point. That threshold is wrong now that this diagnostic has a second,
 // permanent job as the checkints-disabled-by-default canary (see this
@@ -7359,8 +7335,8 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 	// ONE active call site of load_fast_iregs() (the ERET-path reload at
 	// generate_opcode's OP_ERET handling is gated behind
 	// MAME_SGI_TASK84_ERET_FASTREG_RELOAD_FIX, currently disabled - see
-	// that macro's own comment, "falsified by an immediate PANIC" per
-	// wiki/task84.md 2026-09-05). Every EXECUTE_MISSING_CODE/out_of_cycles/
+	// that macro's own comment, "falsified by an immediate PANIC"
+	// (2026-09-05)). Every EXECUTE_MISSING_CODE/out_of_cycles/
 	// tlb_mismatch round-trip re-enters HERE and reloads $v0 from memory -
 	// a legitimate, correct reload - but diag_v0_shadow is a plain memory
 	// field never touched by load_fast_iregs()/save_fast_iregs()
@@ -7440,7 +7416,7 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
     exception handler for "out of code"
 -------------------------------------------------*/
 
-// MAME_SGI_NOCODE_REFRESH_FIX (task #97, 2026-09-16): static_dispatch_key()
+// MAME_SGI_NOCODE_REFRESH_FIX (2026-09-16): static_dispatch_key()
 // bakes its resolved dispatch key as a compile-time constant at the jumping
 // instruction's own compile time. If the target page's writability
 // classification later changes (routine under ASID switches, since
@@ -7862,7 +7838,7 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	// UML_DAND clobbering that flag as a side effect silently skipped the
 	// EPC store on real guest execution (confirmed: caused an early-boot
 	// KERNEL FAULT with PC=0x0, reverted, root-caused, now fixed by
-	// reordering - see wiki/journal for the full incident). TEST must be
+	// reordering). TEST must be
 	// the last thing before the conditional move that depends on it.
 	UML_DAND(block, I0, I0, 0xffffffff);                                        // dand    i0,i0,0xffffffff
 	UML_TEST(block, CPR032(COP0_Status), SR_EXL);                               // test    [Status],SR_EXL
@@ -7989,15 +7965,15 @@ void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::
 
 void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &label, int size, bool iswrite, bool ismasked)
 {
-	// Task #119: this function is shared MIPS3-core code, used by every
+	// This function is shared MIPS3-core code, used by every
 	// driver that calls add_fastram() (not just this one) - its
 	// byte-lane-swizzle math (below) must match the CPU's ACTUAL program
 	// address space width, not assume either 32-bit or 64-bit unilaterally.
 	// A 32-bit-native mips3_device (the more common MIPS3 configuration)
 	// needs the original scale (no swizzle at size==4, a half-swap DROR at
 	// size==8); this SGI driver's genuinely 64-bit-native space needs the
-	// opposite (see the per-size comments below, and task #119/journal.md
-	// 2026-09-30 for the live mismatch that found this).
+	// opposite (see the per-size comments below; a live mismatch on
+	// 2026-09-30 found this).
 	bool const native64 = m_program->data_width() == 64;
 	if (!debugger_enabled())
 	{
@@ -8031,10 +8007,10 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					UML_MOV(block, mem(&m_core->diag_fastram_iswrite), 0);
 					UML_MOV(block, mem(&m_core->diag_fastram_masked), ismasked ? 1 : 0);
 #endif
-					// Task #119 (MAME_SGI_FASTRAM_COMPARE_DIAG mismatch): this
+					// MAME_SGI_FASTRAM_COMPARE_DIAG mismatch: this
 					// fastram region is natively 64-bit (Width=3 - confirmed
-					// via the read_dword() dispatch trace, task #119/
-					// journal.md 2026-09-30), not 32-bit. Every branch below
+					// via the read_dword() dispatch trace, 2026-09-30),
+					// not 32-bit. Every branch below
 					// needs the "...to a 64-bit space" XOR variant
 					// (BYTE8_XOR_BE/WORD2_XOR_BE/DWORD_XOR_BE in
 					// endianness.h) to pick the right byte lane within the
@@ -8047,7 +8023,7 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					// still round-trips with itself), which is why it never
 					// showed up as a correctness bug on its own - it only
 					// disagrees with a DIFFERENT access size/path touching
-					// the same bytes, exactly the shape of this task's
+					// the same bytes, exactly the shape of this investigation's
 					// original fast/slow mismatch.
 					if (size == 1)
 					{
@@ -8070,14 +8046,14 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 						// original, untouched behavior below), but is only
 						// HALF the native width of this SGI driver's
 						// genuinely 64-bit-native one, needing the
-						// DWORD_XOR_BE/LE lane swizzle task #119 added.
+						// DWORD_XOR_BE/LE lane swizzle added for it.
 						if (native64)
 							UML_XOR(block, I0, I0, m_bigendian ? DWORD_XOR_BE(0) : DWORD_XOR_LE(0));
 						UML_LOAD(block, I0, fastbase, I0, SIZE_DWORD, SCALE_x1);    // load    i0,fastbase,i0,dword_x1
 					}
 					else if (size == 8)
 					{
-						// Task #119 (MAME_SGI_FASTRAM_COMPARE_DIAG, widened
+						// MAME_SGI_FASTRAM_COMPARE_DIAG (widened
 						// pass, 2026-09-30): confirmed via a live mismatch
 						// (addr=0x0832d8a8, size=8:
 						// fast=0xbfbb000bffffffff slow=0xffffffffbfbb000b)
@@ -8150,7 +8126,7 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					UML_DMOV(block, mem(&m_core->diag_fastram_value), I1);
 					UML_CALLC(block, cfunc_fastram_compare_diag, this);
 #endif
-					// Task #119 - same width-conditional correction as the
+					// Same width-conditional correction as the
 					// read side's own comments above: choose the "...to a
 					// 32-bit space" or "...to a 64-bit space" swizzle
 					// variant per size based on `native64`, matching this
@@ -8473,7 +8449,7 @@ void mips3_device::generate_update_mode(drcuml_block &block)
     own "main entry point into shared library code") for
     no benefit in the overwhelmingly common case -
     confirmed as a real, measured ~4.3x boot-time
-    regression (see journal.md 2026-08-06) before this
+    regression (2026-08-06) before this
     fix. `labelnum` is threaded in from the caller (either
     a static generator's own `label` counter or
     `compiler_state::labelnum` - both plain int refs, see
@@ -8496,8 +8472,8 @@ void mips3_device::generate_select_dispatch_key(drcuml_block &block, uml::parame
 	// not the FETCH_ALLOWED-aware one (an earlier version of this
 	// fallback used FETCH_ALLOWED here to match a since-superseded
 	// version of dispatch_page_writable()'s fallback - correct in its
-	// own right at the time, but journal.md 2026-08-07 00:14-00:52
-	// measured that FETCH_ALLOWED-awareness, not page count, is what
+	// own right at the time, but a 2026-08-07 measurement
+	// showed that FETCH_ALLOWED-awareness, not page count, is what
 	// costs ~4x boot time, so both sides moved back to WRITE_ALLOWED-only
 	// together).
 	UML_SHR(block, I3, target_pc, MIPS3_MIN_PAGE_SHIFT);                        // shr     i3,target_pc,12
@@ -9488,7 +9464,7 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 		// no memory access) purely to count, rather than touching that
 		// function's signature/logic for a measurement that only applies to
 		// this one call site. Already used once to get a real number
-		// (65,141,818 dispatches, 0.0158% cross-page, journal.md 2026-08-06)
+		// (65,141,818 dispatches, 0.0158% cross-page, 2026-08-06)
 		// - off by default since it's still per-dispatch cost on the
 		// hottest path in the system; re-enable if that number needs
 		// re-checking after a future change (e.g. the epoch/host-fault
@@ -9577,7 +9553,7 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 
 
 /*-------------------------------------------------
-    generate_likely_branch_skip_fixup - task #84 fix
+    generate_likely_branch_skip_fixup - cc1 flake fix
     (2026-09-10). BEQL/BNEL/BLEZL/BGTZL ("branch
     likely") annul their delay slot when not taken.
     The not-taken path (the caller's own `skip:` label,
@@ -9591,7 +9567,7 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
     bytes). That trust breaks when the delay slot's own
     instruction hits compiler_page_fault() at compile
     time (mips3com.cpp's normal, frequent ASID-blanking
-    vtlb invalidation - wiki/performance.md): drcfe.ipp's
+    vtlb invalidation): drcfe.ipp's
     do_describe_code() raw walk BREAKS entirely on a page
     fault, so desc->pc+8 never gets its own descriptor in
     that compile at all, and whatever OTHER, unrelated
@@ -9599,8 +9575,8 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
     (observed live: this same branch's own TAKEN target,
     reached via a separate branch-target worklist entry)
     silently takes its place in the live sequence. This
-    is the confirmed root cause of task #84 (wiki/
-    task84.md, 2026-09-10 "ROOT CAUSE FOUND" entry) -
+    is the confirmed root cause of the cc1 <built-in>
+    "predicate's answer is empty" flake (2026-09-10) -
     live-instrumented, 100% correlation across 30
     explicit-flush cycles: the not-taken path redispatches
     to the branch's own taken target regardless of the
@@ -9616,8 +9592,8 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
     target case), straight to the real not-taken PC
     (desc->pc + 8). Gated on that flag so the normal,
     non-faulted case (the overwhelming majority of BEQL-
-    class branches system-wide, per wiki/performance.md's
-    own measurement that compiler_page_fault() is a
+    class branches system-wide, per an earlier
+    measurement that compiler_page_fault() is a
     small minority of all compile-time TLB activity)
     keeps its existing, free fallthrough with zero added
     cost - this only pays for the extra HASHJMP exactly
@@ -9640,8 +9616,8 @@ void mips3_device::generate_likely_branch_skip_fixup(drcuml_block &block, compil
 		// This is a plain C++ increment, not a UML runtime counter - the
 		// condition itself is evaluated once per COMPILE, not per
 		// execution, so a host-side static counter directly measures the
-		// right thing. See the macro's own comment (near the other task
-		// #84 diagnostic defines, above) for what this was used to
+		// right thing. See the macro's own comment (near the other
+		// MAME_SGI_TASK84_* diagnostic defines, above) for what this was used to
 		// measure and the result.
 		static uint32_t s_fixup_count = 0;
 		++s_fixup_count;
@@ -9750,8 +9726,8 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			// 0x880e9ac0/0x880e9ab8, part of a multi-block loop formed by
 			// jal calls to splhi/us_delay/min rather than one self-
 			// contained sequence) actually have interrupt-check code armed?
-			// The existing self-loop fix (see "four real DRC bugs" in
-			// wiki/assets.md) only scans for an instruction whose own
+			// The existing self-loop fix (one of the "four real DRC bugs")
+			// only scans for an instruction whose own
 			// targetpc equals the CURRENT sequence's start - a multi-block
 			// loop like this one has no single instruction matching that
 			// shape, so the expectation is this reads false, unlike a
@@ -11411,7 +11387,7 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 		if (desc->pc == 0x8801205c)
 		{
 			// TEMPORARY probe (2026-07-27): 0x8801205c is splhi()-style
-			// (real mfc0 Status / mask / mtc0, per wiki/assets.md's earlier
+			// (real mfc0 Status / mask / mtc0, per an earlier
 			// disassembly), reached from every interrupt-priority-level
 			// change throughout the kernel. If this ever legitimately
 			// traps here (live mode non-kernel, SR_COP0 clear) it means

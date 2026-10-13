@@ -24,11 +24,12 @@
 #include <cstring>
 
 // Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
-// prints below (tasks #57/#65) - see window.cpp's own copy of this
+// prints below - see window.cpp's own copy of this
 // macro/comment for the full rationale (self-defined per-file, per
 // this project's src/devices/ scoping convention, since a macro
 // defined in one .cpp isn't visible in another). Off by default;
-// task #65 is still open, re-enable if it needs revisiting.
+// the SDL mouse/keyboard focus issue after -state reload is still open,
+// re-enable if it needs revisiting.
 // #define MAME_SGI_MOUSEFOCUS_DIAG
 
 namespace {
@@ -464,8 +465,8 @@ bool sdl_osd_interface::should_hide_mouse()
 	if (!options().mouse() && !options().lightgun())
 		return false;
 
-	// Capture is gated on window focus, not cursor hover (task #65,
-	// 2026-08-15): the previous mouse_over_window() check toggled a real
+	// Capture is gated on window focus, not cursor hover (2026-08-15):
+	// the previous mouse_over_window() check toggled a real
 	// XGrabPointer()/XUngrabPointer() round-trip - both asynchronous X11
 	// protocol requests - on every Enter/Leave crossing of the window
 	// boundary. A 100ms debounce (see update_cursor_state() below) cut

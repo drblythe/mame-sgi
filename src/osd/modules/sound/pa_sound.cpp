@@ -132,7 +132,7 @@ int sound_pa::init(osd_interface &osd, osd_options const &options)
 		return 1;
 	}
 
-	// Bug fix (task #70): Pa_GetDeviceCount() returns a negative PaErrorCode
+	// Bug fix: Pa_GetDeviceCount() returns a negative PaErrorCode
 	// when the host API (e.g. ALSA with no usable device) can't enumerate
 	// anything, not zero. Left unguarded, the old code passed that negative
 	// value straight to resize() - converted to a huge size_t, this throws

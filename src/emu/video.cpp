@@ -73,7 +73,7 @@ namespace {
 // subtract genuine idle time from a callback's measured duration,
 // instead of conflating "deliberately sleeping" with real work - see
 // throttle_until_ticks()'s own comment for the full rationale and the
-// wiki/drc-fault-redesign-scoping.md investigation this generalizes.
+// screen_device::vblank_begin investigation this generalizes.
 osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
 
 // frameskipping tables
@@ -914,8 +914,7 @@ osd_ticks_t video_manager::throttle_until_ticks(osd_ticks_t target_ticks)
 	// MAME_SGI_TIMER_CALLBACK_STATS_DIAG in schedule.cpp) can subtract
 	// genuine idle time from a callback's measured duration instead of
 	// conflating "deliberately sleeping to pace 60Hz" with real work -
-	// exactly the confusion documented in
-	// wiki/drc-fault-redesign-scoping.md's screen_device::vblank_begin
+	// exactly the confusion found in the screen_device::vblank_begin
 	// investigation, generalized here so it can't recur for any other
 	// callback that happens to trigger throttling.
 	mame_sgi_throttle_idle_ticks += (current_ticks - mame_sgi_throttle_entry_ticks);
@@ -1064,7 +1063,7 @@ void video_manager::recompute_speed(const attotime &emutime)
 
 	// if we're past the "time-to-execute" requested, signal an exit
 	// MAME_SGI_STARTUP_SCREENS_NEGATIVE_STR_FIX (permanent, no #ifdef,
-	// task #62, companion half - see ui.cpp's display_startup_screens()):
+	// companion half - see ui.cpp's display_startup_screens()):
 	// a negative -str is used to skip the startup nag screens with no
 	// runtime cap at all, so only a strictly positive value should ever
 	// trigger this auto-exit

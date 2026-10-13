@@ -234,8 +234,7 @@
 // letting mips3drc.cpp's diagnostics capture ground truth mid-generated-code.
 // Root cause found and fixed elsewhere (MAME_SGI_FMOD_ENTRY_RESYNC_FIX,
 // this file's DRC entry point) - nothing calls UML_GETFMOD once this and the
-// mips3drc.cpp-side diagnostics that used it are all disabled. See
-// wiki/drc-bugfixes.md section D for the full writeup.
+// mips3drc.cpp-side diagnostics that used it are all disabled.
 // #define MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
 
 // TEMPORARY diagnostic (2026-08-02): -drc_log_native/-drc_log_uml's
@@ -254,30 +253,29 @@
 // -drc_log_native (and usually -drc_log_uml) on the command line as
 // before - this only narrows what that flag actually logs, doesn't
 // replace needing it.
-// DISABLED (2026-08-17) - task #69/#71 concluded, pinned PC no longer
+// DISABLED (2026-08-17) - investigation concluded, pinned PC no longer
 // relevant. Commented out, not deleted - reusable for a future
 // investigation session.
 // #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024d14
 
-// TEMPORARY diagnostic (2026-09-03, task #84 Opus-review followup):
+// TEMPORARY diagnostic (2026-09-03, Opus-review followup):
 // range variant of the above, narrowing -drc_log_native's per-block
 // disasm_code_range() dump to any block whose seqhead PC falls inside
 // cc1's parse_answer()/_cpp_do__Pragma critical window
-// (0x1007de40-0x1007e02c, real function bounds per the disassembly in
-// wiki/task84-opus-review-2026-09-03.md - kept a little wider on both
-// sides as margin). Goal: capture the actual compiled x86 bytes for
+// (0x1007de40-0x1007e02c, real function bounds per its disassembly -
+// kept a little wider on both sides as margin). Goal: capture the actual compiled x86 bytes for
 // this region across a natural-rate loop run and diff whether a
 // pass-then-fail transition corresponds to a recompile at all (if the
 // same block serves both outcomes, that rules out "persistently
 // mis-compiled block" and points back toward an execution-time/register
 // mechanism instead).
 //
-// EXTENDED (2026-09-05, task #84): added a second, disjoint window for
+// EXTENDED (2026-09-05): added a second, disjoint window for
 // cpp_get_token() itself - the actual callee that computes $v0, never
 // covered by the original window and never dumped at all despite 15
 // UML-op/register-path hypotheses in the caller's own three-instruction
 // resumption window (dmov/dand/dcmp) all coming back clean by source
-// reading (see wiki/task84.md's eliminated-mechanisms table, #13-#15).
+// reading.
 // cpp_get_token's real entry, 0x10076008, is independently confirmed two
 // ways: live gdb (a breakpoint there, conditioned on $ra==0x1007df4c,
 // forced 26/26 failures matching the established bisection) and a fresh
@@ -310,9 +308,9 @@
 // sites (the outer open-paren check at 0x1007de88 and the answer-list
 // loop's own repeated call at 0x1007df48) and the cpp_error call site
 // itself (0x1007dec4/0x1007e020's failure branch). Live-timing-race
-// hypotheses for this region were just ruled out (wiki/task84.md,
-// 2026-09-10 "traced state before the first (loop) cpp_get_token call"
-// entry - warm-phase PREDICATE runs show zero re-entry/exception events
+// hypotheses for this region were just ruled out (2026-09-10, tracing
+// state before the first (loop) cpp_get_token call - warm-phase
+// PREDICATE runs show zero re-entry/exception events
 // in the $v0-consumption window yet still fail), narrowing the remaining
 // candidate to a compile-time LINKAGE/register-liveness defect - this is
 // the whole point of getting the real emitted x86 in view rather than
@@ -324,7 +322,7 @@
 #define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_LO 0x1007de40
 #define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_HI 0x1007e100
 
-// TEMPORARY diagnostic (2026-09-05, task #84): host-side-only wall-clock
+// TEMPORARY diagnostic (2026-09-05): host-side-only wall-clock
 // timestamp for every fresh compile whose seqhead is EXACTLY
 // cpp_get_token's own entry (0x10076008) - not just anywhere in the
 // window above, which also matches interior branch targets not relevant
@@ -332,9 +330,9 @@
 // BEFORE any code is emitted into the guest's code cache - this is plain
 // host C++ file I/O, not an instruction inserted into the compiled
 // block, so it cannot perturb DRC sequence-boundary decisions or any
-// guest-visible timing (see wiki/debugging.md's "Standing hazard: any
-// inserted probe can perturb interrupt/event ordering" section for why
-// that distinction is load-bearing here, not incidental). Purpose:
+// guest-visible timing (any inserted probe can perturb interrupt/event
+// ordering, so that distinction is load-bearing here, not incidental).
+// Purpose:
 // correlate "when did cpp_get_token get freshly recompiled" against
 // console_live.log's own --timestamps output after the fact, entirely
 // via wall-clock proximity in two independently-written passive logs -
@@ -342,10 +340,10 @@
 // or callee's guest-executed instruction stream.
 // #define MAME_SGI_TASK84_CPPGETTOKEN_COMPILE_TIMESTAMP
 
-// TEMPORARY diagnostic (2026-09-09, task #84): logs EVERY fresh compile's
+// TEMPORARY diagnostic (2026-09-09): logs EVERY fresh compile's
 // first seqhead PC, completely unfiltered - not scoped to cpp_get_token
 // or parse_answer at all. Motivation: this investigation has now proven
-// (wiki/task84.md, 2026-09-09 entry) that cpp_get_token's AND
+// (2026-09-09) that cpp_get_token's AND
 // parse_answer's own compiled bytes are identical between a passing and
 // a failing instance, for multiple matched pairs - closing off both
 // functions directly implicated in this bug as the source of the
@@ -358,7 +356,7 @@
 // This logs just "which PC, in what order" (one line per compile, no
 // disassembly) to keep volume bounded for a single short cc1-on-/dev/null
 // run, unlike a full unfiltered -drc_log_native capture (900MB/minute
-// for a full boot per wiki/assets.md - this is orders of magnitude
+// for a full boot - this is orders of magnitude
 // smaller in scope, one cc1 invocation's worth of compiles only).
 // Same host-side-only, zero-guest-perturbation shape as the timestamp
 // diagnostic just above.
@@ -378,8 +376,8 @@
 // rather than via sgi.lua for the same reason as every other diagnostic
 // in this file - src/devices/ files compile into the shared "optional"
 // project, which sgi.lua's defines{} block never reaches.
-// DISABLED (2026-08-17) - task #69/#71 concluded; the actual root cause
-// was MIPS3DRC_STRICT_COP1 never being enabled (see drc-bugfixes.md),
+// DISABLED (2026-08-17) - investigation concluded; the actual root cause
+// was MIPS3DRC_STRICT_COP1 never being enabled,
 // not a DRC codegen omission - this probe's own finding (the store IS
 // correctly emitted) is what helped establish that. Commented out, not
 // deleted; the matching mips3drc.cpp-side gate
@@ -400,7 +398,7 @@ extern bool g_mame_sgi_lwc1_target_block;
 // and JMP. Same labels, bound the same way; only the lookup changes.
 #define MAME_SGI_DRC_LABEL_MAP
 
-// TEMPORARY diagnostic (2026-09-08, task #84): the narrow, targeted
+// TEMPORARY diagnostic (2026-09-08): the narrow, targeted
 // follow-up to the broad global $v0 shadow-divergence detector
 // (mips3drc.cpp's MAME_SGI_TASK84_V0_SHADOW_DIAG) - that one never caught
 // r15 diverging from guest-written state at any INSTRUCTION boundary, but
@@ -421,7 +419,7 @@ extern bool g_mame_sgi_lwc1_target_block;
 // call site unconditionally (save+compare on every guest memory access,
 // system-wide), a real confound to leave active for a fresh, independent
 // experiment. Already gave its clean negative result (530 invocations,
-// 135 failures, 0 clobbers - see wiki/task84.md) - re-enable only if
+// 135 failures, 0 clobbers) - re-enable only if
 // resuming that specific ABI-trust line of investigation.
 // #define MAME_SGI_TASK84_MEMOP_R15_GUARD
 
@@ -490,9 +488,9 @@ const Gp::Id int_register_map[REG_I_COUNT] =
 #ifdef _WIN32
 	Gp::kIdBx, Gp::kIdSi, Gp::kIdDi, Gp::kIdR12, Gp::kIdR13, Gp::kIdR14, Gp::kIdR15,
 #else
-	// Task #84 (2026-09-07): REVERTED - adding Gp::kIdR8 as a 6th direct
-	// integer register (to also fast-map $v1, testing whether task #84's
-	// corruption is $v0-specific or generic to any fast-mapped register)
+	// 2026-09-07: REVERTED - adding Gp::kIdR8 as a 6th direct
+	// integer register (to also fast-map $v1, testing whether the cc1
+	// flake's corruption is $v0-specific or generic to any fast-mapped register)
 	// broke emulation at a fundamental level: both a -state resume AND a
 	// genuine cold boot produced ZERO console output (not even power-on
 	// diagnostics), while gdb confirmed the host process was still
@@ -502,9 +500,8 @@ const Gp::Id int_register_map[REG_I_COUNT] =
 	// file for existing r8/r9 references (which found none on the
 	// non-Windows path - the safety check was necessary but evidently not
 	// sufficient; something else, not yet identified, depends on this
-	// register or on int_register_map's exact prior contents/size). See
-	// wiki/task84.md's matching entry for the full attempt and this
-	// negative result. Do not re-add R8 without root-causing this first.
+	// register or on int_register_map's exact prior contents/size). Do
+	// not re-add R8 without root-causing this first.
 	Gp::kIdBx, Gp::kIdR12, Gp::kIdR13, Gp::kIdR14, Gp::kIdR15
 #endif
 };
@@ -698,7 +695,7 @@ private:
 		u32                 mame_sgi_getfmod_diag_scratch; // dedicated scratch for op_getfmod real-MXCSR diagnostic
 #endif
 #ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		u64                 task84_r15_shadow;      // TEMPORARY (2026-09-08, task #84): r15 snapshotted immediately before a memory-accessor C++ call in op_read/op_write, compared immediately after - see emit_task84_r15_guard_save/_check's own comments.
+		u64                 task84_r15_shadow;      // TEMPORARY (2026-09-08): r15 snapshotted immediately before a memory-accessor C++ call in op_read/op_write, compared immediately after - see emit_task84_r15_guard_save/_check's own comments.
 #endif
 
 		u32                 ssecontrol[4];          // copy of the sse_control array
@@ -1214,8 +1211,8 @@ inline void drcbe_x64::smart_call_r64(Assembler &a, x86code *target, Gp const &r
 
 #ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
 //-------------------------------------------------
-//  emit_task84_r15_guard_save/_check (2026-09-08,
-//  task #84) - the narrow, targeted version of the
+//  emit_task84_r15_guard_save/_check (2026-09-08)
+//  - the narrow, targeted version of the
 //  question raised after the broad per-instruction
 //  shadow detector: does the real C++ function
 //  op_read/op_write calls (accessors.resolved.*.func,
@@ -1554,9 +1551,8 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	// unconditional entry-point SETFMOD (mips3drc.cpp, CTC1-adjacent
 	// compiled prologue) sees the (now-stale) cache already matching its
 	// request and skips the real ldmxcsr, leaving real MXCSR silently wrong
-	// relative to both the guest's own state and this cache - see
-	// wiki/drc-bugfixes.md section D and journal.md for the full
-	// investigation (IRIX printf/%f leading-digit corruption). Resync here,
+	// relative to both the guest's own state and this cache (the root
+	// cause of IRIX printf/%f leading-digit corruption). Resync here,
 	// right before the cache gets trusted by any guest code this call runs:
 	// if the host's ambient MXCSR matched one of the four known presets
 	// (nominalfmod != 0xff, REG_PARAM1 still holds that exact value),
@@ -1588,10 +1584,10 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	//       the blocked-forwarding sense) but which still costs real,
 	//       nonzero latency (~4-7 cycles is typical on modern cores) paid
 	//       on literally every execute() call when unconditional. perf
-	//       stat vs variant 1: -0.37% instructions, -0.47% cycles - see
-	//       wiki/drc-bugfixes.md for the full caveat (contradicts static
-	//       per-call instruction-count analysis, likely noise-band, not
-	//       confidently attributed to the code change alone).
+	//       stat vs variant 1: -0.37% instructions, -0.47% cycles -
+	//       caveat: contradicts static per-call instruction-count
+	//       analysis, likely noise-band, not confidently attributed to
+	//       the code change alone.
 	//   3 = branch-free: always load m_state.fmod, CMOV-select
 	//       nominalfmod-or-current based on the 0xff check, always store
 	//       the selected value. No control-flow branch for this decision
@@ -3118,8 +3114,8 @@ void drcbe_x64::op_setfmod(Assembler &a, const instruction &inst)
 // pre-callout MXCSR value into a UML register *before* any UML_CALLC runs
 // (UML_CALLC's own op_callc always forces MXCSR to the default mode before
 // the call, making it otherwise impossible to observe the true live value
-// from inside a called C function) - part of the MXCSR-desync investigation,
-// see wiki/performance.md and journal.md. Revert to the original
+// from inside a called C function) - part of the MXCSR-desync investigation.
+// Revert to the original
 // m_state.fmod-based body if GETFMOD is ever wired up for real use.
 // (MAME_SGI_GETFMOD_REAL_MXCSR_DIAG is defined near the top of the file,
 // above near_state, so its dedicated scratch field can be added to the

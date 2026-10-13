@@ -114,8 +114,9 @@ namespace {
 }
 #endif
 
-// TEMPORARY DIAGNOSTIC (2026-09-19), disabled by default. wiki task #7's
-// own stated prerequisite - never previously answered - is whether IRIX's
+// TEMPORARY DIAGNOSTIC (2026-09-19), disabled by default. A standing
+// prerequisite for a coarser SCSI schedule - never previously answered -
+// is whether IRIX's
 // real disk driver ever observes intermediate per-byte SCSI transfer
 // state, or only start/completion. Neither of that question's two real
 // signals was actually being logged anywhere in this file (checked
@@ -153,12 +154,11 @@ namespace {
 // controller at all in BURST mode - it relies entirely on the DRQ line
 // (already an automatic HPC3-side pump, see hpc3.cpp's do_scsi_dma())
 // and the final completion IRQ, never re-checking controller state
-// mid-transfer. This directly answers this task's own long-standing
-// open prerequisite: a coarser schedule for the per-byte REQ/ACK
+// mid-transfer. This directly answers that long-standing open
+// prerequisite: a coarser schedule for the per-byte REQ/ACK
 // settle-timing simulation inside step() would not break any observed
-// driver behavior, as far as this evidence shows - see wiki/tasks.md's
-// task #7 row for the fuller writeup and what's still not covered by
-// this single (BURST-mode, disk-read) workload.
+// driver behavior, as far as this evidence shows - though only this
+// single (BURST-mode, disk-read) workload was covered.
 // #define MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
 #ifdef MAME_SGI_SCSI_PERBYTE_VISIBILITY_DIAG
 namespace {
@@ -1105,8 +1105,8 @@ void wd33c9x_base_device::step_entry(bool timeout)
 	// passthrough below (call step() once, don't loop) - if it looped
 	// too, each byte of a transfer would add one more stack frame that
 	// never unwinds until the whole transfer finishes, which is exactly
-	// what caused a real stack overflow (see this file's own history/
-	// wiki/scsi-coarse-schedule-scoping.md's Status section). delay()
+	// what caused a real stack overflow (see this file's own history).
+	// delay()
 	// needs no special handling for this: whether it's called from the
 	// outermost frame or a reentrant one, it just accumulates cycle
 	// debt and returns - m_coarse_continue and m_coarse_cycle_debt are

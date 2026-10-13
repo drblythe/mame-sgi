@@ -9,8 +9,8 @@
 #include "emu.h"
 
 // TEMPORARY diagnostic (2026-08-14): dumps all 8 m_pbus_dma[] channels plus
-// their HAL2 rate on every -state postload - see task #66's eret-race-onset
-// investigation and hpc3_device::func_pbus_dma_postload_diag's own comment.
+// their HAL2 rate on every -state postload, for the eret-race-onset
+// investigation - see hpc3_device::func_pbus_dma_postload_diag's own comment.
 // Must be defined before "hpc3.h" is included, since it also gates that
 // function's declaration there.
 #define MAME_SGI_PBUS_DMA_POSTLOAD_DIAG

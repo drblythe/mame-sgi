@@ -58,7 +58,7 @@
 // by the sticky-press fix below (see sdl_keyboard_device) - a direct
 // signal of how many keystrokes a given DRC/scheduler stall would have
 // dropped without it. Off by default.
-// DISABLED (2026-08-23) - task #75 reopened-investigation paused;
+// DISABLED (2026-08-23) - reopened investigation paused;
 // re-enable if another live session is needed.
 // #define MAME_SGI_KBD_STICKY_DIAG
 
@@ -73,14 +73,14 @@
 // format matches console_live.log's own (HH:MM:SS.mmm) for direct
 // cross-reference against what the guest console shows at the same
 // moment. DISABLED (2026-08-23) - see MAME_SGI_KBD_STICKY_DIAG's own
-// disable note just above; both were used together to pin down Bug A/B,
-// see wiki/console.md.
+// disable note just above; both were used together to pin down the
+// dropped-keystroke bugs.
 // #define MAME_SGI_KBD_RAW_EVENT_DIAG
 
 // Same fix, same diagnostic shape, for mouse buttons (see
 // sdl_mouse_device_base) - m_mouse.buttons[] had the identical
 // unprotected level-state pattern m_keyboard.state[] did, flagged as a
-// known lurking bug during the keyboard fix's own review (task #76) and
+// known lurking bug during the keyboard fix's own review and
 // picked up here once the keyboard case was confirmed real via live
 // diagnostic data. Off by default.
 // #define MAME_SGI_MOUSE_BTN_STICKY_DIAG
@@ -98,8 +98,7 @@
 // rather than made configurable - this is a one-shot investigation
 // tool, not a standing feature. DISABLED (2026-08-23) - confirmed the
 // queued_repress fix behaves exactly as designed once actually
-// exercised (see wiki/console.md's Bug A writeup); its own question is
-// answered.
+// exercised; its own question is answered.
 // #define MAME_SGI_KBD_STATE_TRACE_DIAG
 #ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
 #define MAME_SGI_KBD_STATE_TRACE_SCANCODE 18

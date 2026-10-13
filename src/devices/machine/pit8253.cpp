@@ -60,7 +60,7 @@
 // after call-count diagnostic: eliminates ~1-6M redundant update_tick()
 // calls/5s on the SGI IOC2's counter 2. Measured real-world impact via a
 // clean A/B once an unrelated boot hang (ioc2.cpp's input_merger_device
-// race, see wiki/assets.md's RESOLVED section) was fixed and stopped
+// race) was fixed and stopped
 // confounding earlier attempts: ~144.5s avg boot time (IRIX Release to
 // login) with this fix vs ~170.2s without, a consistent ~18% improvement
 // across 2 clean samples per arm. Still gated behind this macro rather than
@@ -68,13 +68,13 @@
 // out of inertia at this point, not because gating still serves a real
 // purpose - an earlier concern that this fix exposed a checkints-arming DRC
 // gap turned out to be based on stale source reading and was retracted
-// mid-investigation (see journal.md), and the actual hang this fix was once
+// mid-investigation, and the actual hang this fix was once
 // suspected of causing was unrelated. Ungating this to match Finding 2's
 // pattern would be a reasonable small follow-up cleanup.
 #define MAME_SGI_PIT_MODE45_PHASE0_FIX
 // DISABLED again (2026-08-21) - was RE-ENABLED earlier the same day to
-// validate both the cause and the fix for task #74's clean-shutdown
-// near-permanent-stall bug (see wiki/drc-bugfixes.md's C.4 section):
+// validate both the cause and the fix for the clean-shutdown
+// near-permanent-stall bug:
 // confirmed the "counter gets parked, backlog accumulates silently"
 // hypothesis live (a period logged going to 0 Hz/CYCLES_NEVER), and
 // confirmed MAME_SGI_PIT_BULK_CATCHUP_FIX's fastpath actually engages
@@ -92,7 +92,7 @@ namespace {
 }
 #endif
 
-// FIX (2026-08-21, gated), task #74: catch-up loops (e.g. Mode 2's
+// FIX (2026-08-21, gated): catch-up loops (e.g. Mode 2's
 // do-while in simulate()) can call set_output() -> devcb -> a
 // downstream cascaded PIT's set_clock_signal() many times in a tight
 // loop when draining a large historical elapsed_cycles backlog (real
@@ -162,13 +162,13 @@ namespace {
 #endif
 
 // Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s print,
-// concluded weeks ago alongside task #66 (find what gates the wait
-// loop before 0xbfc1174c) - was unconditionally wired via
+// concluded weeks ago alongside the investigation into what gates the
+// wait loop before 0xbfc1174c - was unconditionally wired via
 // register_postload() AND fired periodically during ordinary
 // operation (every 20000 update_tick() calls, not just on real
 // -state save/load), and its print was also mislabeled
 // "MOUSEFOCUS_DIAG:" (an unrelated copy-paste leftover, now fixed).
-// Off by default; re-enable if task #66's area needs revisiting.
+// Off by default; re-enable if that wait loop needs revisiting.
 // #define MAME_SGI_PIT_POSTLOAD_DIAG
 
 #define LOG1(...) LOGMASKED(LOG_1, __VA_ARGS__)

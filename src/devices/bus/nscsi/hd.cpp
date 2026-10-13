@@ -541,7 +541,7 @@ void nscsi_harddisk_device::scsi_command()
 
 	case SC_SYNCHRONIZE_CACHE:
 		LOG("command SYNCHRONIZE CACHE (10)\n");
-		// Bug fix (task #72): this used to unconditionally report success
+		// Bug fix: this used to unconditionally report success
 		// with no actual flush at all. Real guests (including IRIX) issue
 		// this command specifically to get a durability guarantee before
 		// proceeding - an unclean kill between the old fake-success reply

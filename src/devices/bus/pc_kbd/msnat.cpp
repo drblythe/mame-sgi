@@ -24,8 +24,8 @@ TODO:
 
 #define LOG     0
 
-// TEMPORARY diagnostic (2026-08-23) - real keyboard-drop investigation,
-// see wiki/console.md. input_sdl.cpp's MAME_SGI_KBD_RAW_EVENT_DIAG
+// TEMPORARY diagnostic (2026-08-23) - real keyboard-drop investigation.
+// input_sdl.cpp's MAME_SGI_KBD_RAW_EVENT_DIAG
 // already proved the host SDL layer delivers every keystroke correctly
 // during a heavy GUI-session-restore stall; this is the next hop down
 // the chain, the embedded 8051 keyboard-controller firmware's own
@@ -36,10 +36,9 @@ TODO:
 // events (only real keypresses), no rate limiting needed, unlike the
 // per-dispatch-style diagnostics elsewhere in this project. Same
 // wall-clock HH:MM:SS.mmm format as MAME_SGI_KBD_RAW_EVENT_DIAG for
-// direct cross-reference. DISABLED (2026-08-23) - task #75
-// reopened-investigation paused; row/column addresses for the affected
-// keys are already recorded in wiki/console.md, re-enable if another
-// live session is needed.
+// direct cross-reference. DISABLED (2026-08-23) - reopened
+// investigation paused once row/column addresses for the affected keys
+// were recorded; re-enable if another live session is needed.
 // #define MAME_SGI_KBD_MATRIX_SCAN_DIAG
 
 #ifdef MAME_SGI_KBD_MATRIX_SCAN_DIAG
@@ -59,8 +58,8 @@ std::string kbd_matrix_scan_timestamp()
 }
 #endif
 
-// TEMPORARY diagnostic (2026-08-23) - Bug B investigation (see
-// wiki/console.md): MAME_SGI_KBD_MATRIX_SCAN_DIAG proved a key that IS
+// TEMPORARY diagnostic (2026-08-23) - investigation of keys dropped during
+// a host stall: MAME_SGI_KBD_MATRIX_SCAN_DIAG proved a key that IS
 // correctly toggled at the host layer (a real, guaranteed-visible
 // state=0x80 window, confirmed via input_sdl.cpp's own
 // MAME_SGI_KBD_STATE_TRACE_DIAG) can still never be observed by this
@@ -77,8 +76,7 @@ std::string kbd_matrix_scan_timestamp()
 // per-call - p0_read() fires far too often (thousands/sec) for
 // per-call logging like MATRIX_SCAN_DIAG uses. DISABLED (2026-08-23) -
 // answered its question (measured worst_gap=373.9ms, correlated to a
-// drc_cache flush - see wiki/console.md's Bug B writeup); task #75
-// reopened-investigation paused.
+// drc_cache flush); reopened investigation paused.
 // #define MAME_SGI_KBD_SCAN_RATE_DIAG
 
 #ifdef MAME_SGI_KBD_SCAN_RATE_DIAG

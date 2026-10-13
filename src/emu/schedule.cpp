@@ -39,15 +39,14 @@
 // computation and aren't managed by op_setfmod at all) are masked out of
 // the comparison; bits 6-15 (rounding control, DAZ/FTZ, exception masks)
 // are exactly what MAME's sse_control[] table manages and are the only
-// bits expected to stay pinned to the CPU's last-recorded value. See
-// wiki/performance.md and journal.md for the MXCSR-desync investigation
-// this belongs to.
+// bits expected to stay pinned to the CPU's last-recorded value. Part of
+// the MXCSR-desync investigation.
 // DISABLED (2026-09-01) - investigation concluded. This check was correct
 // (record-and-compare against own baseline) but structurally could only
 // ever detect an UNEXPECTED write - the real bug (drcbex64.cpp's DRC entry
 // point never resyncing m_state.fmod, fixed via MAME_SGI_FMOD_ENTRY_RESYNC_FIX)
 // is a MISSING write, invisible to this technique regardless of checkpoint
-// density. See wiki/drc-bugfixes.md section D for the full writeup.
+// density.
 // #define MAME_SGI_SCHEDULER_MXCSR_DIAG
 #ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
 #include <xmmintrin.h>
@@ -135,7 +134,7 @@ inline void sched_mxcsr_diag_check(const char *checkpoint) { mame_sgi_mxcsr_diag
 // distinguish "the callback genuinely did work" from "the callback
 // happened to call into the throttle path and spent most of its measured
 // time asleep" - confirmed to matter in practice for
-// screen_device::vblank_begin (see wiki/drc-fault-redesign-scoping.md).
+// screen_device::vblank_begin.
 // Reading a before/after delta of this counter and subtracting it below
 // fixes that conflation generally, for any callback, not just vblank.
 extern osd_ticks_t mame_sgi_throttle_idle_ticks;
@@ -176,7 +175,7 @@ namespace {
 }
 #endif
 
-// TEMPORARY diagnostic (task #101, 2026-09-17) - isolating which specific
+// TEMPORARY diagnostic (2026-09-17) - isolating which specific
 // timer callback (video vblank, audio stream update, DMA completion, and
 // so on) is responsible for a deterministic early-boot ~150ms gap between
 // a CPU device_execute_interface's own successive re-entries, already

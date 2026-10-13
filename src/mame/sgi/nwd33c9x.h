@@ -8,10 +8,10 @@
  * built on machine/nscsi_hle.cpp's generic SCSI target state machine) that
  * this project's Indy driver actually pairs it with.
  *
- * Task #7 (wiki/tasks.md): profiling found the real per-byte cost of the
- * stock two-object design was not scheduler overhead (already fixed by
+ * Profiling found the real per-byte cost of the stock two-object design
+ * was not scheduler overhead (already fixed by
  * MAME_SGI_SCSI_COARSE_SCHEDULE in wd33c9x.cpp) but nscsi_full_device's own
- * step() logic (~148ns/byte, wiki/performance.md's 2026-09-20 entry) plus
+ * step() logic (~148ns/byte, measured 2026-09-20) plus
  * nscsi_bus_device::regen_ctrl()'s per-notification vtable-override check
  * and dispatch loop - both structural consequences of the initiator and
  * target living in separate, polymorphic, bus-mediated objects. This device
@@ -46,8 +46,7 @@
  *
  * Kept identical to the stock design:
  *   - MAME_SGI_SCSI_COARSE_SCHEDULE and its step_entry() reentrancy-depth
- *     guard. The cross-device reentrancy that guard fixes (see wiki/
- *     scsi-coarse-schedule-scoping.md's Status section) is a property of
+ *     guard. The cross-device reentrancy that guard fixes is a property of
  *     *synchronous bidirectional notification within one call chain*, not
  *     of the initiator and target being separate objects - it reproduces
  *     identically here (the target's reaction to an initiator ctrl change
@@ -67,17 +66,16 @@
 // machine/wd33c9x.h for the full rationale - unchanged here.
 #define MAME_SGI_SCSI_COARSE_SCHEDULE
 
-// Task #118 (wiki/tasks.md, scoped 2026-09-29, implemented 2026-09-30,
-// enabled by default 2026-10-01 after three real bugs were found and
-// fixed - see tasks.md's task #118 row for the full arc): fast path for
+// Scoped 2026-09-29, implemented 2026-09-30, enabled by default
+// 2026-10-01 after three real bugs were found and fixed: fast path for
 // coarse-eligible BURST DATA_IN/DATA_OUT transfers - skips the per-byte
 // REQ/ACK state-machine walk (~7 switch-dispatch hops/byte, each a real
 // host function call) for the repetitive MIDDLE section of a transfer.
 // The first and last byte of each transfer always go through the real
 // dance unchanged, to keep phase-start/transfer-complete sequencing (and
 // any mid-transfer register inspection) byte-for-byte identical to the
-// unoptimized path. Justified by task #7's own BURST-mode visibility
-// diagnostic (IRIX's real driver never inspects intermediate REQ/ACK
+// unoptimized path. Justified by the BURST-mode visibility diagnostic
+// in nwd33c9x.cpp (IRIX's real driver never inspects intermediate REQ/ACK
 // state in this mode).
 //
 // Confirmed LIVE (host gdb backtrace, both directions) before writing
@@ -86,8 +84,7 @@
 // callback through hpc3_device::scsi0_drq() - not a separately-timed,
 // asynchronous host-CPU-driven event the way a naive reading of the
 // REQ/ACK dance suggests. This is what makes a tight, local fast-path
-// loop safe to reason about at all - see wiki/performance.md's task #118
-// section for the full trace.
+// loop safe to reason about at all.
 //
 // Restricted to SBUF_BLOCK (real disk sector reads/writes) only - the
 // task's own original scoping was about disk-read throughput, never
@@ -98,8 +95,7 @@
 // case only with its own dedicated investigation, not as a side effect
 // of chasing the disk-read win.
 //
-// Three real bugs found and fixed before this was trustworthy (full
-// detail in tasks.md): (1) the fast loop must keep the initiator's own
+// Three real bugs found and fixed before this was trustworthy: (1) the fast loop must keep the initiator's own
 // per-byte bookkeeping (m_i_state parked at INIT_XFR_WAIT_REQ, its S_REQ
 // re-arm) live every iteration, not frozen; (2) t_target_send_buffer_byte()
 // (and the t_target_recv_byte() DATA_OUT mirror) must explicitly replicate
@@ -112,9 +108,8 @@
 // is stale leftover from whatever SBUF_BLOCK transfer came before and has
 // no business deciding completion there at all.
 //
-// A/B validated (tasks.md task #118 row has the full numbers): boot-to-
-// marker instructions -23.15%, cycles -13.90%, branches -25.22% (all
-// p<0.0001, n=5 each, tools/perf_ab_stats.sh); disk_benchmark.sh
+// A/B validated: boot-to-marker instructions -23.15%, cycles -13.90%,
+// branches -25.22% (all p<0.0001, n=5 each, tools/perf_ab_stats.sh); disk_benchmark.sh
 // throughput ~3.1x. Boot-to-login wall-clock itself is flat, consistent
 // with every other SCSI-path optimization this project has measured -
 // boot is dominated by non-disk cost, not disk bandwidth.
@@ -124,7 +119,7 @@
 // implemented - see its own comment for why and what was used instead.
 #define MAME_SGI_SCSI_BURST_FASTPATH
 
-// Planned companion to MAME_SGI_SCSI_BURST_FASTPATH, matching task #119's
+// Planned companion to MAME_SGI_SCSI_BURST_FASTPATH, matching mips3.h's
 // MAME_SGI_FASTRAM_COMPARE_DIAG in spirit (cross-check every fast-pathed
 // byte against what the real per-byte dance would have produced,
 // fatalerror() on the first mismatch) - declared here when the fast path
@@ -133,8 +128,7 @@
 // osd_printf_info() instrumentation added and removed per-bug (cheaper
 // to write for a one-shot question than a standing comparison harness,
 // and in bug #3's case the mismatch was a live oscillation a byte-value
-// comparison wouldn't have characterized anyway - see tasks.md's task
-// #118 row). Left declared, still unimplemented, in case a future change
+// comparison wouldn't have characterized anyway). Left declared, still unimplemented, in case a future change
 // to this fast path specifically needs the byte-level comparison this
 // was meant to provide. Meaningless without the macro above also
 // defined. Disabled by default.
@@ -142,7 +136,7 @@
 
 class nwd33c9x_device;
 
-// Multiple CD-ROMs (2026-09-20, task #7): CD-ROM support was never the
+// Multiple CD-ROMs (2026-09-20): CD-ROM support was never the
 // performance target of this device (only the boot disk's per-byte cost
 // was ever measured as a problem) and bus/nscsi/cd.cpp's real command set
 // is ~834 lines (audio playback, TOC/sub-channel data, several vendor

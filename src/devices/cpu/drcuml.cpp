@@ -46,7 +46,7 @@
 // Enable only for a deliberate investigation session; must match the
 // value in drcbex64.cpp for -drc_log_uml and -drc_log_native to filter
 // consistently.
-// DISABLED (2026-08-17) - task #69/#71 concluded. Commented out, not
+// DISABLED (2026-08-17) - investigation concluded. Commented out, not
 // deleted - reusable for a future investigation session.
 // #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024c64
 
