@@ -651,6 +651,10 @@ void cmap_device::deserialize(FILE *file)
 	fread(m_palette, sizeof(uint32_t), 0x10000, file);
 }
 
+// Diagnostic: log CMAP palette writes to entries 0x1800 and up or of pure
+// green, and writes to unhandled registers, to stderr as CMAP_TRACE lines.
+//#define MAME_SGI_CMAP_WRITE_TRACE
+
 void cmap_device::write(uint32_t offset, uint32_t data)
 {
 	switch (offset)
@@ -660,6 +664,10 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		m_palette_idx = (uint16_t)data;
 		break;
 	case 0x02:
+#ifdef MAME_SGI_CMAP_WRITE_TRACE
+		if (m_palette_idx >= 0x1800 || ((data >> 8) & 0xffffff) == 0x00ff00)
+			fprintf(stderr, "CMAP_TRACE %s idx=%04x data=%06x\n", tag(), m_palette_idx, (data >> 8) & 0xffffff);
+#endif
 		m_palette[m_palette_idx] = data >> 8;
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 		m_dirty_lo = std::min<uint32_t>(m_dirty_lo, m_palette_idx);
@@ -670,6 +678,9 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		LOGMASKED(LOG_CMAP, "Palette Entry %04x Write: %08x\n", m_palette_idx, data >> 8);
 		break;
 	default:
+#ifdef MAME_SGI_CMAP_WRITE_TRACE
+		fprintf(stderr, "CMAP_TRACE %s unknown reg %d data=%08x idx=%04x\n", tag(), offset, data, m_palette_idx);
+#endif
 		LOGMASKED(LOG_CMAP | LOG_UNKNOWN, "Unknown Register %d Write: %08x\n", offset, data);
 		break;
 	}
@@ -5522,10 +5533,49 @@ struct rex3_census_scope
 } // anonymous namespace
 #endif
 
+// Diagnostic: log each REX3 command whose start point (screen coordinates)
+// lies in the rectangle MAME_SGI_REX3_TRACE_RECT="x0,y0,x1,y1" (environment),
+// with its draw modes, colour registers and write mask, to stderr as
+// REX3_TRACE lines, at most MAME_SGI_REX3_TRACE_MAX (default 2000) of them.
+//#define MAME_SGI_REX3_CMD_TRACE
+#ifdef MAME_SGI_REX3_CMD_TRACE
+namespace {
+struct rex3_trace_config
+{
+	bool on = false;
+	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+	long remaining = 2000;
+	rex3_trace_config()
+	{
+		const char *r = getenv("MAME_SGI_REX3_TRACE_RECT");
+		on = r && sscanf(r, "%d,%d,%d,%d", &x0, &y0, &x1, &y1) == 4;
+		if (const char *m = getenv("MAME_SGI_REX3_TRACE_MAX"))
+			remaining = atol(m);
+	}
+} s_rex3_trace;
+} // anonymous namespace
+#endif
+
 void newport_base_device::do_rex3_command()
 {
 #ifdef MAME_SGI_REX3_MODE_CENSUS
 	rex3_census_scope census_scope(m_rex3.m_draw_mode0, m_rex3.m_draw_mode1);
+#endif
+#ifdef MAME_SGI_REX3_CMD_TRACE
+	if (s_rex3_trace.on && s_rex3_trace.remaining > 0)
+	{
+		const int sx = m_rex3.m_x_start_i + int(m_rex3.m_x_window) - 0x1000;
+		const int sy = m_rex3.m_y_start_i + int(m_rex3.m_y_window) - 0x1000;
+		if (sx >= s_rex3_trace.x0 && sx <= s_rex3_trace.x1 && sy >= s_rex3_trace.y0 && sy <= s_rex3_trace.y1)
+		{
+			s_rex3_trace.remaining--;
+			fprintf(stderr, "REX3_TRACE m0=%08x m1=%08x start=%d,%d end=%d,%d win=%d,%d ci=%08x vram=%08x rgb=%08x/%08x/%08x back=%08x wmask=%08x zpat=%08x\n",
+					m_rex3.m_draw_mode0, m_rex3.m_draw_mode1, m_rex3.m_x_start_i, m_rex3.m_y_start_i,
+					m_rex3.m_x_end_i, m_rex3.m_y_end_i, int(m_rex3.m_x_window) - 0x1000, int(m_rex3.m_y_window) - 0x1000,
+					m_rex3.m_color_i, m_rex3.m_color_vram, m_rex3.m_color_red, m_rex3.m_color_green, m_rex3.m_color_blue,
+					m_rex3.m_color_back, m_rex3.m_write_mask, m_rex3.m_z_pattern);
+		}
+	}
 #endif
 	static const char* const s_opcode_str[4] = { "Noop", "Read", "Draw", "Scr2Scr" };
 	static const char* const s_adrmode_str[8] = {
