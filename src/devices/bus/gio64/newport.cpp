@@ -677,6 +677,13 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 			set_pen_color(m_palette_idx, rgb_t((uint8_t)(data >> 24), (uint8_t)(data >> 16), (uint8_t)(data >> 8)));
 		LOGMASKED(LOG_CMAP, "Palette Entry %04x Write: %08x\n", m_palette_idx, data >> 8);
 		break;
+	case 0x03:
+		// Command register. The guest writes 7 before and 3 after each
+		// palette write (bit 2 disables CBLANK while the palette is
+		// written) and 3 also sets the palette FIFO to trip at half full.
+		// Neither changes the palette contents or how they are displayed,
+		// so the emulation ignores it.
+		break;
 	default:
 #ifdef MAME_SGI_CMAP_WRITE_TRACE
 		fprintf(stderr, "CMAP_TRACE %s unknown reg %d data=%08x idx=%04x\n", tag(), offset, data, m_palette_idx);
