@@ -2754,8 +2754,12 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								break;
 							}
 							case 1: // 8bpp
-								*dest++ = palette[ci_msb | (uint8_t)*src_rgbci];
+							{
+								// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+								const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+								*dest++ = palette[ci_msb | (uint8_t)(*src_rgbci >> shift)];
 								break;
+							}
 							case 2: // 12bpp
 							{
 								const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
@@ -2992,12 +2996,16 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			return;
 		}
 		case (0 << 2) | 1: // CI 8bpp
+		{
+			// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 			for (int i = 0; i < count; i++)
 			{
 				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | (uint8_t)src_rgbci[i]];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | (uint8_t)(src_rgbci[i] >> shift)];
 			}
 			return;
+		}
 		case (0 << 2) | 2: // CI 12bpp
 		{
 			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
@@ -3168,8 +3176,12 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							break;
 						}
 						case 1: // 8bpp
-							*dest++ = palette[ci_msb | (uint8_t)*src_rgbci];
+						{
+							// buffer 1 of a double-buffered 8bpp visual is bits 8-15
+							const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+							*dest++ = palette[ci_msb | (uint8_t)(*src_rgbci >> shift)];
 							break;
+						}
 						case 2: // 12bpp
 						{
 							const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
