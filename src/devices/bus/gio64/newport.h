@@ -34,6 +34,16 @@
 // next pixel isn't adjacent, instead of one add_rect() per pixel.
 #define MAME_SGI_RB2_SPAN_DIRTY
 
+// One call per drawn pixel: rb2_device::write_pixel_xy() does the address,
+// lane expansion, logic op, masked store and dirty run inline, reading the
+// destination only for logic ops that use it and storing directly when
+// every bit is writable; output_pixel() is inlined into the draw loops.
+// Needs MAME_SGI_RB2_XY_ADDRESS and MAME_SGI_RB2_SPAN_DIRTY.
+#define MAME_SGI_REX3_FAST_PIXEL
+// Diagnostic: also run the original per-pixel path for every pixel and
+// count words that differ (logged to stderr).
+//#define MAME_SGI_REX3_FAST_PIXEL_VERIFY
+
 #include "gio64.h"
 #include "screen.h"
 
@@ -512,6 +522,9 @@ public:
 #endif
 	uint32_t read_pixel();
 	void write_pixel(uint32_t data);
+#ifdef MAME_SGI_REX3_FAST_PIXEL
+	void write_pixel_xy(int x, int y, uint32_t data);
+#endif
 
 	// Dirty-region tracking for the compositor (see newport_dirty_rect).
 	// Updated per-pixel directly in store_pixel() - the single choke

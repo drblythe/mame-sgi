@@ -1415,6 +1415,105 @@ uint32_t rb2_device::expand_to_all_lanes(uint32_t src)
 	return src;
 }
 
+#ifdef MAME_SGI_REX3_FAST_PIXEL
+// Same result and RB2 state as set_address_xy(x, y) then write_pixel(data).
+ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t data)
+{
+#ifdef MAME_SGI_REX3_FAST_PIXEL_VERIFY
+	static uint64_t s_verify_pixels, s_verify_bad;
+	uint32_t *const vp = &m_dest_buf[y * (1280 + 64) + x];
+	const uint32_t before = *vp;
+	set_address_xy(x, y);
+	write_pixel(data);
+	const uint32_t expected = *vp;
+	*vp = before;
+#endif
+	uint32_t *const p = &m_dest_buf[y * (1280 + 64) + x];
+	m_buf_ptr = p;
+	m_cur_x = x;
+	m_cur_y = y;
+
+	const uint32_t src = expand_to_all_lanes(data);
+	uint32_t value;
+	if (m_blend || m_fast_clear)
+	{
+		value = src;
+	}
+	else
+	{
+		switch (m_logicop)
+		{
+			case 0:     value = 0x000000;        break;
+			case 3:     value = src;             break;
+			case 12:    value = ~src;            break;
+			case 15:    value = 0xffffff;        break;
+			default:
+			{
+				const uint32_t dst = *p >> m_src_shift;
+				switch (m_logicop)
+				{
+					case 1:     value = src & dst;       break;
+					case 2:     value = src & ~dst;      break;
+					case 4:     value = ~src & dst;      break;
+					case 5:     value = dst;             break;
+					case 6:     value = src ^ dst;       break;
+					case 7:     value = src | dst;       break;
+					case 8:     value = ~(src | dst);    break;
+					case 9:     value = ~(src ^ dst);    break;
+					case 10:    value = ~dst;            break;
+					case 11:    value = src | ~dst;      break;
+					case 13:    value = ~src | dst;      break;
+					default:    value = ~(src & dst);    break; // 14
+				}
+				break;
+			}
+		}
+	}
+
+#ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
+	static const uint32_t s_plane_bits[8] = {
+		0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00ffff00, 0x000000cc, 0x00000033, 0xffffffff };
+	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+#else
+	const uint32_t write_mask = m_write_mask & m_global_mask;
+#endif
+	// VRAM bits outside the global mask are never written and stay zero, so
+	// a write mask covering the whole global mask needs no read of the old
+	// word
+	if (write_mask == m_global_mask)
+		*p = value & write_mask;
+	else
+		*p = (*p & ~write_mask) | (value & write_mask);
+
+	if (m_run_valid && y == m_run_y && x >= m_run_x0 - 1 && x <= m_run_x1 + 1)
+	{
+		if (x < m_run_x0)
+			m_run_x0 = x;
+		else if (x > m_run_x1)
+			m_run_x1 = x;
+	}
+	else
+	{
+		flush_dirty_run();
+		m_run_valid = true;
+		m_run_y = y;
+		m_run_x0 = m_run_x1 = x;
+	}
+	g_mame_sgi_stat_pixel_writes++;
+#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
+	g_mame_sgi_dirty_pixel_writes_this_frame++;
+#endif
+#ifdef MAME_SGI_REX3_FAST_PIXEL_VERIFY
+	s_verify_pixels++;
+	if (*vp != expected && ++s_verify_bad <= 20)
+		fprintf(stderr, "REX3_FAST_PIXEL mismatch x=%d y=%d data=%08x got=%08x want=%08x logicop=%d blend=%d fc=%d plane=%d depth=%d wm=%08x\n",
+				x, y, data, *vp, expected, m_logicop, m_blend, m_fast_clear, m_plane_enable, m_draw_depth, m_write_mask);
+	if ((s_verify_pixels & ((1 << 24) - 1)) == 0)
+		fprintf(stderr, "REX3_FAST_PIXEL verified=%llu bad=%llu\n", (unsigned long long)s_verify_pixels, (unsigned long long)s_verify_bad);
+#endif
+}
+#endif
+
 void rb2_device::set_write_mask(uint32_t data)
 {
 	m_write_mask = data;
@@ -3762,6 +3861,9 @@ void newport_base_device::output_pixel(uint32_t color)
 		output_pixel(m_rex3.m_x_start_i, m_rex3.m_y_start_i, color);
 }
 
+#ifdef MAME_SGI_REX3_FAST_PIXEL
+ATTR_FORCE_INLINE inline
+#endif
 bool newport_base_device::pixel_clip_pass(int16_t x, int16_t y)
 {
 	bool mask0_pass = true;
@@ -3845,6 +3947,9 @@ bool newport_base_device::pixel_clip_pass(int16_t x, int16_t y)
 	return true;
 }
 
+#ifdef MAME_SGI_REX3_FAST_PIXEL
+ATTR_FORCE_INLINE inline
+#endif
 void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 {
 	if (!pixel_clip_pass(x, y))
@@ -3857,6 +3962,13 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 	x -= 0x1000;
 	y -= 0x1000;
 
+#ifdef MAME_SGI_REX3_FAST_PIXEL
+	if (!BIT(m_rex3.m_draw_mode1, 18))
+	{
+		m_rb2->write_pixel_xy(x, y, color);
+		return;
+	}
+#endif
 #ifdef MAME_SGI_RB2_XY_ADDRESS
 	set_address_xy(x, y);
 #else
