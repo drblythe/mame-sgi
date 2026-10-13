@@ -40,7 +40,15 @@
 #include "debug/debugcon.h"
 #include "debugger.h"
 
+#include <algorithm>
 #include <cstdarg>
+#include <unordered_map>
+#if defined(MAME_SGI_REX3_MODE_CENSUS) && (defined(__x86_64__) || defined(__i386__))
+#include <x86intrin.h>
+#define MAME_SGI_CENSUS_CYCLES() __rdtsc()
+#else
+#define MAME_SGI_CENSUS_CYCLES() uint64_t(osd_ticks())
+#endif
 
 // Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
 // prints below (tasks #57/#65) - see osd/sdl/window.cpp's own copy of
@@ -1511,6 +1519,95 @@ ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t 
 	if ((s_verify_pixels & ((1 << 24) - 1)) == 0)
 		fprintf(stderr, "REX3_FAST_PIXEL verified=%llu bad=%llu\n", (unsigned long long)s_verify_pixels, (unsigned long long)s_verify_bad);
 #endif
+}
+#endif
+
+#ifdef MAME_SGI_REX3_FAST_SPAN
+// The word write_pixel_xy() would store for data, when that doesn't depend
+// on the destination; false when the logic op reads it.
+bool rb2_device::stored_value(uint32_t data, uint32_t &value) const
+{
+	uint32_t src = data;
+	switch (m_draw_depth)
+	{
+	case 0: src |= src << 4; src |= src << 8; src |= src << 16; break;
+	case 1: src |= src << 8; src |= src << 16; break;
+	case 2: src |= src << 12; break;
+	case 3: break;
+	}
+	switch (m_plane_enable)
+	{
+	case 4: src <<= 8; break;
+	case 5: src <<= 2; break;
+	default: break;
+	}
+	if (m_blend || m_fast_clear)
+	{
+		value = src;
+		return true;
+	}
+	switch (m_logicop)
+	{
+	case 0:  value = 0x000000; return true;
+	case 3:  value = src;      return true;
+	case 12: value = ~src;     return true;
+	case 15: value = 0xffffff; return true;
+	default: return false;
+	}
+}
+
+// Stores pixels x0..x1 of row y (VRAM coordinates), x0 <= x1: pixel x gets
+// fg[x & 3] when pattern bit 'bit' is set (bit counts down from the first
+// pixel, modulo 32), else bg when has_bg, else is left alone. The values
+// come from stored_value(). Same VRAM contents and dirty area as
+// write_pixel_xy() for each stored pixel.
+void rb2_device::store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t pattern, int bit, bool has_bg, uint32_t bg)
+{
+#ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
+	static const uint32_t s_plane_bits[8] = {
+		0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00ffff00, 0x000000cc, 0x00000033, 0xffffffff };
+	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+#else
+	const uint32_t write_mask = m_write_mask & m_global_mask;
+#endif
+	uint32_t *const row = &m_dest_buf[y * (1280 + 64)];
+	const bool direct = write_mask == m_global_mask;
+	uint32_t stored = 0;
+	int last = -1;
+	if (pattern == 0xffffffff && direct)
+	{
+		for (int x = x0; x <= x1; x++)
+			row[x] = fg[x & 3] & write_mask;
+		stored = x1 - x0 + 1;
+		last = x1;
+	}
+	else
+	{
+		for (int x = x0; x <= x1; x++, bit = (bit - 1) & 0x1f)
+		{
+			uint32_t v;
+			if (BIT(pattern, bit))
+				v = fg[x & 3];
+			else if (has_bg)
+				v = bg;
+			else
+				continue;
+			if (direct)
+				row[x] = v & write_mask;
+			else
+				row[x] = (row[x] & ~write_mask) | (v & write_mask);
+			stored++;
+			last = x;
+		}
+	}
+	if (last < 0)
+		return;
+	m_buf_ptr = &row[last];
+	m_cur_x = last;
+	m_cur_y = y;
+	flush_dirty_run();
+	m_dirty.add_rect(x0, y, last, y);
+	g_mame_sgi_stat_pixel_writes += stored;
 }
 #endif
 
@@ -4939,8 +5036,366 @@ uint32_t newport_base_device::get_default_color(uint32_t src)
 	return color;
 }
 
+#ifdef MAME_SGI_REX3_FAST_SPAN
+// The x in [xa, xb] (pre-window coordinates) for which pixel_clip_pass(x, y)
+// holds, as up to 5 sorted, disjoint inclusive intervals lo[i]..hi[i];
+// returns their count, or -1 if the window offset could wrap the 16-bit
+// coordinates somewhere in the range (then use the per-pixel test).
+int newport_base_device::clip_row_intervals(int16_t y, int xa, int xb, int lo[5], int hi[5])
+{
+	int ilo = xa, ihi = xb;
+	if (BIT(m_rex3.m_clip_mode, 0))
+	{
+		const int16_t min_x = (int16_t)(m_rex3.m_smask_x[0] >> 16);
+		const int16_t min_y = (int16_t)(m_rex3.m_smask_y[0] >> 16);
+		const int16_t max_x = (int16_t)m_rex3.m_smask_x[0];
+		const int16_t max_y = (int16_t)m_rex3.m_smask_y[0];
+		if (y < min_y || y > max_y)
+			return 0;
+		ilo = std::max(ilo, int(min_x));
+		ihi = std::min(ihi, int(max_x));
+		if (ilo > ihi)
+			return 0;
+	}
+
+	// window coordinates: wx = x + cx without 16-bit wraparound on [ilo, ihi]
+	const int cx = int(m_rex3.m_x_window) - 0x1000;
+	if (ilo + cx < -32768 || ihi + cx > 32767)
+		return -1;
+	const int16_t wy = (int16_t)(y + m_rex3.m_y_window - 0x1000);
+	if (wy < 0 || wy >= 1024)
+		return 0;
+	ilo = std::max(ilo, 0 - cx);
+	ihi = std::min(ihi, (1280 + 64 - 1) - cx);
+	if (ilo > ihi)
+		return 0;
+
+	if (!(m_rex3.m_clip_mode & 0x1e))
+	{
+		lo[0] = ilo;
+		hi[0] = ihi;
+		return 1;
+	}
+	int n = 0;
+	for (int bit = 1; bit < 5; bit++)
+	{
+		if (!BIT(m_rex3.m_clip_mode, bit))
+			continue;
+		const int16_t min_x = (int16_t)(m_rex3.m_smask_x[bit] >> 16) - 0x1000;
+		const int16_t min_y = (int16_t)(m_rex3.m_smask_y[bit] >> 16) - 0x1000;
+		const int16_t max_x = (int16_t)m_rex3.m_smask_x[bit] - 0x1000;
+		const int16_t max_y = (int16_t)m_rex3.m_smask_y[bit] - 0x1000;
+		if (wy < min_y || wy > max_y)
+			continue;
+		const int a = std::max(ilo, int(min_x) - cx), b = std::min(ihi, int(max_x) - cx);
+		if (a <= b)
+		{
+			lo[n] = a;
+			hi[n] = b;
+			n++;
+		}
+	}
+	// sort and merge overlapping or touching intervals
+	for (int i = 1; i < n; i++)
+		for (int j = i; j > 0 && lo[j] < lo[j - 1]; j--)
+		{
+			std::swap(lo[j], lo[j - 1]);
+			std::swap(hi[j], hi[j - 1]);
+		}
+	int m = 0;
+	for (int i = 0; i < n; i++)
+	{
+		if (m && lo[i] <= hi[m - 1] + 1)
+			hi[m - 1] = std::max(hi[m - 1], hi[i]);
+		else
+		{
+			lo[m] = lo[i];
+			hi[m] = hi[i];
+			m++;
+		}
+	}
+	return m;
+}
+
+// Span (adrmode 0) and block (adrmode 1) draws as clipped row fills, for the
+// cases where every pixel's value is known up front: no host data, shading
+// or blending, a logic op that doesn't read the destination, left to right,
+// and a span/block extent the per-pixel loops in do_rex3_command() would
+// reach without wrapping. start/end are the command's x/y start/end
+// (integer parts), before do_rex3_command()'s end += step. Returns false,
+// having changed nothing, when the draw doesn't qualify.
+bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t start_y, int16_t end_x, int16_t end_y, int16_t dx, int16_t dy)
+{
+	const uint32_t mode0 = m_rex3.m_draw_mode0;
+	const uint32_t mode1 = m_rex3.m_draw_mode1;
+	if (m_fast_draw_disabled || m_rex3.m_color_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
+		return false;
+
+	const bool stop_on_x = BIT(mode0, 8);
+	const bool rgbmode = BIT(mode1, 15);
+	const bool fastclear = BIT(mode1, 17);
+	const bool opaque = BIT(mode0, 16) || BIT(mode0, 17);
+	const uint32_t pattern = BIT(mode0, 12) ? m_rex3.m_z_pattern : (BIT(mode0, 13) ? m_rex3.m_ls_pattern : 0xffffffff);
+
+	// first row's pixel count and the row list
+	int first_count, rows;
+	int16_t row_x0 = m_rex3.m_x_save;
+	const int16_t end_x1 = end_x + dx;
+	int16_t end_y1 = end_y;
+	if (adrmode == 0)
+	{
+		int16_t prim_end_x = end_x1;
+		if (BIT(mode0, 15) && abs(end_x1 - start_x) > 32)
+			prim_end_x = start_x + 32 * dx;
+		if (!stop_on_x)
+			first_count = 1;
+		else
+		{
+			// the loop stops at whichever of prim_end_x, end_x1 it reaches first
+			const int d1 = prim_end_x - start_x, d2 = end_x1 - start_x;
+			if (d1 <= 0 || d2 <= 0)
+				return false;
+			first_count = std::min(d1, d2);
+		}
+		rows = 1;
+	}
+	else
+	{
+		end_y1 = end_y + dy;
+		if (!stop_on_x || !BIT(mode0, 9) || BIT(mode0, 15))
+			return false;
+		first_count = end_x1 - start_x;
+		rows = (end_y1 - start_y) * dy;
+		if (first_count <= 0 || rows <= 0 || (rows > 1 && end_x1 - row_x0 <= 0))
+			return false;
+	}
+
+	// stored values: foreground per x & 3 (dither) for each row, background
+	const uint32_t color = get_default_color(m_rex3.m_color_i);
+	uint32_t bg = 0;
+	if (opaque && !m_rb2->stored_value(m_rex3.m_color_back, bg))
+		return false;
+	uint32_t fg_flat;
+	if (!m_rb2->stored_value(color, fg_flat))
+		return false;
+	const bool per_pixel_color = rgbmode && !fastclear;
+
+#ifdef MAME_SGI_REX3_FAST_SPAN_VERIFY
+	// Run the per-pixel path on the current state, keep its VRAM rows and
+	// start registers, restore, and compare with the fast draw below.
+	struct row_copy { int vy; std::vector<uint32_t> data; };
+	std::vector<row_copy> before, slow;
+	const auto save_rows = [&] (std::vector<row_copy> &out)
+	{
+		out.clear();
+		for (int r = 0, y = start_y; r < rows; r++, y += dy)
+		{
+			const int vy = (int16_t)(y + m_rex3.m_y_window - 0x1000);
+			if (vy < 0 || vy >= 1024)
+				continue;
+			const uint32_t *p = m_rb2->dest_row(vy);
+			out.push_back({ vy, std::vector<uint32_t>(p, p + 1280 + 64) });
+		}
+	};
+	save_rows(before);
+	const rex3_t rex3_before = m_rex3;
+	m_fast_draw_disabled = true;
+	do_rex3_command();
+	m_fast_draw_disabled = false;
+	save_rows(slow);
+	const rex3_t rex3_slow = m_rex3;
+	for (const auto &r : before)
+		std::copy(r.data.begin(), r.data.end(), m_rb2->dest_row(r.vy));
+	m_rex3 = rex3_before;
+#endif
+
+	int lo[5], hi[5];
+	int16_t y = start_y;
+	int16_t x = start_x;
+	for (int r = 0; r < rows; r++, y += dy)
+	{
+		const int count = r ? end_x1 - row_x0 : first_count;
+		const int16_t rx = r ? row_x0 : start_x;
+		uint32_t fg[4];
+		if (per_pixel_color)
+		{
+			for (int i = 0; i < 4; i++)
+				if (!m_rb2->stored_value(get_rgb_color(i, y), fg[i]))
+					return false;	// can't happen: same logic op as the flat color
+		}
+		else
+			fg[0] = fg[1] = fg[2] = fg[3] = fg_flat;
+		// store_row() indexes by VRAM x & 3; the dither uses x & 3 before the
+		// window offset
+		uint32_t fgv[4];
+		const int wcx = int(m_rex3.m_x_window) - 0x1000;
+		for (int i = 0; i < 4; i++)
+			fgv[(i + wcx) & 3] = fg[i];
+
+		const int n = clip_row_intervals(y, rx, rx + count - 1, lo, hi);
+		if (n < 0)
+		{
+			// window offset wraps within the row: per-pixel clip test
+			for (int i = 0; i < count; i++)
+			{
+				const int16_t px = rx + i;
+				if (!pixel_clip_pass(px, y))
+					continue;
+				const int16_t wx = px + m_rex3.m_x_window - 0x1000;
+				const int16_t wy = y + m_rex3.m_y_window - 0x1000;
+				m_rb2->store_row(wy, wx, wx, fgv, BIT(pattern, (31 - i) & 0x1f) ? 0xffffffff : 0, 0, opaque, bg);
+			}
+		}
+		for (int k = 0; k < n; k++)
+		{
+			const int16_t wy = y + m_rex3.m_y_window - 0x1000;
+			const int cx = int(m_rex3.m_x_window) - 0x1000;
+			// pattern bit of pixel lo[k] is 31 minus its offset in the row
+			m_rb2->store_row(wy, lo[k] + cx, hi[k] + cx, fgv, pattern, (31 - (lo[k] - rx)) & 0x1f, opaque, bg);
+		}
+		x = rx + count;
+	}
+
+	// end state, as the per-pixel loops leave it
+	if (adrmode == 0)
+	{
+		if (x >= end_x1)
+		{
+			m_rex3.m_curr_color_red = m_rex3.m_color_red;
+			m_rex3.m_curr_color_alpha = m_rex3.m_color_alpha;
+			m_rex3.m_curr_color_green = m_rex3.m_color_green;
+			m_rex3.m_curr_color_blue = m_rex3.m_color_blue;
+		}
+		write_x_start(x << 11);
+	}
+	else
+	{
+		m_rex3.m_curr_color_red = m_rex3.m_color_red;
+		m_rex3.m_curr_color_alpha = m_rex3.m_color_alpha;
+		m_rex3.m_curr_color_green = m_rex3.m_color_green;
+		m_rex3.m_curr_color_blue = m_rex3.m_color_blue;
+		write_x_start(m_rex3.m_x_save << 11);
+		write_y_start(end_y1 << 11);
+	}
+
+#ifdef MAME_SGI_REX3_FAST_SPAN_VERIFY
+	{
+		static struct verify_counts { uint64_t draws = 0, bad = 0; ~verify_counts() { fprintf(stderr, "REX3_FAST_SPAN exit verified=%llu bad=%llu\n", (unsigned long long)draws, (unsigned long long)bad); } } s_counts;
+		uint64_t &s_draws = s_counts.draws, &s_bad = s_counts.bad;
+		std::vector<row_copy> fast;
+		save_rows(fast);
+		bool ok = fast.size() == slow.size();
+		for (size_t i = 0; ok && i < fast.size(); i++)
+			ok = fast[i].vy == slow[i].vy && fast[i].data == slow[i].data;
+		const bool regs_ok = m_rex3.m_x_start == rex3_slow.m_x_start && m_rex3.m_y_start == rex3_slow.m_y_start &&
+				m_rex3.m_xy_start_i == rex3_slow.m_xy_start_i && m_rex3.m_curr_color_red == rex3_slow.m_curr_color_red &&
+				m_rex3.m_curr_color_green == rex3_slow.m_curr_color_green && m_rex3.m_curr_color_blue == rex3_slow.m_curr_color_blue &&
+				m_rex3.m_curr_color_alpha == rex3_slow.m_curr_color_alpha;
+		s_draws++;
+		if ((!ok || !regs_ok) && ++s_bad <= 20)
+			fprintf(stderr, "REX3_FAST_SPAN mismatch adr=%d m0=%08x m1=%08x start=%d,%d end=%d,%d xsave=%d vram=%d regs=%d xs=%08x/%08x ys=%08x/%08x\n",
+					adrmode, mode0, mode1, start_x, start_y, end_x, end_y, m_rex3.m_x_save, ok, regs_ok,
+					m_rex3.m_x_start, rex3_slow.m_x_start, m_rex3.m_y_start, rex3_slow.m_y_start);
+		if ((s_draws & ((1 << 20) - 1)) == 0)
+			fprintf(stderr, "REX3_FAST_SPAN verified=%llu bad=%llu\n", (unsigned long long)s_draws, (unsigned long long)s_bad);
+		if (!ok || !regs_ok)
+		{
+			// keep the per-pixel result
+			for (const auto &r : slow)
+				std::copy(r.data.begin(), r.data.end(), m_rb2->dest_row(r.vy));
+			m_rex3 = rex3_slow;
+		}
+	}
+#endif
+	return true;
+}
+#endif
+
+#ifdef MAME_SGI_REX3_MODE_CENSUS
+namespace {
+// Per draw-mode statistics of REX3 commands: key = DRAWMODE0 << 32 |
+// DRAWMODE1, counting commands, pixels written and host TSC cycles
+// (rdtsc: osd_ticks() is a clock_gettime() call, too slow to bracket
+// one-pixel commands on hosts without a TSC clocksource). Printed to
+// stderr every 60 s and at exit, sorted by cycles.
+struct rex3_mode_census
+{
+	struct entry { uint64_t commands = 0, pixels = 0, ticks = 0; };
+	std::unordered_map<uint64_t, entry> table;
+	uint64_t next_dump = 0;
+
+	static std::string decode(uint64_t key)
+	{
+		static const char *const s_op[4] = { "noop", "read", "draw", "scr2scr" };
+		static const char *const s_adr[8] = { "span", "block", "iline", "fline", "aline", "adr5", "adr6", "adr7" };
+		static const char *const s_planes[8] = { "none", "rgb/ci", "rgba", "pl3", "olay", "pup", "cid", "pl7" };
+		static const char *const s_depth[4] = { "4", "8", "12", "24" };
+		const uint32_t m0 = uint32_t(key >> 32), m1 = uint32_t(key);
+		std::string r = util::string_format("%s %s %s/%sbpp", s_op[m0 & 3], s_adr[(m0 >> 2) & 7], s_planes[m1 & 7], s_depth[(m1 >> 3) & 3]);
+		static const struct { int word, bit; const char *name; } s_flags[] = {
+			{ 0, 6, "colorhost" }, { 0, 7, "alphahost" }, { 0, 8, "stopx" }, { 0, 9, "stopy" },
+			{ 0, 12, "zpat" }, { 0, 13, "lspat" }, { 0, 15, "len32" }, { 0, 16, "zopaque" },
+			{ 0, 17, "lsopaque" }, { 0, 18, "shade" }, { 0, 19, "lronly" }, { 0, 21, "ciclamp" },
+			{ 1, 5, "dblsrc" }, { 1, 7, "rwpacked" }, { 1, 10, "rwdouble" }, { 1, 15, "rgbmode" },
+			{ 1, 16, "dither" }, { 1, 17, "fastclear" }, { 1, 18, "blend" }, { 1, 25, "backblend" } };
+		for (const auto &f : s_flags)
+			if (BIT(f.word ? m1 : m0, f.bit))
+				r += std::string(" ") + f.name;
+		if (BIT(m1, 18))
+			r += util::string_format(" sf=%d df=%d", (m1 >> 19) & 7, (m1 >> 22) & 7);
+		r += util::string_format(" lop=%d", m1 >> 28);
+		return r;
+	}
+
+	void dump(const char *when)
+	{
+		std::vector<std::pair<uint64_t, entry>> rows(table.begin(), table.end());
+		std::sort(rows.begin(), rows.end(), [] (const auto &a, const auto &b) { return a.second.ticks > b.second.ticks; });
+		uint64_t ticks = 0, pixels = 0, commands = 0;
+		for (const auto &r : rows) { ticks += r.second.ticks; pixels += r.second.pixels; commands += r.second.commands; }
+		fprintf(stderr, "REX3_CENSUS %s modes=%d commands=%llu pixels=%llu Gcycles=%.2f\n", when, int(rows.size()),
+				(unsigned long long)commands, (unsigned long long)pixels, ticks * 1e-9);
+		for (size_t i = 0; i < rows.size() && i < 40; i++)
+		{
+			const auto &e = rows[i].second;
+			fprintf(stderr, "REX3_CENSUS  %5.1f%%t %5.1f%%px %10llu cmd %12llu px %6.1f px/cmd  %08x %08x  %s\n",
+					100.0 * e.ticks / std::max<uint64_t>(ticks, 1), 100.0 * e.pixels / std::max<uint64_t>(pixels, 1),
+					(unsigned long long)e.commands, (unsigned long long)e.pixels, double(e.pixels) / std::max<uint64_t>(e.commands, 1),
+					uint32_t(rows[i].first >> 32), uint32_t(rows[i].first), decode(rows[i].first).c_str());
+		}
+	}
+	~rex3_mode_census() { dump("exit"); }
+} s_rex3_census;
+
+struct rex3_census_scope
+{
+	uint64_t key;
+	uint64_t pixels0;
+	uint64_t t0;
+	rex3_census_scope(uint32_t mode0, uint32_t mode1) : key((uint64_t(mode0) << 32) | mode1), pixels0(g_mame_sgi_stat_pixel_writes), t0(MAME_SGI_CENSUS_CYCLES()) { }
+	~rex3_census_scope()
+	{
+		const uint64_t t1 = MAME_SGI_CENSUS_CYCLES();
+		auto &e = s_rex3_census.table[key];
+		e.commands++;
+		e.pixels += g_mame_sgi_stat_pixel_writes - pixels0;
+		e.ticks += t1 - t0;
+		if (t1 >= s_rex3_census.next_dump)
+		{
+			if (s_rex3_census.next_dump)
+				s_rex3_census.dump("periodic");
+			s_rex3_census.next_dump = t1 + 60 * 3'000'000'000ULL;
+		}
+	}
+};
+} // anonymous namespace
+#endif
+
 void newport_base_device::do_rex3_command()
 {
+#ifdef MAME_SGI_REX3_MODE_CENSUS
+	rex3_census_scope census_scope(m_rex3.m_draw_mode0, m_rex3.m_draw_mode1);
+#endif
 	static const char* const s_opcode_str[4] = { "Noop", "Read", "Draw", "Scr2Scr" };
 	static const char* const s_adrmode_str[8] = {
 		"Span", "Block", "IntLine", "FracLine", "AALine", "Unk5", "Unk6", "Unk7"
@@ -4987,6 +5442,10 @@ void newport_base_device::do_rex3_command()
 			{
 				case 0: // Span
 				{
+#ifdef MAME_SGI_REX3_FAST_SPAN
+					if (fast_draw(0, start_x, start_y, end_x, end_y, dx, dy))
+						break;
+#endif
 					end_x += dx;
 
 					int16_t prim_end_x = end_x;
@@ -5068,6 +5527,10 @@ void newport_base_device::do_rex3_command()
 
 				case 1: // Block
 				{
+#ifdef MAME_SGI_REX3_FAST_SPAN
+					if (fast_draw(1, start_x, start_y, end_x, end_y, dx, dy))
+						break;
+#endif
 					end_x += dx;
 					end_y += dy;
 

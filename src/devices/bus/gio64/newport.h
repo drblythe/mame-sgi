@@ -43,6 +43,20 @@
 // Diagnostic: also run the original per-pixel path for every pixel and
 // count words that differ (logged to stderr).
 //#define MAME_SGI_REX3_FAST_PIXEL_VERIFY
+// Span and block draws without shading, blending or host data, whose logic
+// op doesn't read the destination, run as clipped row fills: the clip
+// rectangles are resolved to x intervals once per row, the stored value
+// (or the four dither values of an unshaded RGB draw) once per command,
+// and rb2_device::store_row() writes each run. Other draws keep the
+// per-pixel path. Needs MAME_SGI_REX3_FAST_PIXEL.
+#define MAME_SGI_REX3_FAST_SPAN
+// Diagnostic: run each fast draw against the per-pixel path on a copy of the
+// state and compare the VRAM rows and start registers (logged to stderr).
+//#define MAME_SGI_REX3_FAST_SPAN_VERIFY
+
+// Diagnostic: per draw-mode counts of REX3 commands, pixels and host time,
+// printed to stderr every 60 s and at exit (REX3_CENSUS lines).
+//#define MAME_SGI_REX3_MODE_CENSUS
 
 #include "gio64.h"
 #include "screen.h"
@@ -525,6 +539,11 @@ public:
 #ifdef MAME_SGI_REX3_FAST_PIXEL
 	void write_pixel_xy(int x, int y, uint32_t data);
 #endif
+#ifdef MAME_SGI_REX3_FAST_SPAN
+	bool stored_value(uint32_t data, uint32_t &value) const;
+	void store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t pattern, int bit, bool has_bg, uint32_t bg);
+	uint32_t *dest_row(int y) { return &m_dest_buf[y * (1280 + 64)]; }
+#endif
 
 	// Dirty-region tracking for the compositor (see newport_dirty_rect).
 	// Updated per-pixel directly in store_pixel() - the single choke
@@ -766,6 +785,11 @@ protected:
 	void write_y_end(int32_t val);
 
 	bool pixel_clip_pass(int16_t x, int16_t y);
+#ifdef MAME_SGI_REX3_FAST_SPAN
+	int clip_row_intervals(int16_t y, int xa, int xb, int lo[5], int hi[5]);
+	bool fast_draw(uint8_t adrmode, int16_t start_x, int16_t start_y, int16_t end_x, int16_t end_y, int16_t dx, int16_t dy);
+	bool m_fast_draw_disabled = false;
+#endif
 	void output_pixel(uint32_t color);
 	void output_pixel(int16_t x, int16_t y, uint32_t color);
 	void blend_pixel(uint32_t src);
