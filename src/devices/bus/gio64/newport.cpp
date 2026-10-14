@@ -4279,9 +4279,12 @@ void newport_base_device::blend_pixel(uint32_t src)
 	case 0: // 4bpp (not supported)
 		break;
 	case 1: // 8bpp
-		sb = (0xaa * BIT(src, 7)) | (0x55 * BIT(src, 6));
-		sg = (0x92 * BIT(src, 5)) | (0x49 * BIT(src, 4)) | (0x24 * BIT(src, 3));
-		sr = (0x92 * BIT(src, 2)) | (0x49 * BIT(src, 1)) | (0x24 * BIT(src, 0));
+		// MAME_SGI_BLEND_8BPP_FIX: 8bpp RGB is B2 G3 R3 (bits 7-6, 5-3, 2-0),
+		// for the source and the destination alike, normalized like the
+		// other depths
+		sb = ((0xaa * BIT(src, 7)) | (0x55 * BIT(src, 6))) / 255.0f;
+		sg = ((0x92 * BIT(src, 5)) | (0x49 * BIT(src, 4)) | (0x24 * BIT(src, 3))) / 255.0f;
+		sr = ((0x92 * BIT(src, 2)) | (0x49 * BIT(src, 1)) | (0x24 * BIT(src, 0))) / 255.0f;
 
 		if (m_rex3.m_blend_back)
 		{
@@ -4291,10 +4294,9 @@ void newport_base_device::blend_pixel(uint32_t src)
 		}
 		else
 		{
-			const uint32_t dstc = dst & 0xfff;
-			db = (((dstc >> 8) & 15) * 0x11) / 255.0f;
-			dg = (((dstc >> 4) & 15) * 0x11) / 255.0f;
-			dr = (((dstc >> 0) & 15) * 0x11) / 255.0f;
+			db = ((0xaa * BIT(dst, 7)) | (0x55 * BIT(dst, 6))) / 255.0f;
+			dg = ((0x92 * BIT(dst, 5)) | (0x49 * BIT(dst, 4)) | (0x24 * BIT(dst, 3))) / 255.0f;
+			dr = ((0x92 * BIT(dst, 2)) | (0x49 * BIT(dst, 1)) | (0x24 * BIT(dst, 0))) / 255.0f;
 		}
 		break;
 	case 2: // 12bpp
@@ -4416,7 +4418,9 @@ void newport_base_device::blend_pixel(uint32_t src)
 	switch (m_rex3.m_plane_depth)
 	{
 	case 0: // 4bpp (not supported)
-	case 1: // 8bpp (not supported)
+		break;
+	case 1: // 8bpp
+		write_pixel((b_blend_i & 0xc0) | ((g_blend_i & 0xe0) >> 2) | ((r_blend_i & 0xe0) >> 5));
 		break;
 	case 2: // 12bpp
 		write_pixel(((b_blend_i & 0xf0) << 4) | (g_blend_i & 0xf0) | ((r_blend_i & 0xf0) >> 4));
