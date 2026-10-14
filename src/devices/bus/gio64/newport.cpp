@@ -4223,7 +4223,7 @@ ATTR_FORCE_INLINE inline
 #endif
 void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 {
-	if (!pixel_clip_pass(x, y))
+	if (m_pixel_write_suppress || !pixel_clip_pass(x, y))
 	{
 		return;
 	}
@@ -5390,7 +5390,7 @@ bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t st
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const uint32_t mode1 = m_rex3.m_draw_mode1;
-	if (m_fast_draw_disabled || m_rex3.m_color_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
+	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
 		return false;
 	// the alpha function is applied per pixel (output_pixel)
 	if (((mode1 >> 12) & 7) != 7)
@@ -6996,7 +6996,15 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 
 	if (offset & 0x00000100)
 	{
+		// MAME_SGI_REX3_STEPZ_FIX: a GO through STEPZ (0x0034) runs the
+		// command without writing pixels, only stepping the position. IRIS
+		// GL's software z-buffer draws a span a pixel at a time: colour and a
+		// GO through DRAWMODE0 for a pixel that passes, a GO through STEPZ for
+		// one that fails. Drawing the failed pixels (with the previous pixel's
+		// colour) let textured polygons show through nearer ones.
+		m_pixel_write_suppress = (offset & ~(0x800/8)) == 0x0030/8 && ACCESSING_BITS_0_31;
 		do_rex3_command();
+		m_pixel_write_suppress = false;
 	}
 }
 

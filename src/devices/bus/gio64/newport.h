@@ -788,6 +788,7 @@ protected:
 	int clip_row_intervals(int16_t y, int xa, int xb, int lo[5], int hi[5]);
 	bool fast_draw(uint8_t adrmode, int16_t start_x, int16_t start_y, int16_t end_x, int16_t end_y, int16_t dx, int16_t dy);
 	bool m_fast_draw_disabled = false;
+	bool m_pixel_write_suppress = false;   // a GO through STEPZ: step without drawing
 #endif
 	void output_pixel(uint32_t color);
 	void output_pixel(int16_t x, int16_t y, uint32_t color);
