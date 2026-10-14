@@ -2222,11 +2222,20 @@ TIMER_CALLBACK_MEMBER(newport_base_device::dcb_timeout_tick)
 }
 
 #ifdef MAME_SGI_RENDER_DIRTY_RECTS
-uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect, render_dirty_rects &dirty)
+uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &visible_clip, render_dirty_rects &dirty)
 #else
-uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &cliprect)
+uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &visible_clip)
 #endif
 {
+	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the visible area starts a couple of
+	// columns into the readout (see update_screen_size()), but bitmap
+	// column x is VRAM column x, so composite from column 0. The code
+	// below treats the clip's max_x as exclusive: pass one past the last
+	// visible column.
+	rectangle cliprect = visible_clip;
+	cliprect.min_x = 0;
+	cliprect.max_x = visible_clip.max_x + 1;
+
 #ifdef MAME_SGI_NEWPORT_COMPOSITE_TIMING_DIAG
 	osd_ticks_t mame_sgi_composite_t0 = osd_ticks();
 #endif
@@ -3553,7 +3562,17 @@ void newport_base_device::update_screen_size(int state)
 #endif
 
 	m_screen->set_size((uint16_t)(x_end - x_start), (uint16_t)(y_end - y_start));
-	m_screen->set_visarea_full();
+	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the VC2 readout spans 8 columns more
+	// than the displayed picture (1288 for 1280x1024, 1032 for 1024x768).
+	// IRIX keeps the leading columns black and draws through an x window
+	// offset, so the picture starts 2 columns in; the rest is overscan.
+	// Showing only the picture also avoids scaling it to fit the window.
+	constexpr int READOUT_EXTRA = 8, PICTURE_X0 = 2;
+	const int width = x_end - x_start;
+	if (width > READOUT_EXTRA)
+		m_screen->set_visarea(PICTURE_X0, PICTURE_X0 + width - READOUT_EXTRA - 1, 0, y_end - y_start - 1);
+	else
+		m_screen->set_visarea_full();
 }
 
 uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
