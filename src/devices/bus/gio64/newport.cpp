@@ -4358,27 +4358,18 @@ void newport_base_device::blend_pixel(uint32_t src)
 		sgb = sg * (1.0f - dg);
 		srb = sr * (1.0f - dr);
 		break;
+	// MAME_SGI_BLEND_SFACTOR_FIX: source alpha applies whatever DRAWMODE1
+	// bit 27 says, as for DFACTOR: IRIX's OpenGL leaves bit 27 clear for
+	// GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
 	case 4: // srca
-		if (BIT(m_rex3.m_draw_mode1, 27))
-		{
-			sbb = sb * sa;
-			sgb = sg * sa;
-			srb = sr * sa;
-		}
-		else
-		{
-			sbb = sb;
-			sgb = sg;
-			srb = sr;
-		}
+		sbb = sb * sa;
+		sgb = sg * sa;
+		srb = sr * sa;
 		break;
 	case 5: // 1 - srca
-		if (BIT(m_rex3.m_draw_mode1, 27))
-		{
-			sbb = sb * (1.0f - sa);
-			sgb = sg * (1.0f - sa);
-			srb = sr * (1.0f - sa);
-		}
+		sbb = sb * (1.0f - sa);
+		sgb = sg * (1.0f - sa);
+		srb = sr * (1.0f - sa);
 		break;
 	}
 
