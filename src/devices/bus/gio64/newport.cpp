@@ -5110,7 +5110,13 @@ uint64_t newport_base_device::do_pixel_word_read()
 	const uint16_t x_end = (uint16_t)(m_rex3.m_xy_end_i >> 16);
 	const bool doubleword = BIT(m_rex3.m_draw_mode1, 10);
 
-	uint16_t width = (x_end - x_start) + 1;
+	// MAME_SGI_REX3_READ_WIDTH_FIX: a read starting past XEND transfers a
+	// full word. XEND is often left behind the read position by the last
+	// draw: IRIX's OpenGL reads pixels one at a time by setting only XYSTART.
+	// A start further past XEND already wrapped to a large count here, but
+	// one exactly at XEND + 1 gave a count of 0 and read nothing.
+	const int32_t count = (int16_t)(x_end - x_start) + 1;
+	uint16_t width = count > 0 ? (uint16_t)count : 0xffff;
 	uint64_t ret = 0;
 	uint64_t shift = 0;
 	switch ((m_rex3.m_draw_mode1 >> 8) & 3)
