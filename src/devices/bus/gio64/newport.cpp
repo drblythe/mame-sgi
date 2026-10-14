@@ -4641,6 +4641,48 @@ void newport_base_device::do_setup(void)
 	LOGMASKED(LOG_REX3, "do_setup: octant = %d, x1 = %d, y1 = %d, x2 = %d, y2 = %d, dx = %d, dy = %d\n", octant, x1, y1, x2, y2, dx, dy);
 }
 
+// MAME_SGI_LINE_STIPPLE_FIX: a line pixel, through the line stipple when
+// DRAWMODE0 enables it (bit 13): LSPATTERN's bit 31 says whether the pixel is
+// drawn (else drawn in COLORBACK when the stipple is opaque, bit 17). Each
+// bit is used LSREPEAT + 1 times (LSMODE bits 8-15; bits 0-7 count down),
+// then the pattern rotates left within its LSLENGTH + 17 most significant
+// bits (LSMODE bits 24-27).
+void newport_base_device::line_pixel(int16_t x, int16_t y, uint32_t color, bool rgb)
+{
+	const uint32_t mode0 = m_rex3.m_draw_mode0;
+	if (BIT(mode0, 13))
+	{
+		const bool on = BIT(m_rex3.m_ls_pattern, 31);
+		uint32_t count = m_rex3.m_ls_mode & 0xff;
+		if (count == 0)
+		{
+			const int len = ((m_rex3.m_ls_mode >> 24) & 0xf) + 17;
+			const uint32_t p = m_rex3.m_ls_pattern;
+			if (len >= 32)
+				m_rex3.m_ls_pattern = (p << 1) | (p >> 31);
+			else
+			{
+				const uint32_t keep = (1u << (32 - len)) - 1;
+				const uint32_t low = 1u << (32 - len);	// the pattern's last bit
+				m_rex3.m_ls_pattern = ((p << 1) & ~(keep | low)) | ((p >> 31) ? low : 0) | (p & keep);
+			}
+			count = (m_rex3.m_ls_mode >> 8) & 0xff;
+		}
+		else
+		{
+			count--;
+		}
+		m_rex3.m_ls_mode = (m_rex3.m_ls_mode & ~0xffu) | count;
+		if (!on)
+		{
+			if (BIT(mode0, 17))
+				output_pixel(x, y, m_rex3.m_color_back);
+			return;
+		}
+	}
+	output_pixel(x, y, rgb ? get_rgb_color(x, y) : color);
+}
+
 void newport_base_device::do_fline(uint32_t color)
 {
 	const int32_t x1 = util::sext(m_rex3.m_x_start >> 7, 20);
@@ -4790,10 +4832,7 @@ void newport_base_device::do_fline(uint32_t color)
 	{
 		const int16_t x16 = (int16_t)(x >> 4);
 		const int16_t y16 = (int16_t)(y >> 4);
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
@@ -4823,10 +4862,7 @@ void newport_base_device::do_fline(uint32_t color)
 	{
 		const int16_t x16 = (int16_t)(x >> 4);
 		const int16_t y16 = (int16_t)(y >> 4);
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
@@ -4864,10 +4900,7 @@ void newport_base_device::do_fline(uint32_t color)
 	{
 		const int16_t x16 = (int16_t)(x2 >> 4);
 		const int16_t y16 = (int16_t)(y2 >> 4);
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
@@ -4930,10 +4963,7 @@ void newport_base_device::do_iline(uint32_t color)
 		const int16_t x16 = (int16_t)x;
 		const int16_t y16 = (int16_t)y;
 
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
@@ -4964,10 +4994,7 @@ void newport_base_device::do_iline(uint32_t color)
 		const int16_t x16 = (int16_t)x;
 		const int16_t y16 = (int16_t)y;
 
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
@@ -4991,10 +5018,7 @@ void newport_base_device::do_iline(uint32_t color)
 		const int16_t x16 = (int16_t)x2;
 		const int16_t y16 = (int16_t)y2;
 
-		if (shade || rgbmode)
-			output_pixel(x16, y16, get_rgb_color(x16, y16));
-		else
-			output_pixel(x16, y16, color);
+		line_pixel(x16, y16, color, shade || rgbmode);
 
 		if (shade)
 			iterate_shade();
