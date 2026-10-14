@@ -5663,9 +5663,13 @@ struct rex3_census_scope
 // REX3_TRACE lines, at most MAME_SGI_REX3_TRACE_MAX (default 2000) of them;
 // with MAME_SGI_REX3_TRACE_M1MASK (or _M0MASK) set, only commands with any
 // of those DRAWMODE1 (DRAWMODE0) bits set (DRAWMODE1 0x40000: blended;
-// DRAWMODE0 0x300: stop on x/y, i.e. more than one pixel).
+// DRAWMODE0 0x300: stop on x/y, i.e. more than one pixel). With
+// MAME_SGI_REX3_TRACE_FLAG naming a file, tracing is on only while that file
+// exists (checked every 65536 commands), to capture a moment of a running
+// program.
 //#define MAME_SGI_REX3_CMD_TRACE
 #ifdef MAME_SGI_REX3_CMD_TRACE
+#include <unistd.h>
 namespace {
 struct rex3_trace_config
 {
@@ -5673,8 +5677,21 @@ struct rex3_trace_config
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 	long remaining = 2000;
 	uint32_t m1_mask = 0, m0_mask = 0;
+	const char *flag = nullptr;
+	bool flag_on = true;
+	uint32_t flag_count = 0;
+	// whether to trace now: the flag file, if any, is rechecked every 65536 calls
+	bool active()
+	{
+		if (flag && (flag_count++ & 0xffff) == 0)
+			flag_on = access(flag, F_OK) == 0;
+		return flag_on;
+	}
 	rex3_trace_config()
 	{
+		flag = getenv("MAME_SGI_REX3_TRACE_FLAG");
+		if (flag)
+			flag_on = false;
 		if (const char *m = getenv("MAME_SGI_REX3_TRACE_M0MASK"))
 			m0_mask = strtoul(m, nullptr, 0);
 		if (const char *m = getenv("MAME_SGI_REX3_TRACE_M1MASK"))
@@ -5694,7 +5711,7 @@ void newport_base_device::do_rex3_command()
 	rex3_census_scope census_scope(m_rex3.m_draw_mode0, m_rex3.m_draw_mode1);
 #endif
 #ifdef MAME_SGI_REX3_CMD_TRACE
-	if (s_rex3_trace.on && s_rex3_trace.remaining > 0)
+	if (s_rex3_trace.on && s_rex3_trace.remaining > 0 && s_rex3_trace.active())
 	{
 		const int sx = m_rex3.m_x_start_i + int(m_rex3.m_x_window) - 0x1000;
 		const int sy = m_rex3.m_y_start_i + int(m_rex3.m_y_window) - 0x1000;
