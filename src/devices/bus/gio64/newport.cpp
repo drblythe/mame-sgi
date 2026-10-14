@@ -4228,6 +4228,19 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 		return;
 	}
 
+	// MAME_SGI_ALPHA_TEST_FIX: DRAWMODE1 bits 12-14 are the alpha function:
+	// the pixel is written if the AFUNCTION reference is greater than
+	// (bit 12), equal to (bit 13) or less than (bit 14) its alpha. All three
+	// set (the usual value) always passes.
+	const uint32_t afunc = (m_rex3.m_draw_mode1 >> 12) & 7;
+	if (afunc != 7 && BIT(m_rex3.m_draw_mode1, 15))
+	{
+		const uint8_t alpha = (uint8_t)(color >> 24);
+		const uint8_t ref = m_rex3.m_alpha_ref;
+		if (!((BIT(afunc, 0) && ref > alpha) || (BIT(afunc, 1) && ref == alpha) || (BIT(afunc, 2) && ref < alpha)))
+			return;
+	}
+
 	x += m_rex3.m_x_window;
 	y += m_rex3.m_y_window;
 	x -= 0x1000;
@@ -5348,6 +5361,9 @@ bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t st
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const uint32_t mode1 = m_rex3.m_draw_mode1;
 	if (m_fast_draw_disabled || m_rex3.m_color_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
+		return false;
+	// the alpha function is applied per pixel (output_pixel)
+	if (((mode1 >> 12) & 7) != 7)
 		return false;
 
 	const bool stop_on_x = BIT(mode0, 8);
