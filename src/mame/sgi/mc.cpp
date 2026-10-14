@@ -956,7 +956,7 @@ void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 		if (pc_phys < 0x1fc0'0000U || pc_phys > 0x1fc7'ffffU)
 		{
 			logerror("%s: WARNING - memcfg%d written from outside PROM ROM (pc=0x%08x) - "
-				"this violates the assumption task #119's add_fastram() registration relies on.\n",
+				"this violates the assumption the add_fastram() registration relies on.\n",
 				machine().describe_context(), offset, pc);
 		}
 	}

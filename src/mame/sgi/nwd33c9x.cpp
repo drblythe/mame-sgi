@@ -466,7 +466,7 @@ enum : uint8_t {
 //  LIVE DEVICE
 //**************************************************************************
 
-DEFINE_DEVICE_TYPE(NWD33C9X, nwd33c9x_device, "nwd33c9x", "SGI direct-call WD33C93B + disk target (nwd33c9x, task #7)")
+DEFINE_DEVICE_TYPE(NWD33C9X, nwd33c9x_device, "nwd33c9x", "SGI direct-call WD33C93B + disk target (nwd33c9x)")
 DEFINE_DEVICE_TYPE(NWD33C9X_AUX_BRIDGE, nwd33c9x_aux_bridge_device, "nwd33c9x_aux_bridge", "nwd33c9x auxiliary SCSI bus bridge (CD-ROM host)")
 
 nwd33c9x_aux_bridge_device::nwd33c9x_aux_bridge_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
