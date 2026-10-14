@@ -5149,7 +5149,15 @@ uint64_t newport_base_device::do_pixel_word_read()
 void newport_base_device::iterate_shade()
 {
 	if (m_rex3.m_slope_red & 0x7fffff)
-		m_rex3.m_curr_color_red += util::sext(m_rex3.m_slope_red, 24);
+	{
+		// MAME_SGI_CI_SLOPE_FIX: a 12bpp colour index is 12.9 fixed point (see
+		// the Red/CI full state write) but its slope is 12.11, as at the other
+		// depths
+		if (!BIT(m_rex3.m_draw_mode1, 15) && m_rex3.m_plane_depth == 2)
+			m_rex3.m_curr_color_red += util::sext(m_rex3.m_slope_red, 24) >> 2;
+		else
+			m_rex3.m_curr_color_red += util::sext(m_rex3.m_slope_red, 24);
+	}
 	if (m_rex3.m_slope_green & 0x7ffff)
 		m_rex3.m_curr_color_green += util::sext(m_rex3.m_slope_green, 20);
 	if (m_rex3.m_slope_blue & 0x7ffff)
