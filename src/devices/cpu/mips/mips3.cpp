@@ -2996,69 +2996,23 @@ void mips3_device::handle_cop1_fr0(uint32_t op)
 					break;
 				}
 
-				case 0x30:
-				case 0x38:
-					if (IS_SINGLE(op))  /* C.F.S */
-						SET_FCC((op >> 8) & 7, 0);
-					else                /* C.F.D */
-						SET_FCC((op >> 8) & 7, 0);
+				case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: case 0x37:
+				case 0x38: case 0x39: case 0x3a: case 0x3b: case 0x3c: case 0x3d: case 0x3e: case 0x3f:
+				{
+					// MAME_SGI_FP_COMPARE_FIX: C.cond: function bit 0 tests
+					// unordered (either operand a NaN), bit 1 equal, bit 2 less
+					// than; C.UN, C.UEQ, C.ULT and C.ULE were computed as if
+					// ordered. The signalling forms (bit 3) set the invalid
+					// operation cause and flag when unordered.
+					const double a = IS_SINGLE(op) ? (double)FSVALS_FR0 : FSVALD_FR0;
+					const double b = IS_SINGLE(op) ? (double)FTVALS_FR0 : FTVALD_FR0;
+					const bool unordered = std::isnan(a) || std::isnan(b);
+					const bool result = (BIT(op, 0) && unordered) || (BIT(op, 1) && !unordered && a == b) || (BIT(op, 2) && !unordered && a < b);
+					if (unordered && BIT(op, 3))
+						COP1_FCR31 |= (1 << 16) | (1 << 6);
+					SET_FCC((op >> 8) & 7, result);
 					break;
-
-				case 0x31:
-				case 0x39:
-					if (IS_SINGLE(op))  /* C.UN.S */
-						SET_FCC((op >> 8) & 7, 0);
-					else                /* C.UN.D */
-						SET_FCC((op >> 8) & 7, 0);
-					break;
-
-				case 0x32:
-				case 0x3a:
-					if (IS_SINGLE(op))  /* C.EQ.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 == FTVALS_FR0));
-					else                /* C.EQ.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 == FTVALD_FR0));
-					break;
-
-				case 0x33:
-				case 0x3b:
-					if (IS_SINGLE(op))  /* C.UEQ.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 == FTVALS_FR0));
-					else                /* C.UEQ.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 == FTVALD_FR0));
-					break;
-
-				case 0x34:
-				case 0x3c:
-					if (IS_SINGLE(op))  /* C.OLT.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 < FTVALS_FR0));
-					else                /* C.OLT.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 < FTVALD_FR0));
-					break;
-
-				case 0x35:
-				case 0x3d:
-					if (IS_SINGLE(op))  /* C.ULT.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 < FTVALS_FR0));
-					else                /* C.ULT.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 < FTVALD_FR0));
-					break;
-
-				case 0x36:
-				case 0x3e:
-					if (IS_SINGLE(op))  /* C.OLE.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 <= FTVALS_FR0));
-					else                /* C.OLE.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 <= FTVALD_FR0));
-					break;
-
-				case 0x37:
-				case 0x3f:
-					if (IS_SINGLE(op))  /* C.ULE.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR0 <= FTVALS_FR0));
-					else                /* C.ULE.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR0 <= FTVALD_FR0));
-					break;
+				}
 
 				default:
 					handle_extra_cop1(op);
@@ -3254,69 +3208,23 @@ void mips3_device::handle_cop1_fr1(uint32_t op)
 					break;
 				}
 
-				case 0x30:
-				case 0x38:
-					if (IS_SINGLE(op))  /* C.F.S */
-						SET_FCC((op >> 8) & 7, 0);
-					else                /* C.F.D */
-						SET_FCC((op >> 8) & 7, 0);
+				case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: case 0x37:
+				case 0x38: case 0x39: case 0x3a: case 0x3b: case 0x3c: case 0x3d: case 0x3e: case 0x3f:
+				{
+					// MAME_SGI_FP_COMPARE_FIX: C.cond: function bit 0 tests
+					// unordered (either operand a NaN), bit 1 equal, bit 2 less
+					// than; C.UN, C.UEQ, C.ULT and C.ULE were computed as if
+					// ordered. The signalling forms (bit 3) set the invalid
+					// operation cause and flag when unordered.
+					const double a = IS_SINGLE(op) ? (double)FSVALS_FR1 : FSVALD_FR1;
+					const double b = IS_SINGLE(op) ? (double)FTVALS_FR1 : FTVALD_FR1;
+					const bool unordered = std::isnan(a) || std::isnan(b);
+					const bool result = (BIT(op, 0) && unordered) || (BIT(op, 1) && !unordered && a == b) || (BIT(op, 2) && !unordered && a < b);
+					if (unordered && BIT(op, 3))
+						COP1_FCR31 |= (1 << 16) | (1 << 6);
+					SET_FCC((op >> 8) & 7, result);
 					break;
-
-				case 0x31:
-				case 0x39:
-					if (IS_SINGLE(op))  /* C.UN.S */
-						SET_FCC((op >> 8) & 7, 0);
-					else                /* C.UN.D */
-						SET_FCC((op >> 8) & 7, 0);
-					break;
-
-				case 0x32:
-				case 0x3a:
-					if (IS_SINGLE(op))  /* C.EQ.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 == FTVALS_FR1));
-					else                /* C.EQ.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 == FTVALD_FR1));
-					break;
-
-				case 0x33:
-				case 0x3b:
-					if (IS_SINGLE(op))  /* C.UEQ.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 == FTVALS_FR1));
-					else                /* C.UEQ.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 == FTVALD_FR1));
-					break;
-
-				case 0x34:
-				case 0x3c:
-					if (IS_SINGLE(op))  /* C.OLT.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 < FTVALS_FR1));
-					else                /* C.OLT.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 < FTVALD_FR1));
-					break;
-
-				case 0x35:
-				case 0x3d:
-					if (IS_SINGLE(op))  /* C.ULT.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 < FTVALS_FR1));
-					else                /* C.ULT.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 < FTVALD_FR1));
-					break;
-
-				case 0x36:
-				case 0x3e:
-					if (IS_SINGLE(op))  /* C.OLE.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 <= FTVALS_FR1));
-					else                /* C.OLE.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 <= FTVALD_FR1));
-					break;
-
-				case 0x37:
-				case 0x3f:
-					if (IS_SINGLE(op))  /* C.ULE.S */
-						SET_FCC((op >> 8) & 7, (FSVALS_FR1 <= FTVALS_FR1));
-					else                /* C.ULE.D */
-						SET_FCC((op >> 8) & 7, (FSVALD_FR1 <= FTVALD_FR1));
-					break;
+				}
 
 				default:
 					fprintf(stderr, "cop1 %X\n", op);
