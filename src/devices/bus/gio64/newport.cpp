@@ -4713,7 +4713,11 @@ void newport_base_device::do_fline(uint32_t color)
 	int32_t y = y10;
 
 	int16_t x1_fract = m_rex3.m_x_start_frac;
-	int16_t y1_fract = m_rex3.m_y_start_frac;
+	// MAME_SGI_FLINE_FRACT_FIX: the octant cases below take the fractions in
+	// the stepping's y-up sense, while Y here increases down (the steps
+	// subtract incry), so the start's y fraction is measured from the other
+	// side of its pixel
+	int16_t y1_fract = 0x10 - m_rex3.m_y_start_frac;
 
 	int32_t dx = abs(x1 - x2);
 	int32_t dy = abs(y1 - y2);
@@ -4832,7 +4836,7 @@ void newport_base_device::do_fline(uint32_t color)
 		{
 			d = E;
 			x += incrx2 * (1 - x_major) * PIXEL;
-			y += incry2 * x_major * PIXEL;
+			y -= incry2 * x_major * PIXEL;	// MAME_SGI_FLINE_FRACT_FIX: as the steps
 		}
 	}
 
