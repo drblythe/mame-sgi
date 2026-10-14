@@ -5749,9 +5749,6 @@ void newport_base_device::do_rex3_command()
 						if (lr_abort)
 							break;
 
-						if (shade)
-							iterate_shade();
-
 						if (BIT(pattern, bit))
 						{
 							if (m_rex3.m_color_host)
@@ -5776,6 +5773,11 @@ void newport_base_device::do_rex3_command()
 						{
 							output_pixel(start_x, start_y, m_rex3.m_color_back);
 						}
+
+						// MAME_SGI_SHADE_ORDER_FIX: the first pixel takes the start colour;
+						// the iterators step after each pixel, as in the line commands
+						if (shade)
+							iterate_shade();
 
 						bit = (bit - 1) & 0x1f;
 						start_x += dx;
@@ -5836,9 +5838,6 @@ void newport_base_device::do_rex3_command()
 							if (lr_abort)
 								break;
 
-							if (shade)
-								iterate_shade();
-
 							if (BIT(pattern, bit))
 							{
 								if (m_rex3.m_color_host)
@@ -5863,6 +5862,11 @@ void newport_base_device::do_rex3_command()
 							{
 								output_pixel(start_x, start_y, m_rex3.m_color_back);
 							}
+
+							// MAME_SGI_SHADE_ORDER_FIX: the first pixel takes the start colour;
+							// the iterators step after each pixel, as in the line commands
+							if (shade)
+								iterate_shade();
 
 							bit = (bit - 1) & 0x1f;
 							start_x += dx;
