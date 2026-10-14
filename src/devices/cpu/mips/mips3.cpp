@@ -2754,9 +2754,45 @@ inline void mips3_device::set_cop1_creg(int idx, uint64_t val)
 	}
 }
 
+// MAME_SGI_FP_CONVERT_FIX: a floating point to integer conversion as MIPS
+// does it. mode is the rounding mode as in FCSR bits 0-1 (0 nearest, ties to
+// even; 1 toward zero; 2 up; 3 down). A NaN, or a result outside the 32-bit
+// (64-bit when wide) range, is an invalid operation: the R4x00 traps it as
+// unimplemented and IRIX's FP emulation returns the default 0x7fffffff
+// (0x7fffffffffffffff) with the V cause and flag bits set. Host casts gave
+// 0x80000000 instead, and in the interpreter truncated for CVT and rounded
+// halves away from zero for ROUND.
+int64_t mips3_device::fp_convert(double v, int mode, bool wide)
+{
+	double r;
+	switch (mode & 3)
+	{
+	case 0:
+		r = floor(v);
+		if (v - r > 0.5 || (v - r == 0.5 && fmod(r, 2.0) != 0.0))
+			r += 1.0;
+		break;
+	case 1:
+		r = v < 0 ? ceil(v) : floor(v);
+		break;
+	case 2:
+		r = ceil(v);
+		break;
+	default:
+		r = floor(v);
+		break;
+	}
+	const double limit = wide ? 9223372036854775808.0 : 2147483648.0;
+	if (std::isnan(v) || r >= limit || r < -limit)
+	{
+		COP1_FCR31 |= (1 << 16) | (1 << 6);
+		return wide ? INT64_MAX : INT32_MAX;
+	}
+	return (int64_t)r;
+}
+
 void mips3_device::handle_cop1_fr0(uint32_t op)
 {
-	double dtemp;
 
 	/* note: additional condition codes available on R5000 only */
 
@@ -2867,121 +2903,18 @@ void mips3_device::handle_cop1_fr0(uint32_t op)
 						FDVALD_FR0 = -FSVALD_FR0;
 					break;
 
-				case 0x08:
-					if (IS_SINGLE(op))  /* ROUND.L.S */
-					{
-						double temp = FSVALS_FR0;
-						if (temp < 0)
-							temp = ceil(temp - 0.5);
-						else
-							temp = floor(temp + 0.5);
-						FDVALL_FR0 = (int64_t)temp;
-					}
-					else                /* ROUND.L.D */
-					{
-						double temp = FSVALD_FR0;
-						if (temp < 0)
-							temp = ceil(temp - 0.5);
-						else
-							temp = floor(temp + 0.5);
-						FDVALL_FR0 = (int64_t)temp;
-					}
+				case 0x08: case 0x09: case 0x0a: case 0x0b: /* ROUND/TRUNC/CEIL/FLOOR.L */
+				case 0x0c: case 0x0d: case 0x0e: case 0x0f: /* ROUND/TRUNC/CEIL/FLOOR.W */
+				{
+					// MAME_SGI_FP_CONVERT_FIX: MIPS rounding (the low two bits of
+					// the function are the rounding mode) and invalid results
+					const double src = IS_SINGLE(op) ? (double)FSVALS_FR0 : FSVALD_FR0;
+					if ((op & 0x3f) < 0x0c)
+						FDVALL_FR0 = fp_convert(src, op & 3, true);
+					else
+						FDVALW_FR0 = (uint32_t)fp_convert(src, op & 3, false);
 					break;
-
-				case 0x09:
-					if (IS_SINGLE(op))  /* TRUNC.L.S */
-					{
-						double temp = FSVALS_FR0;
-						if (temp < 0)
-							temp = ceil(temp);
-						else
-							temp = floor(temp);
-						FDVALL_FR0 = (int64_t)temp;
-					}
-					else                /* TRUNC.L.D */
-					{
-						double temp = FSVALD_FR0;
-						if (temp < 0)
-							temp = ceil(temp);
-						else
-							temp = floor(temp);
-						FDVALL_FR0 = (int64_t)temp;
-					}
-					break;
-
-				case 0x0a:
-					if (IS_SINGLE(op))  /* CEIL.L.S */
-						dtemp = ceil(FSVALS_FR0);
-					else                /* CEIL.L.D */
-						dtemp = ceil(FSVALD_FR0);
-					FDVALL_FR0 = (int64_t)dtemp;
-					break;
-
-				case 0x0b:
-					if (IS_SINGLE(op))  /* FLOOR.L.S */
-						dtemp = floor(FSVALS_FR0);
-					else                /* FLOOR.L.D */
-						dtemp = floor(FSVALD_FR0);
-					FDVALL_FR0 = (int64_t)dtemp;
-					break;
-
-				case 0x0c:
-					if (IS_SINGLE(op))  /* ROUND.W.S */
-					{
-						dtemp = FSVALS_FR0;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp - 0.5);
-						else
-							dtemp = floor(dtemp + 0.5);
-						FDVALW_FR0 = (int32_t)dtemp;
-					}
-					else                /* ROUND.W.D */
-					{
-						dtemp = FSVALD_FR0;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp - 0.5);
-						else
-							dtemp = floor(dtemp + 0.5);
-						FDVALW_FR0 = (int32_t)dtemp;
-					}
-					break;
-
-				case 0x0d:
-					if (IS_SINGLE(op))  /* TRUNC.W.S */
-					{
-						dtemp = FSVALS_FR0;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp);
-						else
-							dtemp = floor(dtemp);
-						FDVALW_FR0 = (int32_t)dtemp;
-					}
-					else                /* TRUNC.W.D */
-					{
-						dtemp = FSVALD_FR0;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp);
-						else
-							dtemp = floor(dtemp);
-						FDVALW_FR0 = (int32_t)dtemp;
-					}
-					break;
-
-				case 0x0e:
-					if (IS_SINGLE(op))  /* CEIL.W.S */
-						dtemp = ceil(FSVALS_FR0);
-					else                /* CEIL.W.D */
-						dtemp = ceil(FSVALD_FR0);
-					FDVALW_FR0 = (int32_t)dtemp;
-					break;
-
-				case 0x0f:
-					if (IS_SINGLE(op))  /* FLOOR.W.S */
-						dtemp = floor(FSVALS_FR0);
-					else                /* FLOOR.W.D */
-						dtemp = floor(FSVALD_FR0);
-					FDVALW_FR0 = (int32_t)dtemp;
-					break;
+				}
 
 				case 0x11:  /* R5000 */
 					if (GET_FCC((op >> 18) & 7) == ((op >> 16) & 1))
@@ -3051,19 +2984,17 @@ void mips3_device::handle_cop1_fr0(uint32_t op)
 						FDVALD_FR0 = FSVALS_FR0;
 					break;
 
-				case 0x24:
-					if (IS_SINGLE(op))  /* CVT.W.S */
-						FDVALW_FR0 = (int32_t)FSVALS_FR0;
+				case 0x24: /* CVT.W */
+				case 0x25: /* CVT.L */
+				{
+					// MAME_SGI_FP_CONVERT_FIX: rounded by the FCSR rounding mode
+					const double src = IS_SINGLE(op) ? (double)FSVALS_FR0 : FSVALD_FR0;
+					if ((op & 0x3f) == 0x25)
+						FDVALL_FR0 = fp_convert(src, COP1_FCR31 & 3, true);
 					else
-						FDVALW_FR0 = (int32_t)FSVALD_FR0;
+						FDVALW_FR0 = (uint32_t)fp_convert(src, COP1_FCR31 & 3, false);
 					break;
-
-				case 0x25:
-					if (IS_SINGLE(op))  /* CVT.L.S */
-						FDVALL_FR0 = (int64_t)FSVALS_FR0;
-					else                /* CVT.L.D */
-						FDVALL_FR0 = (int64_t)FSVALD_FR0;
-					break;
+				}
 
 				case 0x30:
 				case 0x38:
@@ -3144,7 +3075,6 @@ void mips3_device::handle_extra_cop1(uint32_t op)
 
 void mips3_device::handle_cop1_fr1(uint32_t op)
 {
-	double dtemp;
 
 	/* note: additional condition codes available on R5000 only */
 
@@ -3231,121 +3161,18 @@ void mips3_device::handle_cop1_fr1(uint32_t op)
 						FDVALD_FR1 = -FSVALD_FR1;
 					break;
 
-				case 0x08:
-					if (IS_SINGLE(op))  /* ROUND.L.S */
-					{
-						double temp = FSVALS_FR1;
-						if (temp < 0)
-							temp = ceil(temp - 0.5);
-						else
-							temp = floor(temp + 0.5);
-						FDVALL_FR1 = (int64_t)temp;
-					}
-					else                /* ROUND.L.D */
-					{
-						double temp = FSVALD_FR1;
-						if (temp < 0)
-							temp = ceil(temp - 0.5);
-						else
-							temp = floor(temp + 0.5);
-						FDVALL_FR1 = (int64_t)temp;
-					}
+				case 0x08: case 0x09: case 0x0a: case 0x0b: /* ROUND/TRUNC/CEIL/FLOOR.L */
+				case 0x0c: case 0x0d: case 0x0e: case 0x0f: /* ROUND/TRUNC/CEIL/FLOOR.W */
+				{
+					// MAME_SGI_FP_CONVERT_FIX: MIPS rounding (the low two bits of
+					// the function are the rounding mode) and invalid results
+					const double src = IS_SINGLE(op) ? (double)FSVALS_FR1 : FSVALD_FR1;
+					if ((op & 0x3f) < 0x0c)
+						FDVALL_FR1 = fp_convert(src, op & 3, true);
+					else
+						FDVALW_FR1 = (uint32_t)fp_convert(src, op & 3, false);
 					break;
-
-				case 0x09:
-					if (IS_SINGLE(op))  /* TRUNC.L.S */
-					{
-						double temp = FSVALS_FR1;
-						if (temp < 0)
-							temp = ceil(temp);
-						else
-							temp = floor(temp);
-						FDVALL_FR1 = (int64_t)temp;
-					}
-					else                /* TRUNC.L.D */
-					{
-						double temp = FSVALD_FR1;
-						if (temp < 0)
-							temp = ceil(temp);
-						else
-							temp = floor(temp);
-						FDVALL_FR1 = (int64_t)temp;
-					}
-					break;
-
-				case 0x0a:
-					if (IS_SINGLE(op))  /* CEIL.L.S */
-						dtemp = ceil(FSVALS_FR1);
-					else                /* CEIL.L.D */
-						dtemp = ceil(FSVALD_FR1);
-					FDVALL_FR1 = (int64_t)dtemp;
-					break;
-
-				case 0x0b:
-					if (IS_SINGLE(op))  /* FLOOR.L.S */
-						dtemp = floor(FSVALS_FR1);
-					else                /* FLOOR.L.D */
-						dtemp = floor(FSVALD_FR1);
-					FDVALL_FR1 = (int64_t)dtemp;
-					break;
-
-				case 0x0c:
-					if (IS_SINGLE(op))  /* ROUND.W.S */
-					{
-						dtemp = FSVALS_FR1;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp - 0.5);
-						else
-							dtemp = floor(dtemp + 0.5);
-						FDVALW_FR1 = (int32_t)dtemp;
-					}
-					else                /* ROUND.W.D */
-					{
-						dtemp = FSVALD_FR1;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp - 0.5);
-						else
-							dtemp = floor(dtemp + 0.5);
-						FDVALW_FR1 = (int32_t)dtemp;
-					}
-					break;
-
-				case 0x0d:
-					if (IS_SINGLE(op))  /* TRUNC.W.S */
-					{
-						dtemp = FSVALS_FR1;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp);
-						else
-							dtemp = floor(dtemp);
-						FDVALW_FR1 = (int32_t)dtemp;
-					}
-					else                /* TRUNC.W.D */
-					{
-						dtemp = FSVALD_FR1;
-						if (dtemp < 0)
-							dtemp = ceil(dtemp);
-						else
-							dtemp = floor(dtemp);
-						FDVALW_FR1 = (int32_t)dtemp;
-					}
-					break;
-
-				case 0x0e:
-					if (IS_SINGLE(op))  /* CEIL.W.S */
-						dtemp = ceil(FSVALS_FR1);
-					else                /* CEIL.W.D */
-						dtemp = ceil(FSVALD_FR1);
-					FDVALW_FR1 = (int32_t)dtemp;
-					break;
-
-				case 0x0f:
-					if (IS_SINGLE(op))  /* FLOOR.W.S */
-						dtemp = floor(FSVALS_FR1);
-					else                /* FLOOR.W.D */
-						dtemp = floor(FSVALD_FR1);
-					FDVALW_FR1 = (int32_t)dtemp;
-					break;
+				}
 
 				case 0x11:  /* R5000 */
 					if (GET_FCC((op >> 18) & 7) == ((op >> 16) & 1))
@@ -3415,19 +3242,17 @@ void mips3_device::handle_cop1_fr1(uint32_t op)
 						FDVALD_FR1 = FSVALS_FR1;
 					break;
 
-				case 0x24:
-					if (IS_SINGLE(op))  /* CVT.W.S */
-						FDVALW_FR1 = (int32_t)FSVALS_FR1;
+				case 0x24: /* CVT.W */
+				case 0x25: /* CVT.L */
+				{
+					// MAME_SGI_FP_CONVERT_FIX: rounded by the FCSR rounding mode
+					const double src = IS_SINGLE(op) ? (double)FSVALS_FR1 : FSVALD_FR1;
+					if ((op & 0x3f) == 0x25)
+						FDVALL_FR1 = fp_convert(src, COP1_FCR31 & 3, true);
 					else
-						FDVALW_FR1 = (int32_t)FSVALD_FR1;
+						FDVALW_FR1 = (uint32_t)fp_convert(src, COP1_FCR31 & 3, false);
 					break;
-
-				case 0x25:
-					if (IS_SINGLE(op))  /* CVT.L.S */
-						FDVALL_FR1 = (int64_t)FSVALS_FR1;
-					else                /* CVT.L.D */
-						FDVALL_FR1 = (int64_t)FSVALD_FR1;
-					break;
+				}
 
 				case 0x30:
 				case 0x38:

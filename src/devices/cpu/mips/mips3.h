@@ -993,6 +993,7 @@ protected:
 		const char *    format;                     /* format string for print_debug */
 		uint32_t        arg0;                       /* print_debug argument 1 */
 		uint32_t        arg1;                       /* print_debug argument 2 */
+		uint64_t        fp_convert_src;             /* source of a float to integer conversion (MAME_SGI_FP_CONVERT_FIX) */
 
 		uint64_t        count_zero_time;
 		uint32_t        compare_armed;
@@ -1400,6 +1401,7 @@ public:
 	void mips3com_tlbwi();
 	void mips3com_tlbwr();
 	void mips3com_tlbp();
+	void fp_convert_fixup();
 private:
 	uint32_t compute_config_register();
 	uint32_t compute_prid_register();
@@ -1420,6 +1422,7 @@ private:
 	void set_cop1_reg64(int idx, uint64_t val);
 	uint64_t get_cop1_creg(int idx);
 	void set_cop1_creg(int idx, uint64_t val);
+	int64_t fp_convert(double v, int mode, bool wide);
 	void handle_cop1_fr0(uint32_t op);
 	void handle_cop1_fr1(uint32_t op);
 	void handle_cop1x_fr0(uint32_t op);
@@ -1696,6 +1699,8 @@ private:
 	bool generate_set_cop0_reg(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t reg);
 	bool generate_get_cop0_reg(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t reg, bool is64 = false);
 	bool generate_cop0(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
+	void generate_fp_convert_save(drcuml_block &block, uint32_t op);
+	void generate_fp_convert_fixup(drcuml_block &block, compiler_state &compiler, uint32_t op, bool wide);
 	bool generate_cop1(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	bool generate_cop1x(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 

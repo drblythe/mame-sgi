@@ -3590,6 +3590,12 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 ***************************************************************************/
 
 
+// MAME_SGI_FP_CONVERT_FIX: see fp_convert_fixup()
+static void cfunc_fp_convert_fixup(void *param)
+{
+	((mips3_device *)param)->fp_convert_fixup();
+}
+
 static void cfunc_mips3com_update_cycle_counting(void *param)
 {
 	((mips3_device *)param)->mips3com_update_cycle_counting();
@@ -11618,6 +11624,71 @@ void mips3_device::check_cop1_access(drcuml_block &block)
     generate_cop1 - compile COP1 opcodes
 ---------------------------------------------------------*/
 
+/*-------------------------------------------------
+    fp_convert_fixup - redo a floating point to
+    integer conversion (opcode in arg0) whose host
+    result was the x86 "integer indefinite" value
+-------------------------------------------------*/
+
+// MAME_SGI_FP_CONVERT_FIX: the host conversion returns 0x80000000 (or
+// 0x8000000000000000) for a NaN or an out of range value, where MIPS gives
+// 0x7fffffff (0x7fffffffffffffff) and sets the V cause and flag bits. That
+// value is also the correct result for -2^31 (-2^63), so the generated code
+// calls this only when the host returned it, and fp_convert() decides.
+void mips3_device::fp_convert_fixup()
+{
+	const uint32_t op = m_core->arg0;
+	const uint32_t funct = op & 0x3f;
+	const int fd = (op >> 6) & 31;
+	const bool fr0 = (m_core->mode & 1) == 0;
+	const bool single = ((op >> 21) & 31) == 16;
+	// the source as saved before the conversion, which may have overwritten it
+	// (fd == fs)
+	double src;
+	if (single)
+	{
+		const uint32_t bits = (uint32_t)m_core->fp_convert_src;
+		float f;
+		memcpy(&f, &bits, sizeof(f));
+		src = f;
+	}
+	else
+	{
+		const uint64_t bits = m_core->fp_convert_src;
+		memcpy(&src, &bits, sizeof(src));
+	}
+	const int mode = funct >= 0x24 ? (m_core->ccr[1][31] & 3) : (funct & 3);
+	const bool wide = funct == 0x25 || (funct >= 0x08 && funct <= 0x0b);
+	const int64_t r = fp_convert(src, mode, wide);
+	if (wide)
+		*(uint64_t *)&m_core->cpr[1][fr0 ? (fd & 0x1e) : fd] = r;
+	else if (fr0)
+		((uint32_t *)&m_core->cpr[1][fd & 0x1e])[BYTE_XOR_LE(fd & 1)] = (uint32_t)r;
+	else
+		((uint32_t *)&m_core->cpr[1][fd])[BYTE_XOR_LE(0)] = (uint32_t)r;
+}
+
+void mips3_device::generate_fp_convert_save(drcuml_block &block, uint32_t op)
+{
+	if (IS_SINGLE(op))
+		UML_MOV(block, mem(&m_core->fp_convert_src), FPR32(FSREG));            // mov     [fp_convert_src],<fsreg>
+	else
+		UML_DMOV(block, mem(&m_core->fp_convert_src), FPR64(FSREG));           // dmov    [fp_convert_src],<fsreg>
+}
+
+void mips3_device::generate_fp_convert_fixup(drcuml_block &block, compiler_state &compiler, uint32_t op, bool wide)
+{
+	const int skip = compiler.labelnum++;
+	if (wide)
+		UML_DCMP(block, FPR64(FDREG), 0x8000000000000000ULL);                 // dcmp    <fdreg>,0x8000000000000000
+	else
+		UML_CMP(block, FPR32(FDREG), 0x80000000);                             // cmp     <fdreg>,0x80000000
+	UML_JMPc(block, COND_NE, skip);                                           // jmp     skip,ne
+	UML_MOV(block, mem(&m_core->arg0), op);                                   // mov     [arg0],op
+	UML_CALLC(block, cfunc_fp_convert_fixup, this);                           // callc   fp_convert_fixup
+	UML_LABEL(block, skip);                                                   // skip:
+}
+
 bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc)
 {
 	const uint32_t op = desc->opptr;
@@ -11827,6 +11898,7 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					return true;
 
 				case 0x08:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* ROUND.L.S - MIPS III */
 					{
 						UML_FSTOINT(block, FPR64(FDREG), FPR32(FSREG), SIZE_QWORD, ROUND_ROUND);// fstoint <fdreg>,<fsreg>,qword,round
@@ -11835,9 +11907,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR64(FDREG), FPR64(FSREG), SIZE_QWORD, ROUND_ROUND);// fdtoint <fdreg>,<fsreg>,qword,round
 					}
+					generate_fp_convert_fixup(block, compiler, op, true);
 					return true;
 
 				case 0x09:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* TRUNC.L.S - MIPS III */
 					{
 						UML_FSTOINT(block, FPR64(FDREG), FPR32(FSREG), SIZE_QWORD, ROUND_TRUNC);// fstoint <fdreg>,<fsreg>,qword,trunc
@@ -11846,9 +11920,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR64(FDREG), FPR64(FSREG), SIZE_QWORD, ROUND_TRUNC);// fdtoint <fdreg>,<fsreg>,qword,trunc
 					}
+					generate_fp_convert_fixup(block, compiler, op, true);
 					return true;
 
 				case 0x0a:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* CEIL.L.S - MIPS III */
 					{
 						UML_FSTOINT(block, FPR64(FDREG), FPR32(FSREG), SIZE_QWORD, ROUND_CEIL);// fstoint <fdreg>,<fsreg>,qword,ceil
@@ -11857,9 +11933,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR64(FDREG), FPR64(FSREG), SIZE_QWORD, ROUND_CEIL);// fdtoint <fdreg>,<fsreg>,qword,ceil
 					}
+					generate_fp_convert_fixup(block, compiler, op, true);
 					return true;
 
 				case 0x0b:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* FLOOR.L.S - MIPS III */
 					{
 						UML_FSTOINT(block, FPR64(FDREG), FPR32(FSREG), SIZE_QWORD, ROUND_FLOOR);// fstoint <fdreg>,<fsreg>,qword,floor
@@ -11868,9 +11946,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR64(FDREG), FPR64(FSREG), SIZE_QWORD, ROUND_FLOOR);// fdtoint <fdreg>,<fsreg>,qword,floor
 					}
+					generate_fp_convert_fixup(block, compiler, op, true);
 					return true;
 
 				case 0x0c:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* ROUND.W.S - MIPS II */
 					{
 						UML_FSTOINT(block, FPR32(FDREG), FPR32(FSREG), SIZE_DWORD, ROUND_ROUND);// fstoint <fdreg>,<fsreg>,dword,round
@@ -11879,9 +11959,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR32(FDREG), FPR64(FSREG), SIZE_DWORD, ROUND_ROUND);// fdtoint <fdreg>,<fsreg>,dword,round
 					}
+					generate_fp_convert_fixup(block, compiler, op, false);
 					return true;
 
 				case 0x0d:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* TRUNC.W.S - MIPS II */
 					{
 						UML_FSTOINT(block, FPR32(FDREG), FPR32(FSREG), SIZE_DWORD, ROUND_TRUNC);// fstoint <fdreg>,<fsreg>,dword,trunc
@@ -11890,9 +11972,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR32(FDREG), FPR64(FSREG), SIZE_DWORD, ROUND_TRUNC);// fdtoint <fdreg>,<fsreg>,dword,trunc
 					}
+					generate_fp_convert_fixup(block, compiler, op, false);
 					return true;
 
 				case 0x0e:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* CEIL.W.S - MIPS II */
 					{
 						UML_FSTOINT(block, FPR32(FDREG), FPR32(FSREG), SIZE_DWORD, ROUND_CEIL);// fstoint <fdreg>,<fsreg>,dword,ceil
@@ -11901,9 +11985,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR32(FDREG), FPR64(FSREG), SIZE_DWORD, ROUND_CEIL);// fdtoint <fdreg>,<fsreg>,dword,ceil
 					}
+					generate_fp_convert_fixup(block, compiler, op, false);
 					return true;
 
 				case 0x0f:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* FLOOR.W.S - MIPS II */
 					{
 						UML_FSTOINT(block, FPR32(FDREG), FPR32(FSREG), SIZE_DWORD, ROUND_FLOOR);// fstoint <fdreg>,<fsreg>,dword,floor
@@ -11912,6 +11998,7 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR32(FDREG), FPR64(FSREG), SIZE_DWORD, ROUND_FLOOR);// fdtoint <fdreg>,<fsreg>,dword,floor
 					}
+					generate_fp_convert_fixup(block, compiler, op, false);
 					return true;
 
 				case 0x11:
@@ -12010,6 +12097,7 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					return true;
 
 				case 0x24:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* CVT.W.S - MIPS I */
 					{
 						UML_FSTOINT(block, FPR32(FDREG), FPR32(FSREG), SIZE_DWORD, ROUND_DEFAULT);// fstoint <fdreg>,<fsreg>,dword,default
@@ -12018,9 +12106,11 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR32(FDREG), FPR64(FSREG), SIZE_DWORD, ROUND_DEFAULT);// fdtoint <fdreg>,<fsreg>,dword,default
 					}
+					generate_fp_convert_fixup(block, compiler, op, false);
 					return true;
 
 				case 0x25:
+					generate_fp_convert_save(block, op);
 					if (IS_SINGLE(op))  /* CVT.L.S - MIPS I */
 					{
 						UML_FSTOINT(block, FPR64(FDREG), FPR32(FSREG), SIZE_QWORD, ROUND_DEFAULT);// fstoint <fdreg>,<fsreg>,qword,default
@@ -12029,6 +12119,7 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 					{
 						UML_FDTOINT(block, FPR64(FDREG), FPR64(FSREG), SIZE_QWORD, ROUND_DEFAULT);// fdtoint <fdreg>,<fsreg>,qword,default
 					}
+					generate_fp_convert_fixup(block, compiler, op, true);
 					return true;
 
 				case 0x30:
