@@ -842,6 +842,18 @@ protected:
 	};
 	fline_continuation m_fline_cont;
 	void do_iline(uint32_t color);
+	// an A_LINE drawn in LENGTH32 pieces: the next piece starts at column
+	// col of the line from (x1,y1) to (x2,y2) if XSTART,YSTART still hold
+	// (xs,ys), what the last piece left there (all 1/16 pixel)
+	struct aline_continuation
+	{
+		bool valid = false;
+		int32_t x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+		int32_t xs = 0, ys = 0;
+		int32_t col = 0;
+	};
+	aline_continuation m_aline_cont;
+	void do_aline();
 
 	uint32_t do_pixel_read();
 	uint64_t do_pixel_word_read();

@@ -1999,6 +1999,14 @@ void newport_base_device::device_start()
 	save_item(NAME(m_fline_cont.incr1));
 	save_item(NAME(m_fline_cont.incr2));
 	save_item(NAME(m_fline_cont.octant));
+	save_item(NAME(m_aline_cont.valid));
+	save_item(NAME(m_aline_cont.x1));
+	save_item(NAME(m_aline_cont.y1));
+	save_item(NAME(m_aline_cont.x2));
+	save_item(NAME(m_aline_cont.y2));
+	save_item(NAME(m_aline_cont.xs));
+	save_item(NAME(m_aline_cont.ys));
+	save_item(NAME(m_aline_cont.col));
 	save_item(NAME(m_rex3.m_bres_s1));
 	save_item(NAME(m_rex3.m_bres_octant_inc1));
 	save_item(NAME(m_rex3.m_bres_round_inc2));
@@ -4915,6 +4923,143 @@ void newport_base_device::do_fline(uint32_t color)
 	}
 }
 
+// MAME_SGI_REX3_ALINE_FIX: A_LINE, the antialiased line. Each step along
+// the major axis draws two pixels across the line: S, the pixel whose
+// centre is at or below the line on the minor axis, and T, the one above.
+// Their coverages come from the 16-entry AWEIGHT table (AWEIGHT1 bits 3-0
+// are entry 0, AWEIGHT0 bits 31-28 entry 15), indexed by the line's offset
+// from S's centre in sixteenths: T takes that entry and S its complement.
+// The coverage scales the alpha in RGB mode and replaces the low 4 bits of
+// the colour index in CI mode. ZPATTERN masks S and LSPATTERN masks T, one
+// bit per step, msb first. With ENDPTFILTER the first and last steps'
+// indices are scaled by how much of their column the line covers. A
+// LENGTH32 line draws 32 steps per GO and continues there on the next.
+void newport_base_device::do_aline()
+{
+	const uint32_t mode0 = m_rex3.m_draw_mode0;
+	const int32_t x1 = util::sext(m_rex3.m_x_start >> 7, 20);
+	const int32_t y1 = util::sext(m_rex3.m_y_start >> 7, 20);
+	const int32_t x2 = util::sext(m_rex3.m_x_end >> 7, 20);
+	const int32_t y2 = util::sext(m_rex3.m_y_end >> 7, 20);
+
+	const aline_continuation cont = m_aline_cont;
+	const bool resume = cont.valid && cont.xs == x1 && cont.ys == y1 && cont.x2 == x2 && cont.y2 == y2;
+	m_aline_cont.valid = false;
+	const int32_t ox1 = resume ? cont.x1 : x1;
+	const int32_t oy1 = resume ? cont.y1 : y1;
+
+	// major (a) and minor (b) coordinates in 1/16 pixel, negated where they
+	// decrease so that both increase along the line (pixel k becomes -k-1)
+	const bool x_major = abs(x2 - ox1) >= abs(y2 - oy1);
+	const int32_t sa = (x_major ? x2 >= ox1 : y2 >= oy1) ? 1 : -1;
+	const int32_t sb = (x_major ? y2 >= oy1 : x2 >= ox1) ? 1 : -1;
+	const int64_t a1 = sa * (x_major ? ox1 : oy1), b1 = sb * (x_major ? oy1 : ox1);
+	const int64_t a2 = sa * (x_major ? x2 : y2), b2 = sb * (x_major ? y2 : x2);
+	const int64_t da = a2 - a1, db = b2 - b1;
+	const int32_t col_first = int32_t(a1 >> 4), col_last = int32_t(a2 >> 4);
+
+	// the line's minor coordinate at a column's centre
+	auto minor_at = [&] (int32_t col) -> int64_t
+	{
+		if (!da)
+			return b1;
+		const int64_t n = (int64_t(col) * 16 + 8 - a1) * db;
+		return b1 + (n >= 0 ? n / da : -((-n + da - 1) / da));
+	};
+	auto to_xy = [&] (int64_t col, int64_t row, int16_t &px, int16_t &py)
+	{
+		const int16_t mj = int16_t(sa > 0 ? col : -col - 1);
+		const int16_t mn = int16_t(sb > 0 ? row : -row - 1);
+		px = x_major ? mj : mn;
+		py = x_major ? mn : mj;
+	};
+
+	int32_t col = resume ? cont.col : col_first;
+	int32_t steps = col_last - col + 1;
+	const int32_t limit = (mode0 & 0x300) == 0 ? 1 : BIT(mode0, 15) ? 32 : steps;
+	const bool truncated = steps > limit;
+	if (truncated)
+		steps = limit;
+
+	const uint64_t table = (uint64_t(m_rex3.m_a_weight0) << 32) | m_rex3.m_a_weight1;
+	const bool skip_first = BIT(mode0, 10);
+	const bool skip_last = BIT(mode0, 11);
+	const bool zmask = BIT(mode0, 12);
+	const bool lsmask = BIT(mode0, 13);
+	const bool shade = BIT(mode0, 18);
+	const bool filter = BIT(mode0, 22);
+	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
+
+	auto pixel = [&] (int64_t c, int64_t r, int32_t index)
+	{
+		const uint32_t weight = (table >> (4 * index)) & 0xf;
+		int16_t px, py;
+		to_xy(c, r, px, py);
+		uint32_t color;
+		if (rgbmode)
+		{
+			color = get_rgb_color(px, py);
+			color = (color & 0x00ffffff) | ((((color >> 24) * weight + 7) / 15) << 24);
+		}
+		else
+		{
+			const uint32_t ci = shade ? m_rex3.m_curr_color_red >> (m_rex3.m_plane_depth == 2 ? 9 : 11) : m_rex3.m_color_i;
+			color = get_default_color((ci & ~0xfu) | weight);
+		}
+		output_pixel(px, py, color);
+	};
+
+	for (int32_t i = 0; i < steps; i++, col++)
+	{
+		const bool first = col == col_first;
+		const bool last = col == col_last;
+		if ((first && skip_first) || (last && skip_last))
+			continue;
+		const int64_t b = minor_at(col) - 8;
+		const int64_t row = b >> 4;
+		int32_t t_index = int32_t(b - row * 16);
+		int32_t s_index = 15 - t_index;
+		if (filter && (first || last))
+		{
+			const int64_t lo = first ? a1 : int64_t(col) * 16;
+			const int64_t hi = last ? a2 : int64_t(col) * 16 + 16;
+			const int32_t covered = int32_t(std::clamp<int64_t>(hi - lo, 0, 16));
+			t_index = t_index * covered / 16;
+			s_index = s_index * covered / 16;
+		}
+		const int bit = 31 - (i & 31);
+		if (!zmask || BIT(m_rex3.m_z_pattern, bit))
+			pixel(col, row, s_index);
+		if (!lsmask || BIT(m_rex3.m_ls_pattern, bit))
+			pixel(col, row + 1, t_index);
+		if (shade)
+			iterate_shade();
+	}
+
+	if (truncated)
+	{
+		// the next piece starts at column col
+		int16_t px, py;
+		to_xy(col, (minor_at(col) - 8) >> 4, px, py);
+		const int32_t xs = px * 16, ys = py * 16;
+		write_x_start(xs << 7);
+		write_y_start(ys << 7);
+		m_aline_cont.valid = true;
+		m_aline_cont.x1 = ox1;
+		m_aline_cont.y1 = oy1;
+		m_aline_cont.x2 = x2;
+		m_aline_cont.y2 = y2;
+		m_aline_cont.xs = xs;
+		m_aline_cont.ys = ys;
+		m_aline_cont.col = col;
+	}
+	else
+	{
+		write_x_start(x2 << 7);
+		write_y_start(y2 << 7);
+	}
+}
+
 void newport_base_device::do_iline(uint32_t color)
 {
 	int32_t x1 = m_rex3.m_x_start_i;
@@ -5963,7 +6108,7 @@ void newport_base_device::do_rex3_command()
 					break;
 
 				case 4: // A_Line
-					do_iline(get_default_color(m_rex3.m_color_i)); // FIXME
+					do_aline();
 					break;
 
 				default: // Invalid
