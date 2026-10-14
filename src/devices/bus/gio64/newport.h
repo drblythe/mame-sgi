@@ -827,6 +827,18 @@ protected:
 	uint8_t get_octant(int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t dx, int32_t dy);
 	void do_setup();
 	void do_fline(uint32_t color);
+	// A LENGTH32 fractional line stops after 32 pixels; the next command
+	// continues it with the same Bresenham state when the guest has not
+	// moved its start or end (it only re-issues the command).
+	struct fline_continuation
+	{
+		bool valid = false;
+		int32_t x = 0, y = 0;		// resume pixel, 1/16 units
+		int32_t x2 = 0, y2 = 0;		// line end, 1/16 units
+		int32_t d = 0, incr1 = 0, incr2 = 0;
+		uint8_t octant = 0;
+	};
+	fline_continuation m_fline_cont;
 	void do_iline(uint32_t color);
 
 	uint32_t do_pixel_read();

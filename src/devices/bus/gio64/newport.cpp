@@ -1990,6 +1990,15 @@ void newport_base_device::device_start()
 	save_item(NAME(m_rex3.m_x_move));
 	save_item(NAME(m_rex3.m_y_move));
 	save_item(NAME(m_rex3.m_bres_d));
+	save_item(NAME(m_fline_cont.valid));
+	save_item(NAME(m_fline_cont.x));
+	save_item(NAME(m_fline_cont.y));
+	save_item(NAME(m_fline_cont.x2));
+	save_item(NAME(m_fline_cont.y2));
+	save_item(NAME(m_fline_cont.d));
+	save_item(NAME(m_fline_cont.incr1));
+	save_item(NAME(m_fline_cont.incr2));
+	save_item(NAME(m_fline_cont.octant));
 	save_item(NAME(m_rex3.m_bres_s1));
 	save_item(NAME(m_rex3.m_bres_octant_inc1));
 	save_item(NAME(m_rex3.m_bres_round_inc2));
@@ -4632,8 +4641,12 @@ void newport_base_device::do_fline(uint32_t color)
 	int32_t dx = abs(x1 - x2);
 	int32_t dy = abs(y1 - y2);
 
-	const int32_t dx_i = abs(x10 - x20) - 1;
-	const int32_t dy_i = abs(y10 - y20) - 1;
+	// MAME_SGI_FLINE_PIXEL_STEP_FIX: positions are in 1/16 pixel; the
+	// rasterizer steps and counts whole pixels (0x10), so a LENGTH32 line
+	// command draws 32 pixels and leaves the start at the 33rd
+	constexpr int32_t PIXEL = 0x10;
+	const int32_t dx_i = abs(x10 - x20) / PIXEL;
+	const int32_t dy_i = abs(y10 - y20) / PIXEL;
 
 	static const bresenham_octant_info_t s_bresenham_infos[8] =
 	{
@@ -4652,13 +4665,21 @@ void newport_base_device::do_fline(uint32_t color)
 	const int32_t incrx2 = s_bresenham_infos[octant].incrx2;
 	const int32_t incry1 = s_bresenham_infos[octant].incry1;
 	const int32_t incry2 = s_bresenham_infos[octant].incry2;
+	// MAME_SGI_FLINE_CONTINUE_FIX: a command that starts exactly where the
+	// previous LENGTH32 command stopped, towards the same end, continues
+	// that line (same error term) instead of setting it up again from an
+	// integer start, which loses the start's fraction and bends the line
+	const bool resume = m_fline_cont.valid && m_fline_cont.x == x1 && m_fline_cont.y == y1
+			&& m_fline_cont.x2 == x2 && m_fline_cont.y2 == y2 && m_fline_cont.octant == octant;
+	m_fline_cont.valid = false;
 	int32_t loop = s_bresenham_infos[octant].loop ? dy_i : dx_i;
-	if (BIT(m_rex3.m_draw_mode0, 15) && loop > 32)
+	const bool truncated = BIT(m_rex3.m_draw_mode0, 15) && loop > 32;
+	if (truncated)
 		loop = 32;
 	const int32_t x_major = 1 - s_bresenham_infos[octant].loop;
 
-	const int32_t incr1 = s_bresenham_infos[octant].loop ? (2 * dx) : (2 * dy);
-	const int32_t incr2 = s_bresenham_infos[octant].loop ? (2 * (dx - dy)) : (2 * (dy - dx));
+	int32_t incr1 = s_bresenham_infos[octant].loop ? (2 * dx) : (2 * dy);
+	int32_t incr2 = s_bresenham_infos[octant].loop ? (2 * (dx - dy)) : (2 * (dy - dx));
 	int32_t d = s_bresenham_infos[octant].loop ? (3 * dx - 2 * dy) : (3 * dy - 2 * dx);
 
 	switch (octant)
@@ -4718,16 +4739,27 @@ void newport_base_device::do_fline(uint32_t color)
 		break;
 	}
 
-	d += 2 * (((dx * y1_fract) >> 4) - ((dy * x1_fract) >> 4)); // Adjust d due to fractional endpoints
-	const int32_t E = d - 2 * dx; // Variable used for adjusting the start point up one pixel
-	if (E > 0)
+	if (resume)
 	{
-		d = E;
-		x += incrx2 * (1 - x_major);
-		y += incry2 * x_major;
+		x = x1;
+		y = y1;
+		d = m_fline_cont.d;
+		incr1 = m_fline_cont.incr1;
+		incr2 = m_fline_cont.incr2;
+	}
+	else
+	{
+		d += 2 * (((dx * y1_fract) >> 4) - ((dy * x1_fract) >> 4)); // Adjust d due to fractional endpoints
+		const int32_t E = d - 2 * dx; // Variable used for adjusting the start point up one pixel
+		if (E > 0)
+		{
+			d = E;
+			x += incrx2 * (1 - x_major) * PIXEL;
+			y += incry2 * x_major * PIXEL;
+		}
 	}
 
-	if (!skip_first || iterate_one)
+	if (!skip_first || iterate_one || resume)
 	{
 		const int16_t x16 = (int16_t)(x >> 4);
 		const int16_t y16 = (int16_t)(y >> 4);
@@ -4741,14 +4773,14 @@ void newport_base_device::do_fline(uint32_t color)
 
 		if (d < 0)
 		{
-			x += incrx1;
-			y -= incry1;
+			x += incrx1 * PIXEL;
+			y -= incry1 * PIXEL;
 			d += incr1;
 		}
 		else
 		{
-			x += incrx2;
-			y -= incry2;
+			x += incrx2 * PIXEL;
+			y -= incry2 * PIXEL;
 			d += incr2;
 		}
 
@@ -4774,19 +4806,34 @@ void newport_base_device::do_fline(uint32_t color)
 
 		if (d < 0)
 		{
-			x += incrx1;
-			y -= incry1;
+			x += incrx1 * PIXEL;
+			y -= incry1 * PIXEL;
 			d += incr1;
 		}
 		else
 		{
-			x += incrx2;
-			y -= incry2;
+			x += incrx2 * PIXEL;
+			y -= incry2 * PIXEL;
 			d += incr2;
 		}
 	}
 
-	if (!skip_last)
+	if (truncated)
+	{
+		// more of the line to come: stop at the next pixel
+		write_x_start(x << 7);
+		write_y_start(y << 7);
+		m_fline_cont.valid = true;
+		m_fline_cont.x = x;
+		m_fline_cont.y = y;
+		m_fline_cont.x2 = x2;
+		m_fline_cont.y2 = y2;
+		m_fline_cont.d = d;
+		m_fline_cont.incr1 = incr1;
+		m_fline_cont.incr2 = incr2;
+		m_fline_cont.octant = octant;
+	}
+	else if (!skip_last)
 	{
 		const int16_t x16 = (int16_t)(x2 >> 4);
 		const int16_t y16 = (int16_t)(y2 >> 4);
