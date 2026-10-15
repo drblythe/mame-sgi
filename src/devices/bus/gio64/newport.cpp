@@ -1432,6 +1432,26 @@ void rb2_device::deserialize(FILE *file)
 	fread(&m_dst_shift, sizeof(uint8_t), 1, file);
 }
 
+// MAME_SGI_DB_LOGICOP_FIX: a pixel read is the DBLSRC buffer's pixel only,
+// masked to its planes' width; without the mask, buffer 1 (or, for the
+// auxiliary planes, the neighbouring fields) came along. A logic op's
+// destination is that pixel replicated into every lane like the source
+// (REX3 spec 3.7: with the read and write buffers different, LO_DST copies
+// one buffer into the other), not the word shifted down, which left the
+// upper lanes empty (12bpp buffer 1) or misaligned (overlay, popup, CID).
+namespace {
+const uint32_t s_rb2_read_mask[8][4] = {
+	{ 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },	// none
+	{ 0xf, 0xff, 0xfff, 0xffffff },						// RGB/CI
+	{ 0xf, 0xff, 0xfff, 0xffffff },						// RGBA
+	{ 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },	// invalid
+	{ 0xf, 0xff, 0xff, 0xff },							// overlay
+	{ 0x3, 0x3, 0x3, 0x3 },								// popup
+	{ 0x3, 0x3, 0x3, 0x3 },								// CID
+	{ 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff },	// invalid
+};
+} // anonymous namespace
+
 uint32_t rb2_device::expand_to_all_lanes(uint32_t src)
 {
 	switch (m_draw_depth)
@@ -1499,7 +1519,7 @@ ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t 
 			case 15:    value = 0xffffff;        break;
 			default:
 			{
-				const uint32_t dst = *p >> m_src_shift;
+				const uint32_t dst = expand_to_all_lanes((*p >> m_src_shift) & s_rb2_read_mask[m_plane_enable & 7][m_draw_depth & 3]);
 				switch (m_logicop)
 				{
 					case 1:     value = src & dst;       break;
@@ -1876,7 +1896,7 @@ void rb2_device::set_address(uint32_t address)
 
 uint32_t rb2_device::read_pixel()
 {
-	return *m_buf_ptr >> m_src_shift;
+	return (*m_buf_ptr >> m_src_shift) & s_rb2_read_mask[m_plane_enable & 7][m_draw_depth & 3];
 }
 
 void rb2_device::write_pixel(uint32_t data)
@@ -1890,7 +1910,7 @@ void rb2_device::write_pixel(uint32_t data)
 
 void rb2_device::logic_pixel(uint32_t src)
 {
-	const uint32_t dst = read_pixel();
+	const uint32_t dst = expand_to_all_lanes(read_pixel());
 
 	switch (m_logicop)
 	{
