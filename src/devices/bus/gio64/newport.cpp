@@ -5612,6 +5612,18 @@ uint32_t newport_base_device::get_default_color(uint32_t src)
 	}
 #endif
 	uint32_t color = BIT(m_rex3.m_draw_mode1, 17) ? m_rex3.m_color_vram : src;
+	// MAME_SGI_FASTCLEAR_RGB_FIX: in RGB mode COLORVRAM holds an 8-8-8 colour
+	// (OpenGL loads one at every depth, already rounded to the depth), which
+	// fast-clear converts by taking each channel's top bits: B1 G2 R1 at
+	// 4bpp, B2 G3 R3 at 8bpp, as the 12bpp case below
+	const uint32_t vram = m_rex3.m_color_vram;
+	if (BIT(m_rex3.m_draw_mode1, 17) && BIT(m_rex3.m_draw_mode1, 15) && m_rex3.m_plane_depth < 2)
+	{
+		if (m_rex3.m_plane_depth == 0)
+			color = (BIT(vram, 23) << 3) | (((vram >> 14) & 3) << 1) | BIT(vram, 7);
+		else
+			color = (((vram >> 22) & 3) << 6) | (((vram >> 13) & 7) << 3) | ((vram >> 5) & 7);
+	}
 	switch (m_rex3.m_plane_depth)
 	{
 		case 0: // 4bpp
