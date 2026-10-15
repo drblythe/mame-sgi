@@ -4829,32 +4829,39 @@ void newport_base_device::do_setup(void)
 // bit is used LSREPEAT + 1 times (LSMODE bits 8-15; bits 0-7 count down),
 // then the pattern rotates left within its LSLENGTH + 17 most significant
 // bits (LSMODE bits 24-27).
-void newport_base_device::line_pixel(int16_t x, int16_t y, uint32_t color, bool rgb)
+// MAME_SGI_LSADVLAST_FIX: with DRAWMODE0 LSADVLAST (bit 14) clear, the line
+// stipple does not advance at the end of a line, i.e. at its endpoint pixel
+// (end_pixel): connected lines draw the shared vertex twice, once per line,
+// and the stipple then runs on across it. IRIS GL draws its polylines so.
+void newport_base_device::line_pixel(int16_t x, int16_t y, uint32_t color, bool rgb, bool end_pixel)
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	if (BIT(mode0, 13))
 	{
 		const bool on = BIT(m_rex3.m_ls_pattern, 31);
-		uint32_t count = m_rex3.m_ls_mode & 0xff;
-		if (count == 0)
+		if (!end_pixel || BIT(mode0, 14))
 		{
-			const int len = ((m_rex3.m_ls_mode >> 24) & 0xf) + 17;
-			const uint32_t p = m_rex3.m_ls_pattern;
-			if (len >= 32)
-				m_rex3.m_ls_pattern = (p << 1) | (p >> 31);
+			uint32_t count = m_rex3.m_ls_mode & 0xff;
+			if (count == 0)
+			{
+				const int len = ((m_rex3.m_ls_mode >> 24) & 0xf) + 17;
+				const uint32_t p = m_rex3.m_ls_pattern;
+				if (len >= 32)
+					m_rex3.m_ls_pattern = (p << 1) | (p >> 31);
+				else
+				{
+					const uint32_t keep = (1u << (32 - len)) - 1;
+					const uint32_t low = 1u << (32 - len);	// the pattern's last bit
+					m_rex3.m_ls_pattern = ((p << 1) & ~(keep | low)) | ((p >> 31) ? low : 0) | (p & keep);
+				}
+				count = (m_rex3.m_ls_mode >> 8) & 0xff;
+			}
 			else
 			{
-				const uint32_t keep = (1u << (32 - len)) - 1;
-				const uint32_t low = 1u << (32 - len);	// the pattern's last bit
-				m_rex3.m_ls_pattern = ((p << 1) & ~(keep | low)) | ((p >> 31) ? low : 0) | (p & keep);
+				count--;
 			}
-			count = (m_rex3.m_ls_mode >> 8) & 0xff;
+			m_rex3.m_ls_mode = (m_rex3.m_ls_mode & ~0xffu) | count;
 		}
-		else
-		{
-			count--;
-		}
-		m_rex3.m_ls_mode = (m_rex3.m_ls_mode & ~0xffu) | count;
 		if (!on)
 		{
 			if (BIT(mode0, 17))
@@ -5086,7 +5093,7 @@ void newport_base_device::do_fline(uint32_t color)
 	{
 		const int16_t x16 = (int16_t)(x2 >> 4);
 		const int16_t y16 = (int16_t)(y2 >> 4);
-		line_pixel(x16, y16, color, shade || rgbmode);
+		line_pixel(x16, y16, color, shade || rgbmode, true);
 
 		if (shade)
 			iterate_shade();
@@ -5340,7 +5347,7 @@ void newport_base_device::do_iline(uint32_t color)
 		const int16_t x16 = (int16_t)x2;
 		const int16_t y16 = (int16_t)y2;
 
-		line_pixel(x16, y16, color, shade || rgbmode);
+		line_pixel(x16, y16, color, shade || rgbmode, true);
 
 		if (shade)
 			iterate_shade();

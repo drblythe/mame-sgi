@@ -836,7 +836,7 @@ protected:
 	};
 	uint8_t get_octant(int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t dx, int32_t dy);
 	void do_setup();
-	void line_pixel(int16_t x, int16_t y, uint32_t color, bool rgb);
+	void line_pixel(int16_t x, int16_t y, uint32_t color, bool rgb, bool end_pixel = false);
 	void do_fline(uint32_t color);
 	// A LENGTH32 fractional line stops after 32 pixels; the next command
 	// continues it with the same Bresenham state when the guest has not
