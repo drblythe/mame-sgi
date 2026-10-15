@@ -4178,9 +4178,15 @@ uint32_t newport_base_device::draw_color(int16_t x, int16_t y, uint32_t flat, bo
 	return (c & 0x00ffffff) | (alpha << 24);
 }
 
+// MAME_SGI_CI_HOSTDEPTH_FIX: host data are converted between depths as BGR
+// colours only in RGB mode; a colour index is passed through (right-aligned
+// in its host field), so OpenGL's 16-bit index writes and reads (HOSTDEPTH
+// 12) of 8-bit colour-index planes keep their values
 uint32_t newport_base_device::get_host_color()
 {
 	uint32_t color = next_host_pixel();
+	if (!BIT(m_rex3.m_draw_mode1, 15))
+		return color & ci_max();
 	uint8_t convert_index = (m_rex3.m_hostdepth << 2) | m_rex3.m_plane_depth;
 	switch (convert_index & 15)
 	{
@@ -5381,7 +5387,7 @@ uint32_t newport_base_device::do_pixel_read()
 	set_address(src_y * (1280 + 64) + src_x);
 #endif
 	ret = read_pixel();
-	if (m_rex3.m_plane_enable == 1 || m_rex3.m_plane_enable == 2) // RGB/CI or RGBA planes
+	if ((m_rex3.m_plane_enable == 1 || m_rex3.m_plane_enable == 2) && BIT(m_rex3.m_draw_mode1, 15)) // RGB or RGBA planes, RGB mode (MAME_SGI_CI_HOSTDEPTH_FIX)
 	{
 		uint8_t convert_index = (m_rex3.m_plane_depth << 2) | m_rex3.m_hostdepth;
 		switch (convert_index & 15)
