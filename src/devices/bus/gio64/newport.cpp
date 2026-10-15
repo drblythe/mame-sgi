@@ -4759,14 +4759,22 @@ uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 	}
 	else
 	{
+		// MAME_SGI_RGB_ROUND_FIX: with dither off, an n-bit channel (n < 8) is
+		// rounded, not truncated: S = P[7:4-n] - P[7:4] on n+4 bits (P scaled
+		// by (2^n - 1)/255), D = S[n+3:4] + S[3]; 1-bit channels take P[7]
+		const auto round = [] (uint32_t p, int n) -> uint32_t
+		{
+			const uint32_t s = (p >> (4 - n)) - (p >> 4);
+			return (s >> 4) + BIT(s, 3);
+		};
 		switch (m_rex3.m_plane_depth)
 		{
 		case 0: // 4bpp
-			return alpha | (BIT(blue, 7) << 3) | ((green & 0xc0) >> 5) | BIT(red, 7);
+			return alpha | (BIT(blue, 7) << 3) | (round(green, 2) << 1) | BIT(red, 7);
 		case 1: // 8bpp
-			return alpha | (blue & 0xc0) | ((green & 0xe0) >> 2) | ((red & 0xe0) >> 5);
+			return alpha | (round(blue, 2) << 6) | (round(green, 3) << 3) | round(red, 3);
 		case 2: // 12bpp
-			return alpha | ((blue & 0xf0) << 4) | (green & 0xf0) | ((red & 0xf0) >> 4);
+			return alpha | (round(blue, 4) << 8) | (round(green, 4) << 4) | round(red, 4);
 		case 3: // 24bpp
 			return alpha | (blue << 16) | (green << 8) | red;
 		default:
