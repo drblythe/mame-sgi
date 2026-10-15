@@ -4288,8 +4288,15 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 	x -= 0x1000;
 	y -= 0x1000;
 
+	// MAME_SGI_CI_COMPARE_FIX: in CI mode the same DRAWMODE1 bits are the
+	// colour compare of antialiased lines (A_LINE): the pixel is written if
+	// its index is less than (bit 12), equal to (bit 13) or greater than
+	// (bit 14) the framebuffer's. IRIS GL loads them from zfunction under
+	// zsource(ZSRC_COLOR), so antialiased CI lines keep the brighter
+	// coverage where they meet.
+	const bool ci_compare = afunc != 7 && !BIT(m_rex3.m_draw_mode1, 15) && ((m_rex3.m_draw_mode0 >> 2) & 7) == 4;
 #ifdef MAME_SGI_REX3_FAST_PIXEL
-	if (!BIT(m_rex3.m_draw_mode1, 18))
+	if (!BIT(m_rex3.m_draw_mode1, 18) && !ci_compare)
 	{
 		m_rb2->write_pixel_xy(x, y, color);
 		return;
@@ -4301,6 +4308,13 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 	const uint32_t address = (uint32_t)(y * (1280 + 64) + x);
 	set_address(address);
 #endif
+	if (ci_compare)
+	{
+		const uint32_t mask = m_rex3.m_plane_depth == 0 ? 0xf : m_rex3.m_plane_depth == 1 ? 0xff : 0xfff;
+		const uint32_t src = color & mask, dst = read_pixel() & mask;
+		if (!((BIT(afunc, 0) && src < dst) || (BIT(afunc, 1) && src == dst) || (BIT(afunc, 2) && src > dst)))
+			return;
+	}
 
 	if (BIT(m_rex3.m_draw_mode1, 18))
 		blend_pixel(color);
