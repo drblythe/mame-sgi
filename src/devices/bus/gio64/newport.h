@@ -689,6 +689,7 @@ protected:
 	{
 		uint32_t m_draw_mode0;
 		bool m_color_host;
+		bool m_alpha_host;
 		uint32_t m_draw_mode1;
 		uint8_t m_plane_enable;
 		uint8_t m_plane_depth;
@@ -798,6 +799,8 @@ protected:
 
 	uint32_t get_default_color(uint32_t src);
 	uint32_t get_host_color();
+	uint32_t next_host_pixel();
+	uint32_t draw_color(int16_t x, int16_t y, uint32_t flat, bool dda);
 	static uint32_t swap_host_pixel(uint32_t v, uint8_t hostdepth);
 	uint32_t get_rgb_color(int16_t x, int16_t y);
 

@@ -1955,6 +1955,7 @@ void newport_base_device::device_start()
 
 	save_item(NAME(m_rex3.m_draw_mode0));
 	save_item(NAME(m_rex3.m_color_host));
+	save_item(NAME(m_rex3.m_alpha_host));
 	save_item(NAME(m_rex3.m_draw_mode1));
 	save_item(NAME(m_rex3.m_plane_enable));
 	save_item(NAME(m_rex3.m_plane_depth));
@@ -4069,7 +4070,8 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 	return ret;
 }
 
-uint32_t newport_base_device::get_host_color()
+// the next host pixel from HOSTRW, as the host wrote it (HOSTDEPTH wide)
+uint32_t newport_base_device::next_host_pixel()
 {
 	static const uint32_t s_color_masks[4] = { 0xf, 0xff, 0xfff, 0xffffffff };
 	// MAME_SGI_SWAPENDIAN_FIX: SWAPENDIAN swaps the bytes of each short (12-bit)
@@ -4085,6 +4087,30 @@ uint32_t newport_base_device::get_host_color()
 		else
 			m_rex3.m_host_shift = 64 - s_host_shifts[m_rex3.m_hostdepth];
 	}
+	return color;
+}
+
+// MAME_SGI_ALPHAHOST_FIX: the pixel colour for a draw: from HOSTRW with
+// COLORHOST, else from the DDA (or the flat colour) with its alpha from
+// HOSTRW when ALPHAHOST is set: the alpha byte of the 32-bit host pixel,
+// or with a narrower HOSTDEPTH the alpha byte of HOSTRW0 (IRIS GL's
+// z-buffered antialiased points leave HOSTDEPTH at 4 bits). IRIS GL sends
+// antialiased point coverage this way, as alpha in RGB mode and in the
+// index's low bits (COLORHOST) in CI mode.
+uint32_t newport_base_device::draw_color(int16_t x, int16_t y, uint32_t flat, bool dda)
+{
+	if (m_rex3.m_color_host)
+		return get_host_color();
+	const uint32_t c = dda ? get_rgb_color(x, y) : flat;
+	if (!m_rex3.m_alpha_host)
+		return c;
+	const uint32_t alpha = m_rex3.m_hostdepth == 3 ? next_host_pixel() >> 24 : uint32_t(m_rex3.m_host_dataport >> 56);
+	return (c & 0x00ffffff) | (alpha << 24);
+}
+
+uint32_t newport_base_device::get_host_color()
+{
+	uint32_t color = next_host_pixel();
 	uint8_t convert_index = (m_rex3.m_hostdepth << 2) | m_rex3.m_plane_depth;
 	switch (convert_index & 15)
 	{
@@ -4144,12 +4170,8 @@ void newport_base_device::output_pixel(uint32_t color)
 {
 	const bool shade = BIT(m_rex3.m_draw_mode0, 18);
 	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
-	if (m_rex3.m_color_host)
-		output_pixel(m_rex3.m_x_start_i, m_rex3.m_y_start_i, get_host_color());
-	else if (shade || rgbmode)
-		output_pixel(m_rex3.m_x_start_i, m_rex3.m_y_start_i, get_rgb_color(m_rex3.m_x_start_i, m_rex3.m_y_start_i));
-	else
-		output_pixel(m_rex3.m_x_start_i, m_rex3.m_y_start_i, color);
+	output_pixel(m_rex3.m_x_start_i, m_rex3.m_y_start_i,
+			draw_color(m_rex3.m_x_start_i, m_rex3.m_y_start_i, color, (shade || rgbmode) && !m_rex3.m_color_host));
 }
 
 #ifdef MAME_SGI_REX3_FAST_PIXEL
@@ -4700,7 +4722,7 @@ void newport_base_device::line_pixel(int16_t x, int16_t y, uint32_t color, bool 
 			return;
 		}
 	}
-	output_pixel(x, y, rgb ? get_rgb_color(x, y) : color);
+	output_pixel(x, y, draw_color(x, y, color, rgb));
 }
 
 void newport_base_device::do_fline(uint32_t color)
@@ -5552,7 +5574,7 @@ bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t st
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const uint32_t mode1 = m_rex3.m_draw_mode1;
-	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
+	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || m_rex3.m_alpha_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
 		return false;
 	// the alpha function is applied per pixel (output_pixel)
 	if (((mode1 >> 12) & 7) != 7)
@@ -5950,7 +5972,7 @@ void newport_base_device::do_rex3_command()
 					if (BIT(mode0, 15) && abs(end_x - start_x) > 32)
 						prim_end_x = start_x + 32 * dx;
 
-					if (m_rex3.m_color_host && m_rex3.m_rwpacked)
+					if ((m_rex3.m_color_host || m_rex3.m_alpha_host) && m_rex3.m_rwpacked)
 					{
 						stop_on_x = true;
 						static const int16_t s_max_host_lengths[2][4] = { { 4, 4, 2, 1 }, { 8, 8, 4, 2 } };
@@ -5992,6 +6014,8 @@ void newport_base_device::do_rex3_command()
 									output_pixel(start_x, start_y, get_host_color());
 #endif
 								}
+							else if (m_rex3.m_alpha_host)
+								output_pixel(start_x, start_y, draw_color(start_x, start_y, color, (shade || rgbmode) && !fastclear));
 							else if ((shade || rgbmode) && !fastclear)
 								output_pixel(start_x, start_y, get_rgb_color(start_x, start_y));
 							else
@@ -6039,7 +6063,7 @@ void newport_base_device::do_rex3_command()
 					if (BIT(mode0, 15) && (end_x - start_x) >= 32)
 						prim_end_x = start_x + 32 * dx;
 
-					if (m_rex3.m_color_host && m_rex3.m_rwpacked)
+					if ((m_rex3.m_color_host || m_rex3.m_alpha_host) && m_rex3.m_rwpacked)
 					{
 						stop_on_x = true;
 						static const int16_t s_max_host_lengths[2][4] = { { 4, 4, 2, 1 }, { 8, 8, 4, 2 } };
@@ -6081,6 +6105,8 @@ void newport_base_device::do_rex3_command()
 										output_pixel(start_x, start_y, get_host_color());
 #endif
 									}
+								else if (m_rex3.m_alpha_host)
+									output_pixel(start_x, start_y, draw_color(start_x, start_y, color, (shade || rgbmode) && !fastclear));
 								else if ((shade || rgbmode) && !fastclear)
 									output_pixel(start_x, start_y, get_rgb_color(start_x, start_y));
 								else
@@ -6501,6 +6527,7 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			m_rex3.m_draw_mode0 = data32;
 
 			m_rex3.m_color_host = BIT(m_rex3.m_draw_mode0, 6);
+			m_rex3.m_alpha_host = BIT(m_rex3.m_draw_mode0, 7);
 		}
 		break;
 	case 0x0008/8:
