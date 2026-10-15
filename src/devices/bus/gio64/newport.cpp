@@ -2926,6 +2926,8 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 						}
 						break;
 					case 1: // RGB Map0
+					case 2: // RGB Map1 (MAME_SGI_XMAP_RGB_MAPS_FIX)
+					case 3: // RGB Map2
 						switch (pix_size)
 						{
 							case 0: // 4bpp
@@ -2933,9 +2935,9 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
 								const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-								*dest++ = m_lut_rgb4[pix_in & 0xf];
+								*dest++ = m_lut_rgb4[pix_mode - 1][pix_in & 0xf];
 #else
-								*dest++ = convert_4bpp_bgr_to_24bpp_rgb(pix_in);
+								*dest++ = rgb_map(pix_mode - 1, convert_4bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 								break;
 							}
@@ -2944,9 +2946,9 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 								const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-								*dest++ = m_lut_rgb8[pix_in];
+								*dest++ = m_lut_rgb8[pix_mode - 1][pix_in];
 #else
-								*dest++ = convert_8bpp_bgr_to_24bpp_rgb(pix_in);
+								*dest++ = rgb_map(pix_mode - 1, convert_8bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 								break;
 							}
@@ -2955,9 +2957,9 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
 								const uint16_t pix_in = (uint16_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-								*dest++ = m_lut_rgb12[pix_in & 0xfff];
+								*dest++ = m_lut_rgb12[pix_mode - 1][pix_in & 0xfff];
 #else
-								*dest++ = convert_12bpp_bgr_to_24bpp_rgb(pix_in);
+								*dest++ = rgb_map(pix_mode - 1, convert_12bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 								break;
 							}
@@ -2968,29 +2970,14 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 								const uint8_t g = (uint8_t)(pix_in >> 8);
 								const uint8_t b = (uint8_t)(pix_in >> 16);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-								*dest++ = 0xff000000 | m_ramdac_lut_r[r] | m_ramdac_lut_g[g] | m_ramdac_lut_b[b];
+								*dest++ = m_lut_rgb24_r[pix_mode - 1][r] | m_lut_rgb24_g[pix_mode - 1][g] | m_lut_rgb24_b[pix_mode - 1][b];
 #else
-								*dest++ = (r << 16) | (g << 8) | b;
+								*dest++ = rgb_map(pix_mode - 1, (r << 16) | (g << 8) | b);
 #endif
 								break;
 							}
 						}
 						break;
-#ifdef MAME_SGI_NEWPORT_LUT_FOLD
-					case 2: // RGB Map1 (not yet supported)
-						*dest++ = ramdac_map(0xff00ff);
-						break;
-					case 3: // RGB Map2 (not yet supported)
-						*dest++ = ramdac_map(0x00ff00);
-						break;
-#else
-					case 2: // RGB Map1 (not yet supported)
-						*dest++ = 0xff00ff;
-						break;
-					case 3: // RGB Map2 (not yet supported)
-						*dest++ = 0x00ff00;
-						break;
-#endif
 				}
 			}
 
@@ -3136,7 +3123,8 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 
 	if (aux_pix_mode == 0)
 	{
-		switch ((pix_mode << 2) | pix_size)
+		const int map = pix_mode ? pix_mode - 1 : 0;	// RGB Map0-2 (MAME_SGI_XMAP_RGB_MAPS_FIX)
+		switch ((std::min<int>(pix_mode, 1) << 2) | pix_size)
 		{
 		case (0 << 2) | 0: // CI 4bpp
 		{
@@ -3169,43 +3157,43 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 			}
 			return;
 		}
-		case (1 << 2) | 0: // RGB Map0 4bpp
+		case (1 << 2) | 0: // RGB 4bpp
 		{
 			const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
 			for (int i = 0; i < count; i++)
 			{
 				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb4[(uint8_t)(src_rgbci[i] >> shift) & 0x0f];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb4[map][(uint8_t)(src_rgbci[i] >> shift) & 0x0f];
 			}
 			return;
 		}
-		case (1 << 2) | 1: // RGB Map0 8bpp
+		case (1 << 2) | 1: // RGB 8bpp
 		{
 			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 			for (int i = 0; i < count; i++)
 			{
 				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb8[(uint8_t)(src_rgbci[i] >> shift)];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb8[map][(uint8_t)(src_rgbci[i] >> shift)];
 			}
 			return;
 		}
-		case (1 << 2) | 2: // RGB Map0 12bpp
+		case (1 << 2) | 2: // RGB 12bpp
 		{
 			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
 			for (int i = 0; i < count; i++)
 			{
 				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb12[(uint16_t)(src_rgbci[i] >> shift) & 0x0fff];
+				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb12[map][(uint16_t)(src_rgbci[i] >> shift) & 0x0fff];
 			}
 			return;
 		}
-		case (1 << 2) | 3: // RGB Map0 24bpp
+		case (1 << 2) | 3: // RGB 24bpp
 			for (int i = 0; i < count; i++)
 			{
 				const uint32_t aux = src_cidaux[i];
 				const uint32_t pix_in = src_rgbci[i];
 				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)]
-						: 0xff000000 | m_ramdac_lut_r[(uint8_t)pix_in] | m_ramdac_lut_g[(uint8_t)(pix_in >> 8)] | m_ramdac_lut_b[(uint8_t)(pix_in >> 16)];
+						: m_lut_rgb24_r[map][(uint8_t)pix_in] | m_lut_rgb24_g[map][(uint8_t)(pix_in >> 8)] | m_lut_rgb24_b[map][(uint8_t)(pix_in >> 16)];
 			}
 			return;
 		default:
@@ -3364,6 +3352,8 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 					}
 					break;
 				case 1: // RGB Map0
+				case 2: // RGB Map1 (MAME_SGI_XMAP_RGB_MAPS_FIX)
+				case 3: // RGB Map2
 					switch (pix_size)
 					{
 						case 0: // 4bpp
@@ -3371,9 +3361,9 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
 							const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-							*dest++ = m_lut_rgb4[pix_in & 0xf];
+							*dest++ = m_lut_rgb4[pix_mode - 1][pix_in & 0xf];
 #else
-							*dest++ = convert_4bpp_bgr_to_24bpp_rgb(pix_in);
+							*dest++ = rgb_map(pix_mode - 1, convert_4bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 							break;
 						}
@@ -3382,9 +3372,9 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
 							const uint8_t pix_in = (uint8_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-							*dest++ = m_lut_rgb8[pix_in];
+							*dest++ = m_lut_rgb8[pix_mode - 1][pix_in];
 #else
-							*dest++ = convert_8bpp_bgr_to_24bpp_rgb(pix_in);
+							*dest++ = rgb_map(pix_mode - 1, convert_8bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 							break;
 						}
@@ -3393,9 +3383,9 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
 							const uint16_t pix_in = (uint16_t)(*src_rgbci >> shift);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-							*dest++ = m_lut_rgb12[pix_in & 0xfff];
+							*dest++ = m_lut_rgb12[pix_mode - 1][pix_in & 0xfff];
 #else
-							*dest++ = convert_12bpp_bgr_to_24bpp_rgb(pix_in);
+							*dest++ = rgb_map(pix_mode - 1, convert_12bpp_bgr_to_24bpp_rgb(pix_in));
 #endif
 							break;
 						}
@@ -3406,29 +3396,14 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 							const uint8_t g = (uint8_t)(pix_in >> 8);
 							const uint8_t b = (uint8_t)(pix_in >> 16);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
-							*dest++ = 0xff000000 | m_ramdac_lut_r[r] | m_ramdac_lut_g[g] | m_ramdac_lut_b[b];
+							*dest++ = m_lut_rgb24_r[pix_mode - 1][r] | m_lut_rgb24_g[pix_mode - 1][g] | m_lut_rgb24_b[pix_mode - 1][b];
 #else
-							*dest++ = (r << 16) | (g << 8) | b;
+							*dest++ = rgb_map(pix_mode - 1, (r << 16) | (g << 8) | b);
 #endif
 							break;
 						}
 					}
 					break;
-#ifdef MAME_SGI_NEWPORT_LUT_FOLD
-				case 2: // RGB Map1 (not yet supported)
-					*dest++ = ramdac_map(0xff00ff);
-					break;
-				case 3: // RGB Map2 (not yet supported)
-					*dest++ = ramdac_map(0x00ff00);
-					break;
-#else
-				case 2: // RGB Map1 (not yet supported)
-					*dest++ = 0xff00ff;
-					break;
-				case 3: // RGB Map2 (not yet supported)
-					*dest++ = 0x00ff00;
-					break;
-#endif
 			}
 		}
 
@@ -3442,28 +3417,59 @@ void newport_base_device::lut_fold_update()
 {
 	uint32_t lo, hi;
 	const bool cmap_dirty = m_cmap[0]->take_dirty_range(lo, hi);
+	bool maps_dirty = false;
 	if (m_lut_fold_dirty)
 	{
 		lo = 0;
 		hi = 0xffff;
-		for (uint32_t i = 0; i < 0x10; i++)
-			m_lut_rgb4[i] = ramdac_map(convert_4bpp_bgr_to_24bpp_rgb(i));
-		for (uint32_t i = 0; i < 0x100; i++)
-			m_lut_rgb8[i] = ramdac_map(convert_8bpp_bgr_to_24bpp_rgb(i));
-		for (uint32_t i = 0; i < 0x1000; i++)
-			m_lut_rgb12[i] = ramdac_map(convert_12bpp_bgr_to_24bpp_rgb(i));
+		maps_dirty = true;
 		m_lut_fold_dirty = false;
 	}
 	else if (!cmap_dirty)
 	{
 		return;
 	}
+	else
+	{
+		maps_dirty = hi >= 0x1d00 && lo <= 0x1fff;
+	}
 	const uint32_t *const palette = m_cmap[0]->palette_base();
 	for (uint32_t i = lo; i <= hi; i++)
 		m_lut_palette[i] = ramdac_map(palette[i]);
+	if (maps_dirty)
+	{
+		for (int m = 0; m < 3; m++)
+		{
+			for (uint32_t i = 0; i < 0x10; i++)
+				m_lut_rgb4[m][i] = ramdac_map(rgb_map(m, convert_4bpp_bgr_to_24bpp_rgb(i)));
+			for (uint32_t i = 0; i < 0x100; i++)
+				m_lut_rgb8[m][i] = ramdac_map(rgb_map(m, convert_8bpp_bgr_to_24bpp_rgb(i)));
+			for (uint32_t i = 0; i < 0x1000; i++)
+				m_lut_rgb12[m][i] = ramdac_map(rgb_map(m, convert_12bpp_bgr_to_24bpp_rgb(i)));
+			const uint32_t *const map = palette + 0x1d00 + 0x100 * m;
+			for (uint32_t i = 0; i < 0x100; i++)
+			{
+				// each channel through its own map, then the RAMDAC LUT; OR-ed
+				m_lut_rgb24_r[m][i] = 0xff000000 | m_ramdac_lut_r[(uint8_t)(map[i] >> 16)];
+				m_lut_rgb24_g[m][i] = m_ramdac_lut_g[(uint8_t)(map[i] >> 8)];
+				m_lut_rgb24_b[m][i] = m_ramdac_lut_b[(uint8_t)map[i]];
+			}
+		}
+	}
 }
 
 #endif
+// MAME_SGI_XMAP_RGB_MAPS_FIX: in an RGB pixel mode the XMAP9 sends the
+// 24-bit colour with a tag naming RGB Map0, 1 or 2, and the CMAP looks each
+// channel up in its own 256-entry map at 0x1d00, 0x1e00 or 0x1f00 + value
+// (XMAP9 spec 4.2, CMAP pin descriptions). IRIX loads all three linear but
+// X DirectColor colormaps are loaded into them.
+uint32_t newport_base_device::rgb_map(int map, uint32_t rgb) const
+{
+	const uint32_t *const m = m_cmap[0]->palette_base() + 0x1d00 + 0x100 * map;
+	return (m[(uint8_t)(rgb >> 16)] & 0xff0000) | (m[(uint8_t)(rgb >> 8)] & 0x00ff00) | (m[(uint8_t)rgb] & 0x0000ff);
+}
+
 void newport_base_device::ramdac_remap(uint32_t *dest)
 {
 	uint32_t out = 0xff000000;

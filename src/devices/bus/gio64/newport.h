@@ -878,6 +878,7 @@ protected:
 	void lut_fold_update();
 	void lut_fold_invalidate() { m_lut_fold_dirty = true; }
 #endif
+	uint32_t rgb_map(int map, uint32_t rgb) const;
 #ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
 	// one DID run's display mode, decoded from its XMAP mode table entry
 	struct composite_mode
@@ -937,9 +938,14 @@ protected:
 	// derived from CMAP 0 and the LUTs, so not saved; rebuilt after a load
 	bool m_lut_fold_dirty = true;
 	uint32_t m_lut_palette[0x10000];    // CMAP 0 palette through the LUTs
-	uint32_t m_lut_rgb4[0x10];          // RGB Map0 conversions through the LUTs
-	uint32_t m_lut_rgb8[0x100];
-	uint32_t m_lut_rgb12[0x1000];
+	// MAME_SGI_XMAP_RGB_MAPS_FIX: RGB Map0-2 conversions through the CMAP's
+	// per-channel maps and the LUTs, [map][pixel]; 24bpp per channel
+	uint32_t m_lut_rgb4[3][0x10];
+	uint32_t m_lut_rgb8[3][0x100];
+	uint32_t m_lut_rgb12[3][0x1000];
+	uint32_t m_lut_rgb24_r[3][0x100];
+	uint32_t m_lut_rgb24_g[3][0x100];
+	uint32_t m_lut_rgb24_b[3][0x100];
 #endif
 
 	// Dirty-region tracking for screen_update() (see newport_dirty_rect).
