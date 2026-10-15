@@ -880,6 +880,8 @@ protected:
 	void lut_fold_invalidate() { m_lut_fold_dirty = true; }
 #endif
 	uint32_t rgb_map(int map, uint32_t rgb) const;
+	bool fastclear_active() const;
+	void update_draw_flags();
 #ifdef MAME_SGI_NEWPORT_SPAN_COMPOSITE
 	// one DID run's display mode, decoded from its XMAP mode table entry
 	struct composite_mode

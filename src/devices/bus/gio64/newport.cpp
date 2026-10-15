@@ -4407,6 +4407,12 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 	x -= 0x1000;
 	y -= 0x1000;
 
+	// MAME_SGI_CID_CHECK_FIX: with CID checking on, write only where the
+	// pixel's CID (CID planes, bits 1-0) is one CIDMATCH selects
+	const uint32_t cidmatch = (m_rex3.m_clip_mode >> 9) & 0xf;
+	if (cidmatch != 0xf && !BIT(cidmatch, m_rb2->cidaux(y)[x] & 3))
+		return;
+
 	// MAME_SGI_CI_COMPARE_FIX: in CI mode the same DRAWMODE1 bits are the
 	// colour compare of antialiased lines (A_LINE): the pixel is written if
 	// its index is less than (bit 12), equal to (bit 13) or greater than
@@ -5551,6 +5557,31 @@ void newport_base_device::iterate_shade()
 	}
 }
 
+// MAME_SGI_CID_CHECK_FIX: CID checking (REX3 spec 3.4: CLIPMODE CIDMATCH
+// not 1111) makes every framebuffer write conditional on the pixel's CID
+// plane code being one of those CIDMATCH selects, and turns FASTCLEAR off
+// (spec notes: the host loads COLORI as well as COLORVRAM because GL
+// cannot know whether the window system checks CIDs). The X server uses
+// it for GL windows whose visible region is too complex for the
+// screenmasks.
+bool newport_base_device::fastclear_active() const
+{
+	return BIT(m_rex3.m_draw_mode1, 17) && ((m_rex3.m_clip_mode >> 9) & 0xf) == 0xf;
+}
+
+void newport_base_device::update_draw_flags()
+{
+	const uint32_t mode1 = m_rex3.m_draw_mode1;
+	uint16_t draw_flags = BIT(mode1, 18) << 12;
+	draw_flags |= (fastclear_active() ? 1 : 0) << 11;
+	draw_flags |= BIT(mode1, 15) << 10;
+	draw_flags |= BIT(mode1,  5) << 9;
+	draw_flags |= (mode1 & 7) << 6;
+	draw_flags |= (mode1 & 0x18) << 1;
+	draw_flags |= (mode1 >> 28) & 0xf;
+	draw_flags_w(draw_flags);
+}
+
 uint32_t newport_base_device::get_default_color(uint32_t src)
 {
 #ifdef MAME_SGI_COLOR_SRC_DIAG
@@ -5564,13 +5595,13 @@ uint32_t newport_base_device::get_default_color(uint32_t src)
 			m_rex3.m_plane_depth);
 	}
 #endif
-	uint32_t color = BIT(m_rex3.m_draw_mode1, 17) ? m_rex3.m_color_vram : src;
+	uint32_t color = fastclear_active() ? m_rex3.m_color_vram : src;
 	// MAME_SGI_FASTCLEAR_RGB_FIX: in RGB mode COLORVRAM holds an 8-8-8 colour
 	// (OpenGL loads one at every depth, already rounded to the depth), which
 	// fast-clear converts by taking each channel's top bits: B1 G2 R1 at
 	// 4bpp, B2 G3 R3 at 8bpp, as the 12bpp case below
 	const uint32_t vram = m_rex3.m_color_vram;
-	if (BIT(m_rex3.m_draw_mode1, 17) && BIT(m_rex3.m_draw_mode1, 15) && m_rex3.m_plane_depth < 2)
+	if (fastclear_active() && BIT(m_rex3.m_draw_mode1, 15) && m_rex3.m_plane_depth < 2)
 	{
 		if (m_rex3.m_plane_depth == 0)
 			color = (BIT(vram, 23) << 3) | (((vram >> 14) & 3) << 1) | BIT(vram, 7);
@@ -5697,7 +5728,8 @@ bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t st
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const uint32_t mode1 = m_rex3.m_draw_mode1;
-	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || m_rex3.m_alpha_host || BIT(mode0, 18) || BIT(mode0, 23) || BIT(mode1, 18) || dx != 1)
+	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || m_rex3.m_alpha_host || BIT(mode0, 18) || BIT(mode0, 23) || BIT(mode1, 18) || dx != 1
+			|| ((m_rex3.m_clip_mode >> 9) & 0xf) != 0xf)	// MAME_SGI_CID_CHECK_FIX: per-pixel CID check
 		return false;
 	// the alpha function is applied per pixel (output_pixel)
 	if (((mode1 >> 12) & 7) != 7)
@@ -6108,7 +6140,7 @@ void newport_base_device::do_rex3_command()
 					const bool shade = BIT(mode0, 18);
 					const bool rgbmode = BIT(mode1, 15);
 					const bool opaque = BIT(mode0, 16) || BIT(mode0, 17);
-					const bool fastclear = BIT(mode1, 17);
+					const bool fastclear = fastclear_active();
 					const uint32_t pattern = BIT(mode0, 12) ? m_rex3.m_z_pattern : (BIT(mode0, 13) ? m_rex3.m_ls_pattern : 0xffffffff);
 
 					LOGMASKED(LOG_COMMANDS, "%04x, %04x to %04x, %04x = %08x\n", start_x, start_y, end_x, end_y, pattern);
@@ -6199,7 +6231,7 @@ void newport_base_device::do_rex3_command()
 					const bool shade = BIT(mode0, 18);
 					const bool rgbmode = BIT(mode1, 15);
 					const bool opaque = BIT(mode0, 16) || BIT(mode0, 17);
-					const bool fastclear = BIT(mode1, 17);
+					const bool fastclear = fastclear_active();
 					const uint32_t pattern = BIT(mode0, 12) ? m_rex3.m_z_pattern : (BIT(mode0, 13) ? m_rex3.m_ls_pattern : 0xffffffff);
 
 					uint32_t color = get_default_color(m_rex3.m_color_i);
@@ -6582,14 +6614,7 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 
 			m_rex3.m_host_shift = 64 - s_host_shifts[m_rex3.m_hostdepth];
 
-			uint16_t draw_flags = BIT(data32, 18) << 12;
-			draw_flags |= BIT(data32, 17) << 11;
-			draw_flags |= BIT(data32, 15) << 10;
-			draw_flags |= BIT(data32,  5) << 9;
-			draw_flags |= (data32 & 7) << 6;
-			draw_flags |= (data32 & 0x18) << 1;
-			draw_flags |= (data32 >> 28) & 0xf;
-			draw_flags_w(draw_flags);
+			update_draw_flags();
 		}
 		if (ACCESSING_BITS_0_31)
 		{
@@ -7291,6 +7316,7 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 			const uint32_t data32 = (uint32_t)(data >> 32);
 			LOGMASKED(LOG_REX3, "REX3 Clipping Mode Write: %08x\n", data32);
 			m_rex3.m_clip_mode = data32 & 0x1fff;
+			update_draw_flags();	// MAME_SGI_CID_CHECK_FIX: FASTCLEAR depends on CIDMATCH
 		}
 		if (ACCESSING_BITS_0_31)
 		{
