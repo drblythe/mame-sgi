@@ -676,6 +676,11 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		if (m_palette_idx < 0x2000)
 			set_pen_color(m_palette_idx, rgb_t((uint8_t)(data >> 24), (uint8_t)(data >> 16), (uint8_t)(data >> 8)));
 		LOGMASKED(LOG_CMAP, "Palette Entry %04x Write: %08x\n", m_palette_idx, data >> 8);
+		// MAME_SGI_CMAP_AUTOINC_FIX: completing an entry (the blue byte; this
+		// write carries all three) increments the address register, so a
+		// run of entries can follow one address write: the X server loads
+		// DirectColor maps (RGB Map1) that way
+		m_palette_idx++;
 		break;
 	case 0x03:
 		// Command register. The guest writes 7 before and 3 after each
