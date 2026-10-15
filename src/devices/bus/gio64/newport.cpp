@@ -4933,11 +4933,14 @@ void newport_base_device::do_fline(uint32_t color)
 // Their coverages come from the 16-entry AWEIGHT table (AWEIGHT1 bits 3-0
 // are entry 0, AWEIGHT0 bits 31-28 entry 15), indexed by the line's offset
 // from S's centre in sixteenths: T takes that entry and S its complement.
-// The coverage scales the alpha in RGB mode and replaces the low 4 bits of
-// the colour index in CI mode. ZPATTERN masks S and LSPATTERN masks T, one
-// bit per step, msb first. With ENDPTFILTER the first and last steps'
-// indices are scaled by how much of their column the line covers. A
-// LENGTH32 line draws 32 steps per GO and continues there on the next.
+// The coverage is the alpha in RGB mode (the alpha iterator is not used:
+// OpenGL leaves another primitive's alpha slope in place) and replaces the
+// low 4 bits of the colour index in CI mode. ZPATTERN masks S and LSPATTERN
+// masks T, one bit per step, msb first. With ENDPTFILTER a step holding an
+// endpoint has its coverages shifted right by 0 to 3 as the line covers 8 or
+// more, 4-7, 2-3 or 0-1 sixteenths of its column; a skipped end is not
+// filtered. A LENGTH32 line draws 32 steps per GO and continues there on the
+// next.
 void newport_base_device::do_aline()
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
@@ -4994,16 +4997,15 @@ void newport_base_device::do_aline()
 	const bool filter = BIT(mode0, 22);
 	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
 
-	auto pixel = [&] (int64_t c, int64_t r, int32_t index)
+	auto pixel = [&] (int64_t c, int64_t r, int32_t index, int shift)
 	{
-		const uint32_t weight = (table >> (4 * index)) & 0xf;
+		const uint32_t weight = ((table >> (4 * index)) & 0xf) >> shift;
 		int16_t px, py;
 		to_xy(c, r, px, py);
 		uint32_t color;
 		if (rgbmode)
 		{
-			color = get_rgb_color(px, py);
-			color = (color & 0x00ffffff) | ((((color >> 24) * weight + 7) / 15) << 24);
+			color = (get_rgb_color(px, py) & 0x00ffffff) | ((weight * 0x11) << 24);
 		}
 		else
 		{
@@ -5021,21 +5023,18 @@ void newport_base_device::do_aline()
 			continue;
 		const int64_t b = minor_at(col) - 8;
 		const int64_t row = b >> 4;
-		int32_t t_index = int32_t(b - row * 16);
-		int32_t s_index = 15 - t_index;
+		const int32_t t_index = int32_t(b - row * 16);
+		int shift = 0;
 		if (filter && (first || last))
 		{
-			const int64_t lo = first ? a1 : int64_t(col) * 16;
-			const int64_t hi = last ? a2 : int64_t(col) * 16 + 16;
-			const int32_t covered = int32_t(std::clamp<int64_t>(hi - lo, 0, 16));
-			t_index = t_index * covered / 16;
-			s_index = s_index * covered / 16;
+			const int32_t covered = (first ? 15 - int32_t(a1 & 15) : 15) + (last ? int32_t(a2 & 15) : 15) + 1 - 16;
+			shift = covered >= 8 ? 0 : covered >= 4 ? 1 : covered >= 2 ? 2 : 3;
 		}
 		const int bit = 31 - (i & 31);
 		if (!zmask || BIT(m_rex3.m_z_pattern, bit))
-			pixel(col, row, s_index);
+			pixel(col, row, 15 - t_index, shift);
 		if (!lsmask || BIT(m_rex3.m_ls_pattern, bit))
-			pixel(col, row + 1, t_index);
+			pixel(col, row + 1, t_index, shift);
 		if (shade)
 			iterate_shade();
 	}
