@@ -1734,12 +1734,14 @@ void rb2_device::set_flags(uint16_t data)
 			{ 0,  0 }, // None, 12bpp, Buffer 0/1
 			{ 0,  0 }, // None, 24bpp, Buffer 0/1 (not valid)
 		},
-		{   { 0,  0 }, // RGB/CI, 4bpp, Buffer 0/1
+		// MAME_SGI_4BPP_DB_FIX: a 4bpp buffer 1 is the upper nibble, as the
+		// display reads it
+		{   { 0,  4 }, // RGB/CI, 4bpp, Buffer 0/1
 			{ 0,  8 }, // RGB/CI, 8bpp, Buffer 0/1
 			{ 0, 12 }, // RGB/CI, 12bpp, Buffer 0/1
 			{ 0,  0 }, // RGB/CI, 24bpp, Buffer 0/1 (not valid)
 		},
-		{   { 0,  0 }, // RGBA, 4bpp, Buffer 0/1
+		{   { 0,  4 }, // RGBA, 4bpp, Buffer 0/1
 			{ 0,  8 }, // RGBA, 8bpp, Buffer 0/1
 			{ 0, 12 }, // RGBA, 12bpp, Buffer 0/1
 			{ 0,  0 }, // RGBA, 24bpp, Buffer 0/1 (not valid)
@@ -4345,7 +4347,25 @@ void newport_base_device::blend_pixel(uint32_t src)
 
 	switch (m_rex3.m_plane_depth)
 	{
-	case 0: // 4bpp (not supported)
+	case 0: // 4bpp
+		// MAME_SGI_4BPP_DB_FIX: 4bpp RGB is B1 G2 R1 (bit 3, bits 2-1, bit 0),
+		// as get_rgb_color() writes it
+		sb = (0xff * BIT(src, 3)) / 255.0f;
+		sg = (0x55 * ((src >> 1) & 3)) / 255.0f;
+		sr = (0xff * BIT(src, 0)) / 255.0f;
+
+		if (m_rex3.m_blend_back)
+		{
+			db = (uint8_t)(m_rex3.m_color_back >> 16) / 255.0f;
+			dg = (uint8_t)(m_rex3.m_color_back >>  8) / 255.0f;
+			dr = (uint8_t)(m_rex3.m_color_back >>  0) / 255.0f;
+		}
+		else
+		{
+			db = (0xff * BIT(dst, 3)) / 255.0f;
+			dg = (0x55 * ((dst >> 1) & 3)) / 255.0f;
+			dr = (0xff * BIT(dst, 0)) / 255.0f;
+		}
 		break;
 	case 1: // 8bpp
 		// MAME_SGI_BLEND_8BPP_FIX: 8bpp RGB is B2 G3 R3 (bits 7-6, 5-3, 2-0),
@@ -4486,7 +4506,8 @@ void newport_base_device::blend_pixel(uint32_t src)
 
 	switch (m_rex3.m_plane_depth)
 	{
-	case 0: // 4bpp (not supported)
+	case 0: // 4bpp (MAME_SGI_4BPP_DB_FIX)
+		write_pixel(((b_blend_i & 0x80) >> 4) | ((g_blend_i & 0xc0) >> 5) | ((r_blend_i & 0x80) >> 7));
 		break;
 	case 1: // 8bpp
 		write_pixel((b_blend_i & 0xc0) | ((g_blend_i & 0xe0) >> 2) | ((r_blend_i & 0xe0) >> 5));
@@ -5321,15 +5342,18 @@ uint64_t newport_base_device::do_pixel_word_read()
 	{
 		case 0: // 4bpp
 		{
-			const uint16_t max_width = doubleword ? 16 : 8;
+			// MAME_SGI_4BPP_DB_FIX: each host pixel is in an 8-bit field,
+			// right-aligned and zero-filled, as at 8bpp (and as the host
+			// write path unpacks it)
+			const uint16_t max_width = doubleword ? 8 : 4;
 			if (width > max_width)
 				width = max_width;
 
-			shift = 60;
+			shift = 56;
 			for (uint16_t i = 0; i < width; i++)
 			{
 				ret |= (uint64_t)(do_pixel_read() & 0x0000000f) << shift;
-				shift -= 4;
+				shift -= 8;
 			}
 			break;
 		}
