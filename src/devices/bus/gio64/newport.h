@@ -798,6 +798,7 @@ protected:
 
 	uint32_t get_default_color(uint32_t src);
 	uint32_t get_host_color();
+	static uint32_t swap_host_pixel(uint32_t v, uint8_t hostdepth);
 	uint32_t get_rgb_color(int16_t x, int16_t y);
 
 	uint32_t convert_4bpp_bgr_to_8bpp(uint8_t pix_in);

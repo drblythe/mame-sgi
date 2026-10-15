@@ -4072,7 +4072,12 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 uint32_t newport_base_device::get_host_color()
 {
 	static const uint32_t s_color_masks[4] = { 0xf, 0xff, 0xfff, 0xffffffff };
-	uint32_t color = (uint32_t)(m_rex3.m_host_dataport >> m_rex3.m_host_shift) & s_color_masks[m_rex3.m_hostdepth];
+	// MAME_SGI_SWAPENDIAN_FIX: SWAPENDIAN swaps the bytes of each short (12-bit)
+	// or long (32-bit) host pixel, before the depth conversion
+	uint32_t color = (uint32_t)(m_rex3.m_host_dataport >> m_rex3.m_host_shift);
+	if (BIT(m_rex3.m_draw_mode1, 11))
+		color = swap_host_pixel(color, m_rex3.m_hostdepth);
+	color &= s_color_masks[m_rex3.m_hostdepth];
 	if (m_rex3.m_rwpacked)
 	{
 		if ((m_rex3.m_rwdouble && m_rex3.m_host_shift > 0) || m_rex3.m_host_shift > 32)
@@ -4123,9 +4128,16 @@ uint32_t newport_base_device::get_host_color()
 		color = convert_24bpp_bgr_to_12bpp(color);
 		break;
 	}
-	if (BIT(m_rex3.m_draw_mode1, 11))
-		color = swapendian_int32(color);
 	return color;
+}
+
+uint32_t newport_base_device::swap_host_pixel(uint32_t v, uint8_t hostdepth)
+{
+	if (hostdepth == 3)
+		return swapendian_int32(v);
+	if (hostdepth == 2)
+		return ((v & 0xff) << 8) | ((v >> 8) & 0xff);
+	return v;
 }
 
 void newport_base_device::output_pixel(uint32_t color)
@@ -5257,6 +5269,8 @@ uint64_t newport_base_device::do_pixel_word_read()
 	const uint16_t x_start = (uint16_t)(m_rex3.m_xy_start_i >> 16);
 	const uint16_t x_end = (uint16_t)(m_rex3.m_xy_end_i >> 16);
 	const bool doubleword = BIT(m_rex3.m_draw_mode1, 10);
+	// MAME_SGI_SWAPENDIAN_FIX: short and long pixels are byte-swapped on reads too
+	const bool swap = BIT(m_rex3.m_draw_mode1, 11);
 
 	// MAME_SGI_REX3_READ_WIDTH_FIX: a read starting past XEND transfers a
 	// full word. XEND is often left behind the read position by the last
@@ -5308,7 +5322,7 @@ uint64_t newport_base_device::do_pixel_word_read()
 			shift = 48;
 			for (uint16_t i = 0; i < width; i++)
 			{
-				ret |= (uint64_t)(do_pixel_read() & 0x00000fff) << shift;
+				ret |= (uint64_t)(swap ? swap_host_pixel(do_pixel_read() & 0x00000fff, 2) : do_pixel_read() & 0x00000fff) << shift;
 				shift -= 16;
 			}
 			break;
@@ -5323,7 +5337,7 @@ uint64_t newport_base_device::do_pixel_word_read()
 			shift = 32;
 			for (uint16_t i = 0; i < width; i++)
 			{
-				ret |= (uint64_t)do_pixel_read() << shift;
+				ret |= (uint64_t)(swap ? swap_host_pixel(do_pixel_read(), 3) : do_pixel_read()) << shift;
 				shift -= 32;
 			}
 			break;
