@@ -6618,15 +6618,21 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		}
 		break;
 	case 0x0038/8:
+		// MAME_SGI_LS_SAVE_COUNT_FIX: LSRESTORE and LSSAVE move the repeat
+		// down counter too (LSMODE LSRCOUNT, bits 7-0, and its copy
+		// LSRCNTSAVE, bits 23-16), so each stroke of a wide stippled line
+		// starts the pattern at the same point
 		if (ACCESSING_BITS_32_63)
 		{
 			LOGMASKED(LOG_REX3, "REX3 Update LSPATTERN/LSRCOUNT\n");
 			m_rex3.m_ls_pattern = m_rex3.m_ls_pattern_saved;
+			m_rex3.m_ls_mode = (m_rex3.m_ls_mode & ~0xffu) | ((m_rex3.m_ls_mode >> 16) & 0xff);
 		}
 		if (ACCESSING_BITS_0_31)
 		{
 			LOGMASKED(LOG_REX3, "REX3 Update LSPATSAVE/LSRCNTSAVE\n");
 			m_rex3.m_ls_pattern_saved = m_rex3.m_ls_pattern;
+			m_rex3.m_ls_mode = (m_rex3.m_ls_mode & ~0xff0000u) | ((m_rex3.m_ls_mode & 0xff) << 16);
 		}
 		break;
 	case 0x0100/8:
