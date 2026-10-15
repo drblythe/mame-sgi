@@ -570,9 +570,11 @@ private:
 	uint32_t expand_to_all_lanes(uint32_t src);
 
 	void set_global_mask(uint32_t global_mask) { m_global_mask = global_mask; }
+	void update_write_mask();
 
 	uint32_t  m_global_mask;
 	uint32_t  m_write_mask;
+	uint32_t  m_write_mask_eff;	// m_write_mask in this model's pixel layout
 	bool      m_blend;
 	bool      m_fast_clear;
 	bool      m_rgbmode;

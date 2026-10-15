@@ -1370,11 +1370,14 @@ void rb2_device::device_start()
 
 	save_pointer(NAME(&m_rgbci[0]), BUFFER_SIZE);
 	save_pointer(NAME(&m_cidaux[0]), BUFFER_SIZE);
+
+	machine().save().register_postload(save_prepost_delegate(FUNC(rb2_device::update_write_mask), this));
 }
 
 void rb2_device::device_reset()
 {
 	m_write_mask = 0;
+	m_write_mask_eff = 0;
 	m_blend = false;
 	m_fast_clear = false;
 	m_rgbmode = false;
@@ -1515,9 +1518,9 @@ ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t 
 #ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
 	static const uint32_t s_plane_bits[8] = {
 		0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00ffff00, 0x000000cc, 0x00000033, 0xffffffff };
-	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask & s_plane_bits[m_plane_enable & 7];
 #else
-	const uint32_t write_mask = m_write_mask & m_global_mask;
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask;
 #endif
 	// VRAM bits outside the global mask are never written and stay zero, so
 	// a write mask covering the whole global mask needs no read of the old
@@ -1620,9 +1623,9 @@ void rb2_device::store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t
 #ifdef MAME_SGI_REX3_PLANE_WRITE_MASK
 	static const uint32_t s_plane_bits[8] = {
 		0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00ffff00, 0x000000cc, 0x00000033, 0xffffffff };
-	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask & s_plane_bits[m_plane_enable & 7];
 #else
-	const uint32_t write_mask = m_write_mask & m_global_mask;
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask;
 #endif
 	uint32_t *const row = &m_dest_buf[y * (1280 + 64)];
 	const bool direct = write_mask == m_global_mask;
@@ -1712,9 +1715,73 @@ void rb2_device::store_row(int y, int x0, int x1, const uint32_t fg[4], uint32_t
 }
 #endif
 
+// MAME_SGI_WRMASK_LAYOUT_FIX: the write mask is in the framebuffer's own bit
+// layout (REX3 spec table 22), which interleaves the RGB bits: 24bpp holds
+// B0 R0 G0 B1 R1 G1 .. B7 R7 G7 from bit 23 down, each 12bpp buffer
+// B4 R4 G4 .. B7 R7 G7 from its bit 11 down, 8bpp R5 G5 B6 R6 G6 B7 R7 G7
+// and each 4bpp buffer G6 B7 R7 G7. Software builds its masks that way
+// (OpenGL's glColorMask(1,0,1,1) at 24bpp is 0xdb6db6), while this model
+// keeps RGB pixels as packed R, G, B fields, so RGB-mode masks are moved
+// into that layout. Colour-index and auxiliary plane masks are as is.
+namespace {
+struct rb2_wrmask_tables
+{
+	// [depth][byte of the mask][byte value] -> the bits in this model's layout
+	uint32_t t[4][3][256];
+	rb2_wrmask_tables()
+	{
+		uint8_t map[4][24];	// framebuffer bit -> this model's bit
+		for (int n = 0; n < 8; n++)	// 24bpp: colour bit n
+		{
+			map[3][23 - 3 * n] = 16 + n;	// blue
+			map[3][22 - 3 * n] = n;		// red
+			map[3][21 - 3 * n] = 8 + n;	// green
+		}
+		for (int b = 0; b < 24; b += 12)	// 12bpp: per buffer, bits 4-7
+			for (int j = 0; j < 4; j++)
+			{
+				map[2][b + 11 - 3 * j] = b + 8 + j;	// blue
+				map[2][b + 10 - 3 * j] = b + j;		// red
+				map[2][b + 9 - 3 * j] = b + 4 + j;	// green
+			}
+		static const uint8_t s_8bpp[8] = { 5, 2, 7, 4, 1, 6, 3, 0 };	// G7 R7 B7 G6 R6 B6 G5 R5
+		static const uint8_t s_4bpp[4] = { 2, 0, 3, 1 };				// G7 R7 B7 G6
+		for (int i = 0; i < 24; i++)
+		{
+			map[1][i] = (i & ~7) + s_8bpp[i & 7];
+			map[0][i] = (i & ~3) + s_4bpp[i & 3];
+		}
+		for (int d = 0; d < 4; d++)
+			for (int k = 0; k < 3; k++)
+				for (int v = 0; v < 256; v++)
+				{
+					uint32_t m = 0;
+					for (int i = 0; i < 8; i++)
+						if (BIT(v, i))
+							m |= 1u << map[d][8 * k + i];
+					t[d][k][v] = m;
+				}
+	}
+};
+const rb2_wrmask_tables s_rb2_wrmask;
+} // anonymous namespace
+
+void rb2_device::update_write_mask()
+{
+	const uint32_t m = m_write_mask;
+	if (m_rgbmode && m_plane_enable == 1 && (m & 0xffffff) != 0xffffff)
+	{
+		const auto &t = s_rb2_wrmask.t[m_draw_depth & 3];
+		m_write_mask_eff = t[0][m & 0xff] | t[1][(m >> 8) & 0xff] | t[2][(m >> 16) & 0xff] | (m & 0xff000000);
+	}
+	else
+		m_write_mask_eff = m;
+}
+
 void rb2_device::set_write_mask(uint32_t data)
 {
 	m_write_mask = data;
+	update_write_mask();
 }
 
 void rb2_device::set_flags(uint16_t data)
@@ -1788,6 +1855,7 @@ void rb2_device::set_flags(uint16_t data)
 			m_dest_buf = &m_cidaux[0];
 			break;
 	}
+	update_write_mask();
 }
 
 void rb2_device::set_address(uint32_t address)
@@ -1854,9 +1922,9 @@ void rb2_device::store_pixel(uint32_t value)
 		0x00000033, // CID, buffers 0/1
 		0xffffffff, // invalid
 	};
-	const uint32_t write_mask = m_write_mask & m_global_mask & s_plane_bits[m_plane_enable & 7];
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask & s_plane_bits[m_plane_enable & 7];
 #else
-	const uint32_t write_mask = m_write_mask & m_global_mask;
+	const uint32_t write_mask = m_write_mask_eff & m_global_mask;
 #endif
 	*m_buf_ptr &= ~write_mask;
 	*m_buf_ptr |= value & write_mask;
