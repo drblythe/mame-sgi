@@ -5649,7 +5649,7 @@ bool newport_base_device::fast_draw(uint8_t adrmode, int16_t start_x, int16_t st
 {
 	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const uint32_t mode1 = m_rex3.m_draw_mode1;
-	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || m_rex3.m_alpha_host || BIT(mode0, 18) || BIT(mode1, 18) || dx != 1)
+	if (m_fast_draw_disabled || m_pixel_write_suppress || m_rex3.m_color_host || m_rex3.m_alpha_host || BIT(mode0, 18) || BIT(mode0, 23) || BIT(mode1, 18) || dx != 1)
 		return false;
 	// the alpha function is applied per pixel (output_pixel)
 	if (((mode1 >> 12) & 7) != 7)
@@ -6208,9 +6208,12 @@ void newport_base_device::do_rex3_command()
 							m_rex3.m_curr_color_green = m_rex3.m_color_green;
 							m_rex3.m_curr_color_blue = m_rex3.m_color_blue;
 							start_x = m_rex3.m_x_save;
-							start_y += dy;
+							// MAME_SGI_YSTRIDE_FIX: DRAWMODE0 YSTRIDE (bit 23) steps two
+							// rows at the end of a block row (video fields); the block
+							// then ends when Y passes YEND rather than meets it
+							start_y += BIT(mode0, 23) ? 2 * dy : dy;
 						}
-					} while (start_y != end_y && stop_on_y);
+					} while ((BIT(mode0, 23) ? (dy > 0 ? start_y < end_y : start_y > end_y) : start_y != end_y) && stop_on_y);
 
 					write_x_start(start_x << 11);
 					write_y_start(start_y << 11);
