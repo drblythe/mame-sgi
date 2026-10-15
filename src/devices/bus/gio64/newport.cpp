@@ -4521,6 +4521,44 @@ void newport_base_device::blend_pixel(uint32_t src)
 	}
 }
 
+// MAME_SGI_CI_DITHER_FIX: colour-index rounding and dithering. The 4-bit
+// fraction below the index (CI iterator, 12.9 at 12bpp, 12.11 otherwise)
+// adds 1 if it is above the dither matrix entry with DITHER on, or if its
+// msb is set with DITHER off. The fraction is clamped first: the largest
+// index never overflows.
+static const uint8_t s_dither_matrix[4][4] = { { 0, 12, 3, 15 },{ 8, 4, 11, 7 },{ 2, 14, 1, 13 },{ 10, 6, 9, 5 } };
+
+uint32_t newport_base_device::ci_max() const
+{
+	return m_rex3.m_plane_depth == 0 ? 0xf : m_rex3.m_plane_depth == 1 ? 0xff : 0xfff;
+}
+
+uint32_t newport_base_device::ci_round_dither(uint32_t iter, int16_t x, int16_t y) const
+{
+	const int fbits = m_rex3.m_plane_depth == 2 ? 9 : 11;
+	uint32_t ci = iter >> fbits;
+	const uint32_t frac = (iter >> (fbits - 4)) & 0xf;
+	if ((ci & ci_max()) == ci_max())
+		return ci;
+	if (BIT(m_rex3.m_draw_mode1, 16) ? frac > s_dither_matrix[x & 3][y & 3] : BIT(frac, 3))
+		ci++;
+	return ci;
+}
+
+// the same for antialiased CI (A_LINE): the coverage replaces the index's
+// 4 lsbs, which serve as the fraction instead, and the increment is 0x10;
+// 4-bit antialiased pixels are neither rounded nor dithered
+uint32_t newport_base_device::ci_aa_round_dither(uint32_t ci, uint32_t weight, int16_t x, int16_t y) const
+{
+	const uint32_t frac = ci & 0xf;
+	uint32_t d = (ci & ~0xfu) | weight;
+	if (m_rex3.m_plane_depth == 0 || ((ci | 0xf) & ci_max()) == ci_max())
+		return d;
+	if (BIT(m_rex3.m_draw_mode1, 16) ? frac > s_dither_matrix[x & 3][y & 3] : BIT(frac, 3))
+		d += 0x10;
+	return d;
+}
+
 uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 {
 	static const uint8_t s_bayer[4][4] = { { 0, 12, 3, 15 },{ 8, 4, 11, 7 },{ 2, 14, 1, 13 },{ 10, 6, 9, 5 } };
@@ -4572,8 +4610,7 @@ uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 		// MAME_SGI_CI_SHADE_FIX: colour index: the integer part of the
 		// red/CI iterator, a 12.9 fixed-point value at 12bpp and 12.11
 		// otherwise (as the Red/CI register write decodes it)
-		const uint32_t ci = m_rex3.m_curr_color_red >> (m_rex3.m_plane_depth == 2 ? 9 : 11);
-		return get_default_color(ci);
+		return get_default_color(ci_round_dither(m_rex3.m_curr_color_red, x, y));
 	}
 
 	if (BIT(m_rex3.m_draw_mode1, 16)) // Dithering
@@ -5079,7 +5116,7 @@ void newport_base_device::do_aline()
 		else
 		{
 			const uint32_t ci = shade ? m_rex3.m_curr_color_red >> (m_rex3.m_plane_depth == 2 ? 9 : 11) : m_rex3.m_color_i;
-			color = get_default_color((ci & ~0xfu) | weight);
+			color = get_default_color(ci_aa_round_dither(ci, weight, px, py));
 		}
 		output_pixel(px, py, color);
 	};

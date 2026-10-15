@@ -803,6 +803,9 @@ protected:
 	uint32_t draw_color(int16_t x, int16_t y, uint32_t flat, bool dda);
 	static uint32_t swap_host_pixel(uint32_t v, uint8_t hostdepth);
 	uint32_t get_rgb_color(int16_t x, int16_t y);
+	uint32_t ci_max() const;
+	uint32_t ci_round_dither(uint32_t iter, int16_t x, int16_t y) const;
+	uint32_t ci_aa_round_dither(uint32_t ci, uint32_t weight, int16_t x, int16_t y) const;
 
 	uint32_t convert_4bpp_bgr_to_8bpp(uint8_t pix_in);
 	uint32_t convert_4bpp_bgr_to_12bpp(uint8_t pix_in);
