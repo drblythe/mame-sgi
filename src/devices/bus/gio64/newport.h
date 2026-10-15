@@ -795,7 +795,8 @@ protected:
 #endif
 	void output_pixel(uint32_t color);
 	void output_pixel(int16_t x, int16_t y, uint32_t color);
-	void blend_pixel(uint32_t src);
+	void blend_pixel(uint32_t src, int16_t x, int16_t y);
+	uint32_t rgb_to_depth(uint32_t red, uint32_t green, uint32_t blue, uint32_t alpha, int16_t x, int16_t y) const;
 
 	void iterate_shade();
 

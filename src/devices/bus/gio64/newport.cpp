@@ -4198,6 +4198,17 @@ uint32_t newport_base_device::get_host_color()
 	uint32_t color = next_host_pixel();
 	if (!BIT(m_rex3.m_draw_mode1, 15))
 		return color & ci_max();
+	if (BIT(m_rex3.m_draw_mode1, 18))
+	{
+		// MAME_SGI_BLEND_PRECISION_FIX: the blender takes 8-8-8-8
+		switch (m_rex3.m_hostdepth)
+		{
+		case 0: return convert_4bpp_bgr_to_24bpp((uint8_t)color);
+		case 1: return convert_8bpp_bgr_to_24bpp((uint8_t)color);
+		case 2: return convert_12bpp_bgr_to_24bpp((uint16_t)color);
+		default: return color;
+		}
+	}
 	uint8_t convert_index = (m_rex3.m_hostdepth << 2) | m_rex3.m_plane_depth;
 	switch (convert_index & 15)
 	{
@@ -4370,6 +4381,7 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 			return;
 	}
 
+	const int16_t wx = x, wy = y;	// window-relative, for the dither after blending
 	x += m_rex3.m_x_window;
 	y += m_rex3.m_y_window;
 	x -= 0x1000;
@@ -4403,207 +4415,100 @@ void newport_base_device::output_pixel(int16_t x, int16_t y, uint32_t color)
 			return;
 	}
 
-	if (BIT(m_rex3.m_draw_mode1, 18))
-		blend_pixel(color);
+	if (BIT(m_rex3.m_draw_mode1, 18) && BIT(m_rex3.m_draw_mode1, 15))
+		blend_pixel(color, wx, wy);
 	else
 		write_pixel(color);
 }
 
-void newport_base_device::blend_pixel(uint32_t src)
+// MAME_SGI_BLEND_PRECISION_FIX: the REX3 blender (spec 3.8.5, 5.4.3.1).
+// It takes the 8-bit source colour before rounding or dithering (the
+// source pipeline passes 8-8-8-8 when BLEND is set) and the destination
+// pixel widened to 8 bits per channel by bit replication (or COLORBACK),
+// and computes Fs*Cs + Fd*Cd as A + B + C*(D +/- E) with one multiplier
+// (table 28): C, the factor, is normalised as (v + msb) / 256, the
+// product is floored, the sum clamped to 0-255. The result is then rounded
+// or dithered to the pixel depth like any other colour.
+namespace {
+// term selectors: 0 zero, 1 source colour, 2 destination colour, 3 source alpha
+struct rex3_blend_terms { uint8_t a, b, c, cneg, d, e, eneg; };
+const rex3_blend_terms s_blend_terms[6][6] = {
+	{ { 0,0,0,0,0,0,0 }, { 0,2,0,0,0,0,0 }, { 0,0,1,0,0,2,0 }, { 0,2,1,0,0,2,1 }, { 0,0,3,0,0,2,0 }, { 0,2,3,0,0,2,1 } },
+	{ { 1,0,0,0,0,0,0 }, { 1,2,0,0,0,0,0 }, { 1,0,1,0,0,2,0 }, { 1,2,1,0,0,2,1 }, { 1,0,3,0,0,2,0 }, { 1,2,3,0,0,2,1 } },
+	{ { 0,0,2,0,0,1,0 }, { 0,2,2,0,0,1,0 }, { 0,0,2,0,1,1,0 }, { 0,2,0,0,0,0,0 }, { 0,0,2,0,1,3,0 }, { 0,2,2,0,1,3,1 } },
+	{ { 1,0,2,1,0,1,0 }, { 1,2,2,1,0,1,0 }, { 1,0,0,0,0,0,0 }, { 1,2,2,1,1,1,0 }, { 1,0,2,1,1,3,1 }, { 1,2,2,1,1,3,0 } },
+	{ { 0,0,3,0,1,0,0 }, { 0,2,3,0,1,0,0 }, { 0,0,1,0,3,2,0 }, { 0,2,1,0,3,2,1 }, { 0,0,3,0,1,2,0 }, { 0,2,3,0,1,2,1 } },
+	{ { 1,0,3,1,1,0,0 }, { 1,2,3,1,1,0,0 }, { 1,0,1,1,3,2,1 }, { 1,2,1,1,3,2,0 }, { 1,0,3,1,1,2,1 }, { 1,2,3,1,1,2,0 } },
+};
+
+inline uint32_t blend_widen(uint32_t v, int n)
 {
-	const uint32_t dst = read_pixel();
-
-	float sa = ((src >> 24) & 0xff) / 255.0f;
-	float sb = 0.0f;
-	float sg = 0.0f;
-	float sr = 0.0f;
-
-	float db = 0.0f;
-	float dg = 0.0f;
-	float dr = 0.0f;
-
-	float sbb = 0.0f;
-	float sgb = 0.0f;
-	float srb = 0.0f;
-
-	float dbb = 0.0f;
-	float dgb = 0.0f;
-	float drb = 0.0f;
-
-	switch (m_rex3.m_plane_depth)
+	switch (n)
 	{
-	case 0: // 4bpp
-		// MAME_SGI_4BPP_DB_FIX: 4bpp RGB is B1 G2 R1 (bit 3, bits 2-1, bit 0),
-		// as get_rgb_color() writes it
-		sb = (0xff * BIT(src, 3)) / 255.0f;
-		sg = (0x55 * ((src >> 1) & 3)) / 255.0f;
-		sr = (0xff * BIT(src, 0)) / 255.0f;
+	case 1: return v ? 0xff : 0;
+	case 2: return v * 0x55;
+	case 3: return (v << 5) | (v << 2) | (v >> 1);
+	case 4: return v * 0x11;
+	default: return v;
+	}
+}
+} // anonymous namespace
 
-		if (m_rex3.m_blend_back)
+void newport_base_device::blend_pixel(uint32_t src, int16_t x, int16_t y)
+{
+	uint32_t d[3];	// destination r, g, b, 8 bits each
+	if (m_rex3.m_blend_back)
+	{
+		const uint32_t back = m_rex3.m_color_back;
+		d[0] = back & 0xff;
+		d[1] = (back >> 8) & 0xff;
+		d[2] = (back >> 16) & 0xff;
+	}
+	else
+	{
+		const uint32_t dst = read_pixel();
+		switch (m_rex3.m_plane_depth)
 		{
-			db = (uint8_t)(m_rex3.m_color_back >> 16) / 255.0f;
-			dg = (uint8_t)(m_rex3.m_color_back >>  8) / 255.0f;
-			dr = (uint8_t)(m_rex3.m_color_back >>  0) / 255.0f;
+		case 0: // 4bpp: B1 G2 R1
+			d[0] = blend_widen(BIT(dst, 0), 1);
+			d[1] = blend_widen((dst >> 1) & 3, 2);
+			d[2] = blend_widen(BIT(dst, 3), 1);
+			break;
+		case 1: // 8bpp: B2 G3 R3
+			d[0] = blend_widen(dst & 7, 3);
+			d[1] = blend_widen((dst >> 3) & 7, 3);
+			d[2] = blend_widen((dst >> 6) & 3, 2);
+			break;
+		case 2: // 12bpp: B4 G4 R4
+			d[0] = blend_widen(dst & 0xf, 4);
+			d[1] = blend_widen((dst >> 4) & 0xf, 4);
+			d[2] = blend_widen((dst >> 8) & 0xf, 4);
+			break;
+		default: // 24bpp
+			d[0] = dst & 0xff;
+			d[1] = (dst >> 8) & 0xff;
+			d[2] = (dst >> 16) & 0xff;
+			break;
 		}
-		else
-		{
-			db = (0xff * BIT(dst, 3)) / 255.0f;
-			dg = (0x55 * ((dst >> 1) & 3)) / 255.0f;
-			dr = (0xff * BIT(dst, 0)) / 255.0f;
-		}
-		break;
-	case 1: // 8bpp
-		// MAME_SGI_BLEND_8BPP_FIX: 8bpp RGB is B2 G3 R3 (bits 7-6, 5-3, 2-0),
-		// for the source and the destination alike, normalized like the
-		// other depths
-		sb = ((0xaa * BIT(src, 7)) | (0x55 * BIT(src, 6))) / 255.0f;
-		sg = ((0x92 * BIT(src, 5)) | (0x49 * BIT(src, 4)) | (0x24 * BIT(src, 3))) / 255.0f;
-		sr = ((0x92 * BIT(src, 2)) | (0x49 * BIT(src, 1)) | (0x24 * BIT(src, 0))) / 255.0f;
-
-		if (m_rex3.m_blend_back)
-		{
-			db = (uint8_t)(m_rex3.m_color_back >> 16) / 255.0f;
-			dg = (uint8_t)(m_rex3.m_color_back >>  8) / 255.0f;
-			dr = (uint8_t)(m_rex3.m_color_back >>  0) / 255.0f;
-		}
-		else
-		{
-			db = ((0xaa * BIT(dst, 7)) | (0x55 * BIT(dst, 6))) / 255.0f;
-			dg = ((0x92 * BIT(dst, 5)) | (0x49 * BIT(dst, 4)) | (0x24 * BIT(dst, 3))) / 255.0f;
-			dr = ((0x92 * BIT(dst, 2)) | (0x49 * BIT(dst, 1)) | (0x24 * BIT(dst, 0))) / 255.0f;
-		}
-		break;
-	case 2: // 12bpp
-		sb = (((src >> 8) & 15) * 0x11) / 255.0f;
-		sg = (((src >> 4) & 15) * 0x11) / 255.0f;
-		sr = (((src >> 0) & 15) * 0x11) / 255.0f;
-
-		if (m_rex3.m_blend_back)
-		{
-			db = (uint8_t)(m_rex3.m_color_back >> 16) / 255.0f;
-			dg = (uint8_t)(m_rex3.m_color_back >>  8) / 255.0f;
-			dr = (uint8_t)(m_rex3.m_color_back >>  0) / 255.0f;
-		}
-		else
-		{
-			const uint32_t dstc = dst & 0xfff;
-			db = (((dstc >> 8) & 15) * 0x11) / 255.0f;
-			dg = (((dstc >> 4) & 15) * 0x11) / 255.0f;
-			dr = (((dstc >> 0) & 15) * 0x11) / 255.0f;
-		}
-		break;
-	case 3: // 24bpp
-		sa = (uint8_t)(src >> 24) / 255.0f;
-		sb = (uint8_t)(src >> 16) / 255.0f;
-		sg = (uint8_t)(src >>  8) / 255.0f;
-		sr = (uint8_t)(src >>  0) / 255.0f;
-
-		if (m_rex3.m_blend_back)
-		{
-			db = (uint8_t)(m_rex3.m_color_back >> 16) / 255.0f;
-			dg = (uint8_t)(m_rex3.m_color_back >>  8) / 255.0f;
-			dr = (uint8_t)(m_rex3.m_color_back >>  0) / 255.0f;
-		}
-		else
-		{
-			const uint32_t dstc = dst;
-			db = (uint8_t)(dstc >> 16) / 255.0f;
-			dg = (uint8_t)(dstc >>  8) / 255.0f;
-			dr = (uint8_t)(dstc >>  0) / 255.0f;
-		}
-		break;
 	}
 
-	switch (m_rex3.m_sfactor)
+	const rex3_blend_terms none = { 0,0,0,0,0,0,0 };
+	const rex3_blend_terms &t = (m_rex3.m_sfactor < 6 && m_rex3.m_dfactor < 6) ? s_blend_terms[m_rex3.m_sfactor][m_rex3.m_dfactor] : none;
+	const int32_t alpha = (src >> 24) & 0xff;
+	uint32_t out[3];
+	for (int k = 0; k < 3; k++)
 	{
-	case 0: // 0
-	default:
-		break;
-	case 1: // 1
-		sbb = sb;
-		sgb = sg;
-		srb = sr;
-		break;
-	case 2: // dstc
-		sbb = sb * db;
-		sgb = sg * dg;
-		srb = sr * dr;
-		break;
-	case 3: // 1 - dstc
-		sbb = sb * (1.0f - db);
-		sgb = sg * (1.0f - dg);
-		srb = sr * (1.0f - dr);
-		break;
-	// MAME_SGI_BLEND_SFACTOR_FIX: source alpha applies whatever DRAWMODE1
-	// bit 27 says, as for DFACTOR: IRIX's OpenGL leaves bit 27 clear for
-	// GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
-	case 4: // srca
-		sbb = sb * sa;
-		sgb = sg * sa;
-		srb = sr * sa;
-		break;
-	case 5: // 1 - srca
-		sbb = sb * (1.0f - sa);
-		sgb = sg * (1.0f - sa);
-		srb = sr * (1.0f - sa);
-		break;
+		const int32_t v[4] = { 0, int32_t((src >> (8 * k)) & 0xff), int32_t(d[k]), alpha };
+		const int32_t c = v[t.c] + (v[t.c] >> 7);
+		const int32_t de = v[t.d] + (t.eneg ? -v[t.e] : v[t.e]);
+		const int32_t r = v[t.a] + v[t.b] + (((t.cneg ? -c : c) * de) >> 8);
+		out[k] = r < 0 ? 0 : r > 255 ? 255 : r;
 	}
 
-	switch (m_rex3.m_dfactor)
-	{
-	case 0: // 0
-	default:
-		break;
-	case 1: // 1
-		dbb = db;
-		dgb = dg;
-		drb = dr;
-		break;
-	case 2: // srcc
-		dbb = db * sb;
-		dgb = dg * sg;
-		drb = dr * sr;
-		break;
-	case 3: // 1 - srcc
-		dbb = db * (1.0f - sb);
-		dgb = dg * (1.0f - sg);
-		drb = dr * (1.0f - sr);
-		break;
-	case 4: // srca
-		dbb = db * sa;
-		dgb = dg * sa;
-		drb = dr * sa;
-		break;
-	case 5: // 1 - srca
-		dbb = db * (1.0f - sa);
-		dgb = dg * (1.0f - sa);
-		drb = dr * (1.0f - sa);
-		break;
-	}
-
-	const float b_blend = sbb + dbb;
-	const float g_blend = sgb + dgb;
-	const float r_blend = srb + drb;
-
-	const uint8_t b_blend_i = b_blend > 1.0f ? 255 : (b_blend < 0.0f ? 0 : (uint8_t)(b_blend * 255.0f));
-	const uint8_t g_blend_i = g_blend > 1.0f ? 255 : (g_blend < 0.0f ? 0 : (uint8_t)(g_blend * 255.0f));
-	const uint8_t r_blend_i = r_blend > 1.0f ? 255 : (r_blend < 0.0f ? 0 : (uint8_t)(r_blend * 255.0f));
-
-	switch (m_rex3.m_plane_depth)
-	{
-	case 0: // 4bpp (MAME_SGI_4BPP_DB_FIX)
-		write_pixel(((b_blend_i & 0x80) >> 4) | ((g_blend_i & 0xc0) >> 5) | ((r_blend_i & 0x80) >> 7));
-		break;
-	case 1: // 8bpp
-		write_pixel((b_blend_i & 0xc0) | ((g_blend_i & 0xe0) >> 2) | ((r_blend_i & 0xe0) >> 5));
-		break;
-	case 2: // 12bpp
-		write_pixel(((b_blend_i & 0xf0) << 4) | (g_blend_i & 0xf0) | ((r_blend_i & 0xf0) >> 4));
-		break;
-	case 3: // 24bpp
-		write_pixel((b_blend_i << 16) | (g_blend_i << 8) | r_blend_i);
-		break;
-	}
+	if (m_rex3.m_plane_depth == 3)
+		write_pixel((out[2] << 16) | (out[1] << 8) | out[0]);
+	else
+		write_pixel(rgb_to_depth(out[0], out[1], out[2], 0, x, y));
 }
 
 // MAME_SGI_CI_DITHER_FIX: colour-index rounding and dithering. The 4-bit
@@ -4646,8 +4551,6 @@ uint32_t newport_base_device::ci_aa_round_dither(uint32_t ci, uint32_t weight, i
 
 uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 {
-	static const uint8_t s_bayer[4][4] = { { 0, 12, 3, 15 },{ 8, 4, 11, 7 },{ 2, 14, 1, 13 },{ 10, 6, 9, 5 } };
-
 	uint32_t red = ((m_rex3.m_curr_color_red >> 11) & 0x1ff);
 	uint32_t green = ((m_rex3.m_curr_color_green >> 11) & 0x1ff);
 	uint32_t blue = ((m_rex3.m_curr_color_blue >> 11) & 0x1ff);
@@ -4697,6 +4600,19 @@ uint32_t newport_base_device::get_rgb_color(int16_t x, int16_t y)
 		// otherwise (as the Red/CI register write decodes it)
 		return get_default_color(ci_round_dither(m_rex3.m_curr_color_red, x, y));
 	}
+
+	// MAME_SGI_BLEND_PRECISION_FIX: the blender takes the 8-bit colour; it
+	// rounds or dithers its own result
+	if (BIT(m_rex3.m_draw_mode1, 18))
+		return alpha | (blue << 16) | (green << 8) | red;
+	return rgb_to_depth(red, green, blue, alpha, x, y);
+}
+
+// an RGB colour (8 bits per channel, alpha already in bits 31-24) rounded
+// or dithered (DRAWMODE1 DITHER) to the pixel depth
+uint32_t newport_base_device::rgb_to_depth(uint32_t red, uint32_t green, uint32_t blue, uint32_t alpha, int16_t x, int16_t y) const
+{
+	static const uint8_t s_bayer[4][4] = { { 0, 12, 3, 15 },{ 8, 4, 11, 7 },{ 2, 14, 1, 13 },{ 10, 6, 9, 5 } };
 
 	if (BIT(m_rex3.m_draw_mode1, 16)) // Dithering
 	{
