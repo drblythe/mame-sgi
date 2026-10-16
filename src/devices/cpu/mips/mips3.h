@@ -1571,6 +1571,7 @@ private:
 		uint8_t          checkints;                  /* need to check interrupts before next instruction */
 		uint8_t          checksoftints;              /* need to check software interrupts before next instruction */
 		uml::code_label  labelnum;                   /* index for local labels */
+		bool             cop1_checked;               /* COP1 usability tested earlier in this sequence */
 	};
 
 	void static_generate_entry_point(drcuml_block &block, int &label);
@@ -1705,7 +1706,7 @@ private:
 	bool generate_cop1x(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 
 	void check_cop0_access(drcuml_block &block);
-	void check_cop1_access(drcuml_block &block);
+	void check_cop1_access(drcuml_block &block, compiler_state &compiler);
 	void generate_badcop(drcuml_block &block, const int cop);
 
 	void log_add_disasm_comment(drcuml_block &block, uint32_t pc, uint32_t op);

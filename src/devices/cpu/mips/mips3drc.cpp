@@ -37,6 +37,13 @@
 // disappears when re-enabled). Re-enabled.
 #define MAME_DRC_BUGFIXES
 
+// MAME_SGI_COP1_CHECK_ONCE: emit the STRICT_COP1 usability test (Status
+// CU1) once per sequence instead of before every FP instruction; see
+// check_cop1_access(). 0 restores the per-instruction test.
+#ifndef MAME_SGI_COP1_CHECK_ONCE
+#define MAME_SGI_COP1_CHECK_ONCE 1
+#endif
+
 // Own sub-macro (2026-09-11) for the null-seqlast fallback's reporting
 // only - the fallback itself stays unconditional under MAME_DRC_BUGFIXES
 // above regardless of this. See the fallback's own comment in
@@ -3445,6 +3452,7 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				}
 
 				/* iterate over instructions in the sequence and compile them */
+				compiler.cop1_checked = false;
 				for (curdesc = seqhead; curdesc != seqlast->next(); curdesc = curdesc->next())
 				{
 #if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
@@ -9225,6 +9233,10 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 		// otherwise, unless this is a virtual no-op, it's a regular instruction
 		// compile the instruction
 		bool const opcode_result = generate_opcode(block, compiler, desc);
+		// MAME_SGI_COP1_CHECK_ONCE: a COP0 instruction (MTC0 to Status, ERET)
+		// or one compiled as a C call can change Status CU1
+		if ((desc->opptr >> 26) == 0x10 || !opcode_result)
+			compiler.cop1_checked = false;
 #ifdef MAME_SGI_LWC1_DELAYSLOT_PROBE
 		if (desc->pc == MAME_SGI_LWC1_DELAYSLOT_PROBE_PC)
 		{
@@ -10185,7 +10197,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 					desc->pc, RTREG, RSREG, m_core->mode, m_core->dispatch_mode, RTREG);
 			}
 #endif
-			check_cop1_access(block);
+			check_cop1_access(block, compiler);
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);        // add     i0,<rsreg>,SIMMVAL
 			UML_CALLH(block, *m_read32[m_core->mode >> 1]); // callh   read32
 			UML_MOV(block, FPR32(RTREG), I0);           // mov     <cpr1_rt>,i0
@@ -10202,7 +10214,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			return true;
 
 		case 0x35:  /* LDC1 - MIPS III */
-			check_cop1_access(block);
+			check_cop1_access(block, compiler);
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);        // add     i0,<rsreg>,SIMMVAL
 			UML_CALLH(block, *m_read64[m_core->mode >> 1]); // callh   read64
 			UML_DMOV(block, FPR64(RTREG), I0);              // dmov    <cpr1_rt>,i0
@@ -10430,7 +10442,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			return true;
 
 		case 0x39:  /* SWC1 - MIPS I */
-			check_cop1_access(block);
+			check_cop1_access(block, compiler);
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);            // add     i0,<rsreg>,SIMMVAL
 			UML_MOV(block, I1, FPR32(RTREG));                   // mov     i1,<cpr1_rt>
 			UML_CALLH(block, *m_write32[m_core->mode >> 1]);    // callh   write32
@@ -10439,7 +10451,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			return true;
 
 		case 0x3d:  /* SDC1 - MIPS III */
-			check_cop1_access(block);
+			check_cop1_access(block, compiler);
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);            // add     i0,<rsreg>,SIMMVAL
 			UML_DMOV(block, I1, FPR64(RTREG));                  // dmov    i1,<cpr1_rt>
 			UML_CALLH(block, *m_write64[m_core->mode >> 1]);    // callh   write64
@@ -11612,10 +11624,23 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
     check_cop1_access - raise a BADCOP exception if COP1 is not enabled
 -------------------------------------------------------------------------*/
 
-void mips3_device::check_cop1_access(drcuml_block &block)
+// MAME_SGI_COP1_CHECK_ONCE: within a sequence the test need only precede
+// the first FP instruction. Code is entered only at a sequence's head (its
+// hash entry or label); every exit mid-sequence (an exception, an
+// interrupt or running out of cycles) resumes through the dispatcher,
+// which compiles a new sequence at the resume PC; and CU1 changes only by
+// an exception or a COP0 instruction, after which the test is emitted
+// again. IRIX switches the FPU lazily, so this test is what hands it to the
+// current process.
+void mips3_device::check_cop1_access(drcuml_block &block, compiler_state &compiler)
 {
 	if (m_drcoptions & MIPS3DRC_STRICT_COP1)
 	{
+#if MAME_SGI_COP1_CHECK_ONCE == 1
+		if (compiler.cop1_checked)
+			return;
+		compiler.cop1_checked = true;
+#endif
 		generate_badcop(block, 1);
 	}
 }
@@ -11695,7 +11720,7 @@ bool mips3_device::generate_cop1(drcuml_block &block, compiler_state &compiler, 
 	uml::code_label skip;
 	uml::condition_t condition;
 
-	check_cop1_access(block);
+	check_cop1_access(block, compiler);
 
 	switch (RSREG)
 	{
@@ -12262,7 +12287,7 @@ bool mips3_device::generate_cop1x(drcuml_block &block, compiler_state &compiler,
 	const int in_delay_slot = desc->in_delay_slot();
 	const uint32_t op = desc->opptr;
 
-	check_cop1_access(block);
+	check_cop1_access(block, compiler);
 
 	switch (op & 0x3f)
 	{
