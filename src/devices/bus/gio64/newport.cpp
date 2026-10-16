@@ -3094,6 +3094,106 @@ mame_sgi_composite_done:
 static uint64_t s_span_mode_pixels[128];
 #endif
 
+// MAME_SGI_SPAN_OVERLAY_FAST: the common modes' span loops, with no aux
+// plane (Ovl 0) or with a 2-bit overlay (aux mode 2) on an 8bpp board (Ovl
+// 1) or an 8-bit one on a 24bpp board (Ovl 2), as the general per-pixel
+// code below composites them: popup, else a non-zero overlay index, else
+// the normal planes. Returns false for the other modes.
+template <int Ovl>
+static inline uint32_t overlay_index(uint32_t aux)
+{
+	return Ovl == 1 ? (aux >> 8) & 3 : ((aux >> 8) & 0xf) | ((aux >> 16) & 0xf0);
+}
+
+template <int Ovl>
+bool newport_base_device::composite_span_fast(const composite_mode &mode, const uint32_t *palette, uint32_t *dest,
+		const uint32_t *src_rgbci, const uint32_t *src_cidaux, int count)
+{
+	const uint32_t table_entry = mode.table_entry;
+	const uint8_t pix_mode = mode.pix_mode;
+	const uint8_t pix_size = mode.pix_size;
+	const uint16_t ci_msb = mode.ci_msb;
+	const uint16_t popup_msb = mode.popup_msb;
+
+	const int map = pix_mode ? pix_mode - 1 : 0;	// RGB Map0-2 (MAME_SGI_XMAP_RGB_MAPS_FIX)
+	switch ((std::min<int>(pix_mode, 1) << 2) | pix_size)
+	{
+	case (0 << 2) | 0: // CI 4bpp
+	{
+		const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : palette[ci_msb | ((src_rgbci[i] >> shift) & 0x0f)];
+		}
+		return true;
+	}
+	case (0 << 2) | 1: // CI 8bpp
+	{
+		// MAME_SGI_CI8_BUFSEL_FIX: buffer 1 of a double-buffered 8bpp visual is bits 8-15
+		const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : palette[ci_msb | (uint8_t)(src_rgbci[i] >> shift)];
+		}
+		return true;
+	}
+	case (0 << 2) | 2: // CI 12bpp
+	{
+		const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : palette[(ci_msb & 0x1000) | ((src_rgbci[i] >> shift) & 0x0fff)];
+		}
+		return true;
+	}
+	case (1 << 2) | 0: // RGB 4bpp
+	{
+		const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : m_lut_rgb4[map][(uint8_t)(src_rgbci[i] >> shift) & 0x0f];
+		}
+		return true;
+	}
+	case (1 << 2) | 1: // RGB 8bpp
+	{
+		const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : m_lut_rgb8[map][(uint8_t)(src_rgbci[i] >> shift)];
+		}
+		return true;
+	}
+	case (1 << 2) | 2: // RGB 12bpp
+	{
+		const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)] : m_lut_rgb12[map][(uint16_t)(src_rgbci[i] >> shift) & 0x0fff];
+		}
+		return true;
+	}
+	case (1 << 2) | 3: // RGB 24bpp
+		for (int i = 0; i < count; i++)
+		{
+			const uint32_t aux = src_cidaux[i];
+			const uint32_t pix_in = src_rgbci[i];
+			dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)]
+					: (Ovl && overlay_index<Ovl>(aux)) ? palette[mode.aux_msb | overlay_index<Ovl>(aux)]
+					: m_lut_rgb24_r[map][(uint8_t)pix_in] | m_lut_rgb24_g[map][(uint8_t)(pix_in >> 8)] | m_lut_rgb24_b[map][(uint8_t)(pix_in >> 16)];
+		}
+		return true;
+	default:
+		return false;
+	}
+}
+
 // Composite count pixels of one DID run. The common modes without an aux
 // plane get their own loops; everything else goes through the general
 // per-pixel code.
@@ -3124,84 +3224,17 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 	}
 #endif
 
+	// MAME_SGI_SPAN_OVERLAY_FAST
 	if (aux_pix_mode == 0)
 	{
-		const int map = pix_mode ? pix_mode - 1 : 0;	// RGB Map0-2 (MAME_SGI_XMAP_RGB_MAPS_FIX)
-		switch ((std::min<int>(pix_mode, 1) << 2) | pix_size)
-		{
-		case (0 << 2) | 0: // CI 4bpp
-		{
-			const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | ((src_rgbci[i] >> shift) & 0x0f)];
-			}
+		if (composite_span_fast<0>(mode, palette, dest, src_rgbci, src_cidaux, count))
 			return;
-		}
-		case (0 << 2) | 1: // CI 8bpp
-		{
-			// MAME_SGI_CI8_BUFSEL_FIX: buffer 1 of a double-buffered 8bpp visual is bits 8-15
-			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[ci_msb | (uint8_t)(src_rgbci[i] >> shift)];
-			}
+	}
+	else if (aux_pix_mode == 2)
+	{
+		if (m_xmap[0]->is_8bpp() ? composite_span_fast<1>(mode, palette, dest, src_rgbci, src_cidaux, count)
+				: composite_span_fast<2>(mode, palette, dest, src_rgbci, src_cidaux, count))
 			return;
-		}
-		case (0 << 2) | 2: // CI 12bpp
-		{
-			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : palette[(ci_msb & 0x1000) | ((src_rgbci[i] >> shift) & 0x0fff)];
-			}
-			return;
-		}
-		case (1 << 2) | 0: // RGB 4bpp
-		{
-			const uint8_t shift = BIT(table_entry, 0) ? 4 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb4[map][(uint8_t)(src_rgbci[i] >> shift) & 0x0f];
-			}
-			return;
-		}
-		case (1 << 2) | 1: // RGB 8bpp
-		{
-			const uint8_t shift = BIT(table_entry, 0) ? 8 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb8[map][(uint8_t)(src_rgbci[i] >> shift)];
-			}
-			return;
-		}
-		case (1 << 2) | 2: // RGB 12bpp
-		{
-			const uint8_t shift = BIT(table_entry, 0) ? 12 : 0;
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)] : m_lut_rgb12[map][(uint16_t)(src_rgbci[i] >> shift) & 0x0fff];
-			}
-			return;
-		}
-		case (1 << 2) | 3: // RGB 24bpp
-			for (int i = 0; i < count; i++)
-			{
-				const uint32_t aux = src_cidaux[i];
-				const uint32_t pix_in = src_rgbci[i];
-				dest[i] = (aux & 0xcc) ? palette[popup_msb | ((aux >> 2) & 3)]
-						: m_lut_rgb24_r[map][(uint8_t)pix_in] | m_lut_rgb24_g[map][(uint8_t)(pix_in >> 8)] | m_lut_rgb24_b[map][(uint8_t)(pix_in >> 16)];
-			}
-			return;
-		default:
-			break;
-		}
 	}
 
 	// general case: the per-pixel compositor

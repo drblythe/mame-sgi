@@ -871,6 +871,8 @@ protected:
 	};
 	void composite_span(const composite_mode &mode, const uint32_t *palette, uint32_t *dest,
 			const uint32_t *src_rgbci, const uint32_t *src_cidaux, int count);
+	template <int Ovl> bool composite_span_fast(const composite_mode &mode, const uint32_t *palette, uint32_t *dest,
+			const uint32_t *src_rgbci, const uint32_t *src_cidaux, int count);
 #endif
 
 	// Marks the whole visible framebuffer region dirty (see
