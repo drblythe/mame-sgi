@@ -2086,23 +2086,6 @@ void newport_base_device::device_start()
 	save_item(NAME(m_rex3.m_x_move));
 	save_item(NAME(m_rex3.m_y_move));
 	save_item(NAME(m_rex3.m_bres_d));
-	save_item(NAME(m_fline_cont.valid));
-	save_item(NAME(m_fline_cont.x));
-	save_item(NAME(m_fline_cont.y));
-	save_item(NAME(m_fline_cont.x2));
-	save_item(NAME(m_fline_cont.y2));
-	save_item(NAME(m_fline_cont.d));
-	save_item(NAME(m_fline_cont.incr1));
-	save_item(NAME(m_fline_cont.incr2));
-	save_item(NAME(m_fline_cont.octant));
-	save_item(NAME(m_aline_cont.valid));
-	save_item(NAME(m_aline_cont.x1));
-	save_item(NAME(m_aline_cont.y1));
-	save_item(NAME(m_aline_cont.x2));
-	save_item(NAME(m_aline_cont.y2));
-	save_item(NAME(m_aline_cont.xs));
-	save_item(NAME(m_aline_cont.ys));
-	save_item(NAME(m_aline_cont.col));
 	save_item(NAME(m_rex3.m_bres_s1));
 	save_item(NAME(m_rex3.m_bres_octant_inc1));
 	save_item(NAME(m_rex3.m_bres_round_inc2));
@@ -4786,7 +4769,14 @@ void newport_base_device::do_setup(void)
 	const uint8_t octant = get_octant(x1, y1, x2, y2, dx, dy);
 	m_rex3.m_bres_octant_inc1 &= ~(0x7 << 24);
 	m_rex3.m_bres_octant_inc1 |= (uint32_t)octant << 24;
-	/* FIXME: error terms (incr1, incr2) and Bresenham terms (d) */
+	// MAME_SGI_LINE_BRES_STATE_FIX: the fractional and antialiased lines'
+	// iterator state (integer lines still set up from their endpoints on
+	// every GO: the guests draw them without setup)
+	switch ((m_rex3.m_draw_mode0 >> 2) & 7)
+	{
+	case 3: setup_fline(); break;
+	case 4: setup_aline(); break;
+	}
 	LOGMASKED(LOG_REX3, "do_setup: octant = %d, x1 = %d, y1 = %d, x2 = %d, y2 = %d, dx = %d, dy = %d\n", octant, x1, y1, x2, y2, dx, dy);
 }
 
@@ -4839,26 +4829,25 @@ void newport_base_device::line_pixel(int16_t x, int16_t y, uint32_t color, bool 
 	output_pixel(x, y, draw_color(x, y, color, rgb));
 }
 
-void newport_base_device::do_fline(uint32_t color)
+// MAME_SGI_LINE_BRES_STATE_FIX: a fractional line's iterator state lives in
+// the registers the spec lists as context-switched: line setup (a SETUP
+// write, or DOSETUP) leaves the first pixel in XSTART/YSTART and the error
+// term and its increments in BRESD, BRESOCTINC1 and BRESRNDINC2, and each GO
+// draws from there and leaves them at the next pixel. A long line drawn as
+// LENGTH32 pieces (SETUP, then GOs without DOSETUP) so continues where it
+// stopped even when another process draws between its pieces: the kernel's
+// graphics context switch saves and restores these registers. The terms are
+// kept in this rasterizer's 1/16 pixel units within the fields' widths, not
+// in the hardware's fixed-point formats.
+void newport_base_device::setup_fline()
 {
 	const int32_t x1 = util::sext(m_rex3.m_x_start >> 7, 20);
 	const int32_t y1 = util::sext(m_rex3.m_y_start >> 7, 20);
 	const int32_t x2 = util::sext(m_rex3.m_x_end >> 7, 20);
 	const int32_t y2 = util::sext(m_rex3.m_y_end >> 7, 20);
 
-	const int32_t x10 = x1 & ~0xf;
-	const int32_t y10 = y1 & ~0xf;
-	const int32_t x20 = x2 & ~0xf;
-	const int32_t y20 = y2 & ~0xf;
-
-	const bool iterate_one = (m_rex3.m_draw_mode0 & 0x300) == 0;
-	const bool skip_first = BIT(m_rex3.m_draw_mode0, 10);
-	const bool skip_last = BIT(m_rex3.m_draw_mode0, 11);
-	const bool shade = BIT(m_rex3.m_draw_mode0, 18);
-	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
-
-	int32_t x = x10;
-	int32_t y = y10;
+	int32_t x = x1 & ~0xf;
+	int32_t y = y1 & ~0xf;
 
 	int16_t x1_fract = m_rex3.m_x_start_frac;
 	// MAME_SGI_FLINE_FRACT_FIX: the octant cases below take the fractions in
@@ -4870,12 +4859,7 @@ void newport_base_device::do_fline(uint32_t color)
 	int32_t dx = abs(x1 - x2);
 	int32_t dy = abs(y1 - y2);
 
-	// MAME_SGI_FLINE_PIXEL_STEP_FIX: positions are in 1/16 pixel; the
-	// rasterizer steps and counts whole pixels (0x10), so a LENGTH32 line
-	// command draws 32 pixels and leaves the start at the 33rd
 	constexpr int32_t PIXEL = 0x10;
-	const int32_t dx_i = abs(x10 - x20) / PIXEL;
-	const int32_t dy_i = abs(y10 - y20) / PIXEL;
 
 	static const bresenham_octant_info_t s_bresenham_infos[8] =
 	{
@@ -4890,25 +4874,12 @@ void newport_base_device::do_fline(uint32_t color)
 	};
 
 	const uint8_t octant = (m_rex3.m_bres_octant_inc1 >> 24) & 0x7;
-	const int32_t incrx1 = s_bresenham_infos[octant].incrx1;
 	const int32_t incrx2 = s_bresenham_infos[octant].incrx2;
-	const int32_t incry1 = s_bresenham_infos[octant].incry1;
 	const int32_t incry2 = s_bresenham_infos[octant].incry2;
-	// MAME_SGI_FLINE_CONTINUE_FIX: a command that starts exactly where the
-	// previous LENGTH32 command stopped, towards the same end, continues
-	// that line (same error term) instead of setting it up again from an
-	// integer start, which loses the start's fraction and bends the line
-	const bool resume = m_fline_cont.valid && m_fline_cont.x == x1 && m_fline_cont.y == y1
-			&& m_fline_cont.x2 == x2 && m_fline_cont.y2 == y2 && m_fline_cont.octant == octant;
-	m_fline_cont.valid = false;
-	int32_t loop = s_bresenham_infos[octant].loop ? dy_i : dx_i;
-	const bool truncated = BIT(m_rex3.m_draw_mode0, 15) && loop > 32;
-	if (truncated)
-		loop = 32;
 	const int32_t x_major = 1 - s_bresenham_infos[octant].loop;
 
-	int32_t incr1 = s_bresenham_infos[octant].loop ? (2 * dx) : (2 * dy);
-	int32_t incr2 = s_bresenham_infos[octant].loop ? (2 * (dx - dy)) : (2 * (dy - dx));
+	const int32_t incr1 = s_bresenham_infos[octant].loop ? (2 * dx) : (2 * dy);
+	const int32_t incr2 = s_bresenham_infos[octant].loop ? (2 * (dx - dy)) : (2 * (dy - dx));
 	int32_t d = s_bresenham_infos[octant].loop ? (3 * dx - 2 * dy) : (3 * dy - 2 * dx);
 
 	switch (octant)
@@ -4968,111 +4939,119 @@ void newport_base_device::do_fline(uint32_t color)
 		break;
 	}
 
-	if (resume)
+	d += 2 * (((dx * y1_fract) >> 4) - ((dy * x1_fract) >> 4)); // Adjust d due to fractional endpoints
+	const int32_t E = d - 2 * dx; // Variable used for adjusting the start point up one pixel
+	if (E > 0)
 	{
-		x = x1;
-		y = y1;
-		d = m_fline_cont.d;
-		incr1 = m_fline_cont.incr1;
-		incr2 = m_fline_cont.incr2;
-	}
-	else
-	{
-		d += 2 * (((dx * y1_fract) >> 4) - ((dy * x1_fract) >> 4)); // Adjust d due to fractional endpoints
-		const int32_t E = d - 2 * dx; // Variable used for adjusting the start point up one pixel
-		if (E > 0)
-		{
-			d = E;
-			x += incrx2 * (1 - x_major) * PIXEL;
-			y -= incry2 * x_major * PIXEL;	// MAME_SGI_FLINE_FRACT_FIX: as the steps
-		}
+		d = E;
+		x += incrx2 * (1 - x_major) * PIXEL;
+		y -= incry2 * x_major * PIXEL;	// MAME_SGI_FLINE_FRACT_FIX: as the steps
 	}
 
-	if (!skip_first || iterate_one || resume)
+	write_x_start(x << 7);
+	write_y_start(y << 7);
+	m_rex3.m_bres_d = uint32_t(d) & 0x7ffffff;
+	m_rex3.m_bres_octant_inc1 = (uint32_t(octant) << 24) | (uint32_t(incr1) & 0xfffff);
+	m_rex3.m_bres_round_inc2 = (m_rex3.m_bres_round_inc2 & 0xff000000) | (uint32_t(incr2) & 0x1fffff);
+}
+
+// MAME_SGI_LINE_BRES_STATE_FIX: draws from the state setup_fline() left, in
+// whole pixels (MAME_SGI_FLINE_PIXEL_STEP_FIX: positions are in 1/16 pixel,
+// and a LENGTH32 GO draws 32 pixels and stops at the 33rd). SKIPFIRST steps
+// past this GO's first pixel without drawing it.
+void newport_base_device::do_fline(uint32_t color)
+{
+	const uint32_t mode0 = m_rex3.m_draw_mode0;
+	int32_t x = util::sext(m_rex3.m_x_start >> 7, 20);
+	int32_t y = util::sext(m_rex3.m_y_start >> 7, 20);
+	const int32_t x2 = util::sext(m_rex3.m_x_end >> 7, 20);
+	const int32_t y2 = util::sext(m_rex3.m_y_end >> 7, 20);
+
+	const bool iterate_one = (mode0 & 0x300) == 0;
+	const bool skip_first = BIT(mode0, 10);
+	const bool skip_last = BIT(mode0, 11);
+	const bool shade = BIT(mode0, 18);
+	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
+
+	constexpr int32_t PIXEL = 0x10;
+
+	static const bresenham_octant_info_t s_bresenham_infos[8] =
 	{
-		const int16_t x16 = (int16_t)(x >> 4);
-		const int16_t y16 = (int16_t)(y >> 4);
-		line_pixel(x16, y16, color, shade || rgbmode);
+		{  0,  1, -1, -1,  1 }, // Pseudo 7
+		{  0,  1,  1,  1,  1 }, // Pseudo 2
+		{  0, -1, -1, -1,  1 }, // Pseudo 6
+		{  0, -1,  1,  1,  1 }, // Pseudo 3
+		{  1,  1,  0, -1,  0 }, // Pseudo 8
+		{  1,  1,  0,  1,  0 }, // Pseudo 1
+		{ -1, -1,  0, -1,  0 }, // Pseudo 5
+		{ -1, -1,  0,  1,  0 }  // Pseudo 4
+	};
 
-		if (shade)
-			iterate_shade();
+	const uint8_t octant = (m_rex3.m_bres_octant_inc1 >> 24) & 0x7;
+	const int32_t incrx1 = s_bresenham_infos[octant].incrx1;
+	const int32_t incrx2 = s_bresenham_infos[octant].incrx2;
+	const int32_t incry1 = s_bresenham_infos[octant].incry1;
+	const int32_t incry2 = s_bresenham_infos[octant].incry2;
+	int32_t d = util::sext(m_rex3.m_bres_d, 27);
+	const int32_t incr1 = m_rex3.m_bres_octant_inc1 & 0xfffff;
+	const int32_t incr2 = util::sext(m_rex3.m_bres_round_inc2, 21);
 
-		if (d < 0)
-		{
-			x += incrx1 * PIXEL;
-			y -= incry1 * PIXEL;
-			d += incr1;
-		}
-		else
-		{
-			x += incrx2 * PIXEL;
-			y -= incry2 * PIXEL;
-			d += incr2;
-		}
-
-		if (iterate_one)
-		{
-			write_x_start(x << 7);
-			write_y_start(y << 7);
-			return;
-		}
-	}
-
-	for (int32_t i = 1; i < loop; i++)
-	{
-		const int16_t x16 = (int16_t)(x >> 4);
-		const int16_t y16 = (int16_t)(y >> 4);
-		line_pixel(x16, y16, color, shade || rgbmode);
-
-		if (shade)
-			iterate_shade();
-
-		if (d < 0)
-		{
-			x += incrx1 * PIXEL;
-			y -= incry1 * PIXEL;
-			d += incr1;
-		}
-		else
-		{
-			x += incrx2 * PIXEL;
-			y -= incry2 * PIXEL;
-			d += incr2;
-		}
-	}
-
+	// whole pixels from here to the end's pixel along the major axis
+	int32_t loop = s_bresenham_infos[octant].loop ? abs((y & ~0xf) - (y2 & ~0xf)) / PIXEL : abs((x & ~0xf) - (x2 & ~0xf)) / PIXEL;
+	const bool truncated = BIT(mode0, 15) && loop > 32;
 	if (truncated)
-	{
-		// more of the line to come: stop at the next pixel
-		write_x_start(x << 7);
-		write_y_start(y << 7);
-		m_fline_cont.valid = true;
-		m_fline_cont.x = x;
-		m_fline_cont.y = y;
-		m_fline_cont.x2 = x2;
-		m_fline_cont.y2 = y2;
-		m_fline_cont.d = d;
-		m_fline_cont.incr1 = incr1;
-		m_fline_cont.incr2 = incr2;
-		m_fline_cont.octant = octant;
-	}
-	else if (!skip_last)
-	{
-		const int16_t x16 = (int16_t)(x2 >> 4);
-		const int16_t y16 = (int16_t)(y2 >> 4);
-		line_pixel(x16, y16, color, shade || rgbmode, true);
+		loop = 32;
 
+	auto step = [&] ()
+	{
+		if (d < 0)
+		{
+			x += incrx1 * PIXEL;
+			y -= incry1 * PIXEL;
+			d += incr1;
+		}
+		else
+		{
+			x += incrx2 * PIXEL;
+			y -= incry2 * PIXEL;
+			d += incr2;
+		}
+	};
+
+	if (iterate_one)
+	{
+		line_pixel(int16_t(x >> 4), int16_t(y >> 4), color, shade || rgbmode);
 		if (shade)
 			iterate_shade();
-
-		write_x_start(x2);
-		write_y_start(y2);
-	}
-	else
-	{
+		step();
 		write_x_start(x << 7);
 		write_y_start(y << 7);
+		m_rex3.m_bres_d = uint32_t(d) & 0x7ffffff;
+		return;
 	}
+
+	for (int32_t i = 0; i < loop; i++)
+	{
+		if (i || !skip_first)
+		{
+			line_pixel(int16_t(x >> 4), int16_t(y >> 4), color, shade || rgbmode);
+			if (shade)
+				iterate_shade();
+		}
+		step();
+	}
+
+	if (!truncated && !skip_last)
+	{
+		line_pixel(int16_t(x2 >> 4), int16_t(y2 >> 4), color, shade || rgbmode, true);
+		if (shade)
+			iterate_shade();
+		x = x2;
+		y = y2;
+	}
+	write_x_start(x << 7);
+	write_y_start(y << 7);
+	m_rex3.m_bres_d = uint32_t(d) & 0x7ffffff;
 }
 
 // MAME_SGI_REX3_ALINE_FIX: A_LINE, the antialiased line. Each step along
@@ -5089,19 +5068,34 @@ void newport_base_device::do_fline(uint32_t color)
 // more, 4-7, 2-3 or 0-1 sixteenths of its column; a skipped end is not
 // filtered. A LENGTH32 line draws 32 steps per GO and continues there on the
 // next.
-void newport_base_device::do_aline()
+// MAME_SGI_LINE_BRES_STATE_FIX: the line's state is in the context-switched
+// registers (see setup_fline()): setup_aline() keeps its start in BRESD
+// (x) and BRESS2 (y) and the next column to draw in BRESS1, which each GO
+// advances. The offsets are computed exactly per column from the start and
+// end rather than with the spec's S1/S2 iterators, so these registers hold
+// the start instead of the hardware's coverage terms.
+void newport_base_device::setup_aline()
 {
-	const uint32_t mode0 = m_rex3.m_draw_mode0;
 	const int32_t x1 = util::sext(m_rex3.m_x_start >> 7, 20);
 	const int32_t y1 = util::sext(m_rex3.m_y_start >> 7, 20);
 	const int32_t x2 = util::sext(m_rex3.m_x_end >> 7, 20);
 	const int32_t y2 = util::sext(m_rex3.m_y_end >> 7, 20);
+	// the first column, as do_aline() numbers them
+	const bool x_major = abs(x2 - x1) >= abs(y2 - y1);
+	const int32_t sa = (x_major ? x2 >= x1 : y2 >= y1) ? 1 : -1;
+	const int32_t col_first = (sa * (x_major ? x1 : y1)) >> 4;
+	m_rex3.m_bres_d = uint32_t(x1) & 0x7ffffff;
+	m_rex3.m_bres_s2 = uint32_t(y1) & 0x3ffffff;
+	m_rex3.m_bres_s1 = uint32_t(col_first) & 0x1ffff;
+}
 
-	const aline_continuation cont = m_aline_cont;
-	const bool resume = cont.valid && cont.xs == x1 && cont.ys == y1 && cont.x2 == x2 && cont.y2 == y2;
-	m_aline_cont.valid = false;
-	const int32_t ox1 = resume ? cont.x1 : x1;
-	const int32_t oy1 = resume ? cont.y1 : y1;
+void newport_base_device::do_aline()
+{
+	const uint32_t mode0 = m_rex3.m_draw_mode0;
+	const int32_t x2 = util::sext(m_rex3.m_x_end >> 7, 20);
+	const int32_t y2 = util::sext(m_rex3.m_y_end >> 7, 20);
+	const int32_t ox1 = util::sext(m_rex3.m_bres_d, 27);
+	const int32_t oy1 = util::sext(m_rex3.m_bres_s2, 26);
 
 	// major (a) and minor (b) coordinates in 1/16 pixel, negated where they
 	// decrease so that both increase along the line (pixel k becomes -k-1)
@@ -5129,7 +5123,7 @@ void newport_base_device::do_aline()
 		py = x_major ? mn : mj;
 	};
 
-	int32_t col = resume ? cont.col : col_first;
+	int32_t col = util::sext(m_rex3.m_bres_s1, 17);
 	int32_t steps = col_last - col + 1;
 	const int32_t limit = (mode0 & 0x300) == 0 ? 1 : BIT(mode0, 15) ? 32 : steps;
 	const bool truncated = steps > limit;
@@ -5187,22 +5181,14 @@ void newport_base_device::do_aline()
 			iterate_shade();
 	}
 
+	m_rex3.m_bres_s1 = uint32_t(col) & 0x1ffff;
 	if (truncated)
 	{
 		// the next piece starts at column col
 		int16_t px, py;
 		to_xy(col, (minor_at(col) - 8) >> 4, px, py);
-		const int32_t xs = px * 16, ys = py * 16;
-		write_x_start(xs << 7);
-		write_y_start(ys << 7);
-		m_aline_cont.valid = true;
-		m_aline_cont.x1 = ox1;
-		m_aline_cont.y1 = oy1;
-		m_aline_cont.x2 = x2;
-		m_aline_cont.y2 = y2;
-		m_aline_cont.xs = xs;
-		m_aline_cont.ys = ys;
-		m_aline_cont.col = col;
+		write_x_start((px * 16) << 7);
+		write_y_start((py * 16) << 7);
 	}
 	else
 	{
