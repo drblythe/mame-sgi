@@ -76,6 +76,121 @@ namespace {
 // screen_device::vblank_begin investigation this generalizes.
 osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
 
+// MAME_SGI_FRAME_LOAD: per emulated frame, the wall time MAME was busy (from
+// the previous frame's throttle point to this one's) over the frame's
+// emulated duration. Above 1.0 the frame took longer than real time, i.e.
+// the guest ran below its clock for it (the throttle may catch up later,
+// which the lag shows). Enabled by MAME_SGI_FRAME_LOAD_FILE=<path>: the
+// cumulative histogram is rewritten there every second, so a reader can
+// subtract two snapshots for any interval. rdtsc, calibrated against
+// osd_ticks(), since osd_ticks() can be a costly clock source.
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+namespace {
+struct frame_load_stats
+{
+	static constexpr int NBUCKETS = 16;
+	static constexpr double s_edges[NBUCKETS] = { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 1e30 };
+	const char *path = nullptr;
+	bool checked = false;
+	bool have_prev = false;
+	uint64_t last_end_tsc = 0;
+	attotime last_emu;
+	uint64_t cal_tsc0 = 0;
+	osd_ticks_t cal_os0 = 0;
+	double tsc_hz = 0;
+	uint64_t next_dump_tsc = 0;
+	uint64_t frames[NBUCKETS] = { };
+	double emu_s[NBUCKETS] = { };
+	double busy_total = 0, emu_total = 0, excess_busy = 0, lag_max = 0, lag_weighted = 0;
+
+	bool enabled()
+	{
+		if (!checked)
+		{
+			checked = true;
+			path = getenv("MAME_SGI_FRAME_LOAD_FILE");
+			if (path)
+			{
+				// initial TSC rate over ~50 ms; refined at every dump
+				cal_tsc0 = __rdtsc();
+				cal_os0 = osd_ticks();
+				const osd_ticks_t end = cal_os0 + osd_ticks_per_second() / 20;
+				while (osd_ticks() < end) { }
+				tsc_hz = double(__rdtsc() - cal_tsc0) * osd_ticks_per_second() / double(osd_ticks() - cal_os0);
+			}
+		}
+		return path != nullptr;
+	}
+
+	// at a frame's throttle point, before throttling
+	void before(const attotime &emu)
+	{
+		if (!enabled())
+			return;
+		const uint64_t now = __rdtsc();
+		if (have_prev && emu > last_emu)
+		{
+			const double busy = double(now - last_end_tsc) / tsc_hz;
+			const double frame = (emu - last_emu).as_double();
+			const double ratio = busy / frame;
+			int b = 0;
+			while (ratio >= s_edges[b] && b < NBUCKETS - 1)
+				b++;
+			frames[b]++;
+			emu_s[b] += frame;
+			busy_total += busy;
+			emu_total += frame;
+			if (busy > frame)
+				excess_busy += busy - frame;
+		}
+		last_emu = emu;
+	}
+
+	// after throttling; lag is how far emulated time is behind real time
+	void after(double lag)
+	{
+		if (!path)
+			return;
+		const uint64_t now = __rdtsc();
+		last_end_tsc = now;
+		have_prev = true;
+		if (lag > lag_max)
+			lag_max = lag;
+		if (lag > 0)
+			lag_weighted += lag;
+		if (now >= next_dump_tsc)
+		{
+			tsc_hz = double(now - cal_tsc0) * osd_ticks_per_second() / double(osd_ticks() - cal_os0);
+			next_dump_tsc = now + uint64_t(tsc_hz);
+			dump();
+		}
+	}
+
+	void dump()
+	{
+		FILE *f = fopen(path, "w");
+		if (!f)
+			return;
+		uint64_t n = 0;
+		for (int b = 0; b < NBUCKETS; b++)
+			n += frames[b];
+		fprintf(f, "FRAME_LOAD frames=%llu emu_s=%.3f busy_s=%.3f excess_busy_s=%.3f lag_max_s=%.4f lag_sum_s=%.3f tsc_hz=%.0f\n",
+				(unsigned long long)n, emu_total, busy_total, excess_busy, lag_max, lag_weighted, tsc_hz);
+		double lo = 0;
+		for (int b = 0; b < NBUCKETS; b++)
+		{
+			fprintf(f, "BUCKET %.2f-%s frames=%llu emu_s=%.3f\n", lo, b == NBUCKETS - 1 ? "inf" : string_format("%.2f", s_edges[b]).c_str(),
+					(unsigned long long)frames[b], emu_s[b]);
+			lo = s_edges[b];
+		}
+		fclose(f);
+	}
+} s_frame_load;
+} // anonymous namespace
+#define MAME_SGI_FRAME_LOAD 1
+#endif
+
 // frameskipping tables
 const bool video_manager::s_skiptable[FRAMESKIP_LEVELS][FRAMESKIP_LEVELS] =
 {
@@ -267,8 +382,17 @@ void video_manager::frame_update(bool from_debugger)
 
 	// if we're throttling, synchronize before rendering
 	attotime current_time = machine().time();
+#ifdef MAME_SGI_FRAME_LOAD
+	const bool frame_load_point = !from_debugger && phase > machine_phase::INIT && !(m_low_latency && effective_throttle());
+	if (frame_load_point)
+		s_frame_load.before(current_time);
+#endif
 	if (!from_debugger && phase > machine_phase::INIT && !m_low_latency && effective_throttle())
 		update_throttle(current_time);
+#ifdef MAME_SGI_FRAME_LOAD
+	if (frame_load_point)
+		s_frame_load.after((m_throttle_realtime - m_throttle_emutime).as_double());
+#endif
 
 	// ask the OSD to update
 	{
@@ -296,7 +420,15 @@ void video_manager::frame_update(bool from_debugger)
 
 	// we synchronize after rendering instead of before, if low latency mode is enabled
 	if (!from_debugger && phase > machine_phase::INIT && m_low_latency && effective_throttle())
+	{
+#ifdef MAME_SGI_FRAME_LOAD
+		s_frame_load.before(current_time);
+#endif
 		update_throttle(current_time);
+#ifdef MAME_SGI_FRAME_LOAD
+		s_frame_load.after((m_throttle_realtime - m_throttle_emutime).as_double());
+#endif
+	}
 
 	machine().osd().input_update(false);
 	emulator_info::periodic_check();
