@@ -423,6 +423,14 @@ extern bool g_mame_sgi_lwc1_target_block;
 // resuming that specific ABI-trust line of investigation.
 // #define MAME_SGI_TASK84_MEMOP_R15_GUARD
 
+// MAME_SGI_DRC_EXH_COLD: a conditional EXH branches out to a stub after the
+// block's end instead of jumping around the exception call inline, so the
+// normal path is one not-taken branch and the cold code is out of the way.
+// See op_exh().
+#ifndef MAME_SGI_DRC_EXH_COLD
+#define MAME_SGI_DRC_EXH_COLD 1
+#endif
+
 
 // This is a trick to make it build on Android where the ARM SDK declares ::REG_Rn
 // and the x64 SDK declares ::REG_Exx and ::REG_Rxx
@@ -728,6 +736,18 @@ private:
 	Gp get_base_register_and_offset(Assembler &a, void *target, Gp const &reg, s32 &offset);
 	void smart_call_r64(Assembler &a, x86code *target, Gp const &reg) const;
 	void smart_call_m64(Assembler &a, x86code **target) const;
+#if MAME_SGI_DRC_EXH_COLD
+	// a conditional EXH's exception path, emitted after the block's end
+	struct cold_exh
+	{
+		Label stub;                                 // the jcc's target
+		Label resume;                               // just after the jcc
+		be_parameter exp;                           // exception parameter
+		drccodeptr *targetptr;                      // exception handle
+		u32 mapvals[uml::MAPVAR_END - uml::MAPVAR_M0]; // map variables at the jcc
+	};
+	std::vector<cold_exh> m_cold_exh;
+#endif
 	void emit_memaccess_setup(Assembler &a, const memory_accessors &accessors, const address_space::specific_access_info::side &side) const;
 #ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
 	void emit_task84_r15_guard_save(Assembler &a) const;
@@ -1761,6 +1781,9 @@ int drcbe_x64::execute(code_handle &entry)
 
 void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 numinst)
 {
+#if MAME_SGI_DRC_EXH_COLD
+	m_cold_exh.clear();
+#endif
 	// do this here because device.debug() isn't initialised at construction time
 	if (!m_debug_cpu_instruction_hook && (m_device.machine().debug_flags & DEBUG_FLAG_ENABLED) && m_device.debug())
 	{
@@ -1958,6 +1981,25 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 		a.set_inline_comment("end of block");
 	}
 	a.jmp(imm(m_endofblock));
+
+#if MAME_SGI_DRC_EXH_COLD
+	// the conditional EXHs' exception paths. RECOVER finds the map variables
+	// by the exception call's return address, so each stub records again the
+	// values they had at its jcc.
+	for (cold_exh &c : m_cold_exh)
+	{
+		a.bind(c.stub);
+		for (int var = uml::MAPVAR_M0; var < uml::MAPVAR_END; var++)
+			m_map.set_value(drccodeptr(a.code()->base_address() + a.offset()), var, c.mapvals[var - uml::MAPVAR_M0]);
+		mov_mem_param(a, MABS(&m_state.exp, 4), c.exp);                                 // mov   [exp],exp
+		if (*c.targetptr != nullptr)
+			a.call(imm(*c.targetptr));                                                  // call  *targetptr
+		else
+			a.call(MABS(c.targetptr));                                                  // call  [targetptr]
+		a.jmp(c.resume);                                                                // jmp   resume
+	}
+	m_cold_exh.clear();
+#endif
 
 	// emit the generated code
 	size_t const bytes = emit(ch, block.invariant());
@@ -2907,6 +2949,19 @@ void drcbe_x64::op_exh(Assembler &a, const instruction &inst)
 
 	// look up the handle target
 	drccodeptr *targetptr = handp.handle().codeptr_addr();
+
+#if MAME_SGI_DRC_EXH_COLD
+	// conditional: branch out to a stub after the block's end (generate())
+	if (inst.condition() != uml::COND_ALWAYS)
+	{
+		cold_exh &c = m_cold_exh.emplace_back(cold_exh{ a.new_label(), a.new_label(), exp, targetptr, { } });
+		for (int var = uml::MAPVAR_M0; var < uml::MAPVAR_END; var++)
+			c.mapvals[var - uml::MAPVAR_M0] = m_map.get_last_value(var);
+		a.j(X86_CONDITION(inst.condition()), c.stub);                                   // jcc   stub
+		a.bind(c.resume);
+		return;
+	}
+#endif
 
 	// perform the exception processing
 	Label no_exception;
