@@ -1,0 +1,58 @@
+// license:BSD-3-Clause
+// copyright-holders:blythe
+#ifndef MAME_LIB_UTIL_MAME_SGI_FRAMECOST_H
+#define MAME_LIB_UTIL_MAME_SGI_FRAMECOST_H
+
+#pragma once
+
+// MAME_SGI_FRAME_LOAD attribution: wall time (TSC ticks) spent in a few
+// subsystems, read per frame by video_manager to split each frame's busy
+// time. Counted only while mame_sgi_frame_cost_on is set (it is when
+// MAME_SGI_FRAME_LOAD_FILE is). The variables are defined in chd.cpp, which
+// both the emulator and the CHD code link.
+
+#include <cstdint>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+
+enum mame_sgi_frame_cost_category
+{
+	MSFC_COMPILE,       // DRC block compilation
+	MSFC_FLUSH,         // DRC cache flushes
+	MSFC_REX3,          // Newport REX3 drawing commands
+	MSFC_COMPOSITE,     // Newport screen update (the compositor)
+	MSFC_PRESENT,       // OSD update: render, texture upload, swap
+	MSFC_CHD,           // CHD hunk reads (disk and CD-ROM)
+	MSFC_CPU,           // the main CPU's execute loop, inclusive of the
+	                    // compile, flush and REX3 time spent inside it
+	MSFC_COUNT
+};
+
+extern bool mame_sgi_frame_cost_on;
+extern uint64_t mame_sgi_frame_cost[MSFC_COUNT];
+
+// adds the time from construction to destruction to a category
+class mame_sgi_frame_cost_scope
+{
+public:
+	explicit mame_sgi_frame_cost_scope(int category)
+		: m_category(category), m_start(mame_sgi_frame_cost_on ? __rdtsc() : 0)
+	{
+	}
+	~mame_sgi_frame_cost_scope()
+	{
+		if (m_start)
+			mame_sgi_frame_cost[m_category] += __rdtsc() - m_start;
+	}
+
+private:
+	int m_category;
+	uint64_t m_start;
+};
+#define MAME_SGI_FRAME_COST(category) mame_sgi_frame_cost_scope mame_sgi_frame_cost_scope_(category)
+#else
+#define MAME_SGI_FRAME_COST(category) do { } while (0)
+#endif
+
+#endif // MAME_LIB_UTIL_MAME_SGI_FRAMECOST_H

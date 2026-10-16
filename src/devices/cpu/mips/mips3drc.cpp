@@ -1167,6 +1167,7 @@
 // #define MAME_SGI_PCKM_MUTEX_DIAG
 
 #include "emu.h"
+#include "mame_sgi_framecost.h"
 #include "mips3.h"
 
 #include "mips3com.h"
@@ -1843,6 +1844,7 @@ void mips3_device::report_hash_stats(char const *when)
 
 void mips3_device::code_flush_cache()
 {
+	MAME_SGI_FRAME_COST(MSFC_FLUSH);
 	int mode;
 
 #ifdef MAME_SGI_HASH_TABLE_STATS_DIAG
@@ -2347,6 +2349,7 @@ void mips3_device::recompile_study_dump()
 
 void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 {
+	MAME_SGI_FRAME_COST(MSFC_COMPILE);
 	compiler_state compiler = { 0 };
 	const opcode_desc *seqhead, *seqlast;
 	const opcode_desc *codelast;

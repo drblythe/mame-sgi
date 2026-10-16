@@ -7,6 +7,7 @@
 ***************************************************************************/
 
 #include "chd.h"
+#include "mame_sgi_framecost.h"
 
 #include "avhuff.h"
 #include "cdrom.h"
@@ -1042,8 +1043,14 @@ std::error_condition chd_file::codec_process_hunk(uint32_t hunknum)
  * @return  An error condition.
  */
 
+#if defined(__x86_64__) || defined(_M_X64)
+bool mame_sgi_frame_cost_on = false;
+uint64_t mame_sgi_frame_cost[MSFC_COUNT] = { };
+#endif
+
 std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 {
+	MAME_SGI_FRAME_COST(MSFC_CHD);
 	// punt if no file
 	if (UNEXPECTED(!m_file))
 		return std::error_condition(error::NOT_OPEN);

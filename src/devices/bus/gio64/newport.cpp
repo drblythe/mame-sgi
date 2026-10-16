@@ -35,6 +35,7 @@
 *********************************************************************/
 
 #include "emu.h"
+#include "mame_sgi_framecost.h"
 #include "newport.h"
 
 #include "debug/debugcon.h"
@@ -2314,6 +2315,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 &bitmap, const rectangle &visible_clip)
 #endif
 {
+	MAME_SGI_FRAME_COST(MSFC_COMPOSITE);
 	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the visible area starts a couple of
 	// columns into the readout (see update_screen_size()), but bitmap
 	// column x is VRAM column x, so composite from column 0. The code
@@ -6065,6 +6067,7 @@ struct rex3_trace_config
 
 void newport_base_device::do_rex3_command()
 {
+	MAME_SGI_FRAME_COST(MSFC_REX3);
 #ifdef MAME_SGI_REX3_MODE_CENSUS
 	rex3_census_scope census_scope(m_rex3.m_draw_mode0, m_rex3.m_draw_mode1);
 #endif

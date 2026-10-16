@@ -101,6 +101,7 @@
 // #define MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
 
 #include "emu.h"
+#include "mame_sgi_framecost.h"
 #include "mips3.h"
 
 #include "mips3com.h"
@@ -5624,6 +5625,7 @@ void r5900_device::handle_sdc2(uint32_t op)
 
 void mips3_device::execute_run()
 {
+	MAME_SGI_FRAME_COST(MSFC_CPU);
 #ifdef MAME_SGI_EARLY_SAVE_DIAG
 	{
 		// s_mame_sgi_first_call guards against re-triggering on a -state

@@ -86,6 +86,7 @@ osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
 // osd_ticks(), since osd_ticks() can be a costly clock source.
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
+#include "mame_sgi_framecost.h"
 namespace {
 struct frame_load_stats
 {
@@ -103,6 +104,18 @@ struct frame_load_stats
 	uint64_t frames[NBUCKETS] = { };
 	double emu_s[NBUCKETS] = { };
 	double busy_total = 0, emu_total = 0, excess_busy = 0, lag_max = 0, lag_weighted = 0;
+	// attribution of busy time (mame_sgi_framecost.h): totals over all
+	// frames and over the frames at or above budget, and how often each
+	// category was the largest in an over-budget frame
+	uint64_t cost_prev[MSFC_COUNT] = { };
+	// reported: compile, flush, rex3, guest (CPU time less the first
+	// three), composite, present, chd, other (busy time outside all of
+	// them: other devices, timers, the scheduler)
+	static constexpr int NREPORT = 8;
+	double cost_all[NREPORT] = { };
+	double cost_over[NREPORT] = { };
+	uint64_t top_over[NREPORT] = { };
+	uint64_t frames_over = 0;
 
 	bool enabled()
 	{
@@ -112,6 +125,7 @@ struct frame_load_stats
 			path = getenv("MAME_SGI_FRAME_LOAD_FILE");
 			if (path)
 			{
+				mame_sgi_frame_cost_on = true;
 				// initial TSC rate over ~50 ms; refined at every dump
 				cal_tsc0 = __rdtsc();
 				cal_os0 = osd_ticks();
@@ -143,7 +157,32 @@ struct frame_load_stats
 			emu_total += frame;
 			if (busy > frame)
 				excess_busy += busy - frame;
+
+			double raw[MSFC_COUNT];
+			for (int c = 0; c < MSFC_COUNT; c++)
+				raw[c] = double(mame_sgi_frame_cost[c] - cost_prev[c]) / tsc_hz;
+			const double cost[NREPORT] = {
+				raw[MSFC_COMPILE], raw[MSFC_FLUSH], raw[MSFC_REX3],
+				std::max(0.0, raw[MSFC_CPU] - raw[MSFC_COMPILE] - raw[MSFC_FLUSH] - raw[MSFC_REX3]),
+				raw[MSFC_COMPOSITE], raw[MSFC_PRESENT], raw[MSFC_CHD],
+				std::max(0.0, busy - raw[MSFC_CPU] - raw[MSFC_COMPOSITE] - raw[MSFC_PRESENT] - raw[MSFC_CHD]) };
+			int top = 0;
+			for (int c = 0; c < NREPORT; c++)
+			{
+				cost_all[c] += cost[c];
+				if (cost[c] > cost[top])
+					top = c;
+			}
+			if (ratio >= 1.0)
+			{
+				frames_over++;
+				top_over[top]++;
+				for (int c = 0; c < NREPORT; c++)
+					cost_over[c] += cost[c];
+			}
 		}
+		for (int c = 0; c < MSFC_COUNT; c++)
+			cost_prev[c] = mame_sgi_frame_cost[c];
 		last_emu = emu;
 	}
 
@@ -184,6 +223,17 @@ struct frame_load_stats
 					(unsigned long long)frames[b], emu_s[b]);
 			lo = s_edges[b];
 		}
+		static const char *const names[NREPORT] = { "compile", "flush", "rex3", "guest", "composite", "present", "chd", "other" };
+		fprintf(f, "COST_ALL");
+		for (int c = 0; c < NREPORT; c++)
+			fprintf(f, " %s=%.4f", names[c], cost_all[c]);
+		fprintf(f, "\nCOST_OVER frames=%llu", (unsigned long long)frames_over);
+		for (int c = 0; c < NREPORT; c++)
+			fprintf(f, " %s=%.4f", names[c], cost_over[c]);
+		fprintf(f, "\nTOP_OVER");
+		for (int c = 0; c < NREPORT; c++)
+			fprintf(f, " %s=%llu", names[c], (unsigned long long)top_over[c]);
+		fprintf(f, "\n");
 		fclose(f);
 	}
 } s_frame_load;
@@ -397,6 +447,9 @@ void video_manager::frame_update(bool from_debugger)
 	// ask the OSD to update
 	{
 		auto profile = g_profiler.start(PROFILER_BLIT);
+#ifdef MAME_SGI_FRAME_LOAD
+		MAME_SGI_FRAME_COST(MSFC_PRESENT);
+#endif
 #ifdef MAME_SGI_OSD_BLIT_TIMING_DIAG
 		osd_ticks_t mame_sgi_blit_t0 = osd_ticks();
 #endif
