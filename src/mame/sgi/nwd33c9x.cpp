@@ -2290,11 +2290,12 @@ void nwd33c9x_device::t_target_recv_byte()
 	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
 #if MAME_SGI_SCSI_BULK_DMA
 		// Runs of bytes straight from the host's DMA engine: the mirror of
-		// t_target_send_buffer_byte()'s bulk loop. A run that starts inside a
-		// sector completes that sector in the sector buffer; from a sector
-		// boundary, whole sectors go through m_t_stage and are written in one
-		// disk call (a CHD otherwise rewrites a whole hunk for every sector).
-		// Either way the block, cur_lba and the disk end as that many
+		// t_target_send_buffer_byte()'s bulk loop. Each run goes into
+		// m_t_stage after the bytes of its first sector already received
+		// (in the sector buffer; a transfer's first byte always comes
+		// through the handshake), and every sector it completes is written
+		// in one disk call (a CHD otherwise rewrites a whole hunk for every
+		// sector). The block, cur_lba and the disk end as that many
 		// t_put_data() calls would leave them.
 		if (!m_bulk_dma_out.isnull()) {
 			while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1
@@ -2302,40 +2303,26 @@ void nwd33c9x_device::t_target_recv_byte()
 				t_disk_slot &d = m_t_disk[m_t_active_disk];
 				const int pos = m_t_data_buffer_pos;
 				const uint32_t bps = d.bytes_per_sector;
-				const uint32_t offset = pos & (bps - 1);
-				const uint32_t avail = std::min(uint32_t(m_t_data_buffer_size - 1 - pos), m_transfer_count - 1);
-				const uint32_t sectors = offset ? 0 : std::min(avail, T_STAGE_BYTES) >> d.sector_shift;
-				uint32_t run, done;
-				if (!sectors) {
-					// within one sector, into the sector buffer
-					run = std::min(bps - offset, avail);
-					done = m_bulk_dma_out(&d.block[offset], run);
-					if (!done)
-						break;
-					d.cur_lba = d.lba + (pos >> d.sector_shift);
-					if (offset + done == bps) {
-						if (!m_disk_image[m_t_active_disk]->write(d.cur_lba, d.block))
-							LOGMASKED(LOG_TARGET, "nwd33c9x target: HD WRITE ERROR!\n");
-					}
-				} else {
-					run = sectors << d.sector_shift;
-					done = m_bulk_dma_out(m_t_stage.get(), run);
-					if (!done)
-						break;
-					const uint32_t full = done >> d.sector_shift;
-					const uint32_t rest = done & (bps - 1);
-					const int first = d.lba + (pos >> d.sector_shift);
-					if (full) {
-						if (!m_disk_image[m_t_active_disk]->write(first, m_t_stage.get(), full))
-							LOGMASKED(LOG_TARGET, "nwd33c9x target: HD WRITE ERROR!\n");
-						// the last whole sector stays in the sector buffer
-						memcpy(d.block, &m_t_stage[(full - 1) << d.sector_shift], bps);
-						d.cur_lba = first + full - 1;
-					}
-					if (rest) {
-						memcpy(d.block, &m_t_stage[full << d.sector_shift], rest);
-						d.cur_lba = first + full;
-					}
+				const uint32_t pre = pos & (bps - 1);
+				const uint32_t run = std::min({ uint32_t(m_t_data_buffer_size - 1 - pos), m_transfer_count - 1, T_STAGE_BYTES - pre });
+				if (pre)
+					memcpy(m_t_stage.get(), d.block, pre);
+				const uint32_t done = m_bulk_dma_out(&m_t_stage[pre], run);
+				if (!done)
+					break;
+				const uint32_t full = (pre + done) >> d.sector_shift;
+				const uint32_t rest = (pre + done) & (bps - 1);
+				const int first = d.lba + (pos >> d.sector_shift);
+				if (full) {
+					if (!m_disk_image[m_t_active_disk]->write(first, m_t_stage.get(), full))
+						LOGMASKED(LOG_TARGET, "nwd33c9x target: HD WRITE ERROR!\n");
+					// the last whole sector stays in the sector buffer
+					memcpy(d.block, &m_t_stage[(full - 1) << d.sector_shift], bps);
+					d.cur_lba = first + full - 1;
+				}
+				if (rest) {
+					memcpy(d.block, &m_t_stage[full << d.sector_shift], rest);
+					d.cur_lba = first + full;
 				}
 				m_t_data_buffer_pos += done;
 				m_transfer_count -= done;
