@@ -111,9 +111,9 @@ struct frame_load_stats
 	// category was the largest in an over-budget frame
 	uint64_t cost_prev[MSFC_COUNT] = { };
 	// reported: compile, flush, rex3, guest (CPU time less the first
-	// three), composite, present, chd, other (busy time outside all of
+	// three), composite, present, chd, chdw (CHD writes), other (busy time outside all of
 	// them: other devices, timers, the scheduler)
-	static constexpr int NREPORT = 8;
+	static constexpr int NREPORT = 9;
 	double cost_all[NREPORT] = { };
 	double cost_over[NREPORT] = { };
 	uint64_t top_over[NREPORT] = { };
@@ -166,8 +166,8 @@ struct frame_load_stats
 			const double cost[NREPORT] = {
 				raw[MSFC_COMPILE], raw[MSFC_FLUSH], raw[MSFC_REX3],
 				std::max(0.0, raw[MSFC_CPU] - raw[MSFC_COMPILE] - raw[MSFC_FLUSH] - raw[MSFC_REX3]),
-				raw[MSFC_COMPOSITE], raw[MSFC_PRESENT], raw[MSFC_CHD],
-				std::max(0.0, busy - raw[MSFC_CPU] - raw[MSFC_COMPOSITE] - raw[MSFC_PRESENT] - raw[MSFC_CHD]) };
+				raw[MSFC_COMPOSITE], raw[MSFC_PRESENT], raw[MSFC_CHD], raw[MSFC_CHD_WRITE],
+				std::max(0.0, busy - raw[MSFC_CPU] - raw[MSFC_COMPOSITE] - raw[MSFC_PRESENT] - raw[MSFC_CHD] - raw[MSFC_CHD_WRITE]) };
 			int top = 0;
 			for (int c = 0; c < NREPORT; c++)
 			{
@@ -229,7 +229,7 @@ struct frame_load_stats
 					(unsigned long long)frames[b], emu_s[b]);
 			lo = s_edges[b];
 		}
-		static const char *const names[NREPORT] = { "compile", "flush", "rex3", "guest", "composite", "present", "chd", "other" };
+		static const char *const names[NREPORT] = { "compile", "flush", "rex3", "guest", "composite", "present", "chd", "chdw", "other" };
 		fprintf(f, "COST_ALL");
 		for (int c = 0; c < NREPORT; c++)
 			fprintf(f, " %s=%.4f", names[c], cost_all[c]);

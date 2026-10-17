@@ -24,6 +24,7 @@ enum mame_sgi_frame_cost_category
 	MSFC_COMPOSITE,     // Newport screen update (the compositor)
 	MSFC_PRESENT,       // OSD update: render, texture upload, swap
 	MSFC_CHD,           // CHD hunk reads (disk and CD-ROM)
+	MSFC_CHD_WRITE,     // CHD hunk writes (allocation and map update included)
 	MSFC_CPU,           // the main CPU's execute loop, inclusive of the
 	                    // compile, flush and REX3 time spent inside it
 	MSFC_THROTTLE,      // the throttle wait at each frame and the frame load
@@ -60,7 +61,7 @@ private:
 inline uint64_t mame_sgi_frame_cost_nested()
 {
 	return mame_sgi_frame_cost[MSFC_CPU] + mame_sgi_frame_cost[MSFC_COMPOSITE] + mame_sgi_frame_cost[MSFC_PRESENT]
-			+ mame_sgi_frame_cost[MSFC_CHD] + mame_sgi_frame_cost[MSFC_THROTTLE];
+			+ mame_sgi_frame_cost[MSFC_CHD] + mame_sgi_frame_cost[MSFC_CHD_WRITE] + mame_sgi_frame_cost[MSFC_THROTTLE];
 }
 #else
 #define MAME_SGI_FRAME_COST(category) do { } while (0)

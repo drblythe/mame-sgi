@@ -1217,6 +1217,7 @@ std::error_condition chd_file::read_hunk(uint32_t hunknum, void *buffer)
 
 std::error_condition chd_file::write_hunk(uint32_t hunknum, const void *buffer)
 {
+	MAME_SGI_FRAME_COST(MSFC_CHD_WRITE);
 	// punt if no file
 	if (UNEXPECTED(!m_file))
 		return std::error_condition(error::NOT_OPEN);
