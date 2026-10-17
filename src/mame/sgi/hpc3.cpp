@@ -25,6 +25,8 @@
 
 #include <algorithm>
 
+#include "util/multibyte.h"
+
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_PBUS_DMA    (1U << 2)
 #define LOG_SCSI        (1U << 3)
@@ -1135,42 +1137,71 @@ void hpc3_device::scsi_descriptor_done(int channel)
 	fetch_chain(channel);
 }
 
-// writes count bytes from addr up, swizzled as single-byte DMA cycles are
+// Runs of DMA bytes, with the same result as single-byte DMA cycles: byte i
+// of a run starting at addr goes to BYTE4_XOR_BE/LE(addr + i). Within an
+// aligned 8-byte group at a that is a + (i ^ x), with x the XOR's constant
+// (0 or 3), so the group's big-endian qword is the 8 bytes in order (x = 0)
+// or each 4-byte half reversed (x = 3). Aligned groups in RAM go as one
+// qword; the rest, and any run not in RAM (a qword access to a device
+// would not be the same as 8 byte accesses), byte by byte. A run lies
+// within one descriptor, so its start decides.
+namespace {
+inline uint64_t dma_qword_from_bytes(const uint8_t *b, bool swap4)
+{
+	return swap4 ? (uint64_t(get_u32le(b)) << 32) | get_u32le(b + 4) : get_u64be(b);
+}
+inline void dma_bytes_from_qword(uint8_t *b, uint64_t q, bool swap4)
+{
+	if (swap4)
+	{
+		put_u32le(b, uint32_t(q >> 32));
+		put_u32le(b + 4, uint32_t(q));
+	}
+	else
+		put_u64be(b, q);
+}
+} // anonymous namespace
+
 void hpc3_device::dma_write_run(uint32_t addr, const uint8_t *src, uint32_t count, bool big_endian)
 {
-	if (m_gio64_cached)
-	{
-		if (big_endian)
-			for (uint32_t i = 0; i < count; i++)
-				m_gio64_cache.write_byte(BYTE4_XOR_BE(addr + i), src[i]);
-		else
-			for (uint32_t i = 0; i < count; i++)
-				m_gio64_cache.write_byte(BYTE4_XOR_LE(addr + i), src[i]);
-	}
-	else
+	const uint32_t x = big_endian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0);
+	if (!m_gio64_cached)
 	{
 		for (uint32_t i = 0; i < count; i++)
-			m_gio64_space->write_byte(big_endian ? BYTE4_XOR_BE(addr + i) : BYTE4_XOR_LE(addr + i), src[i]);
+			m_gio64_space->write_byte((addr + i) ^ x, src[i]);
+		return;
 	}
+	uint32_t i = 0;
+	if (count >= 16 && m_gio64_cache.read_ptr(addr))
+	{
+		for (; (addr + i) & 7; i++)
+			m_gio64_cache.write_byte((addr + i) ^ x, src[i]);
+		for (; i + 8 <= count; i += 8)
+			m_gio64_cache.write_qword(addr + i, dma_qword_from_bytes(src + i, x != 0));
+	}
+	for (; i < count; i++)
+		m_gio64_cache.write_byte((addr + i) ^ x, src[i]);
 }
 
-// reads count bytes from addr up, swizzled as single-byte DMA cycles are
 void hpc3_device::dma_read_run(uint32_t addr, uint8_t *dst, uint32_t count, bool big_endian)
 {
-	if (m_gio64_cached)
-	{
-		if (big_endian)
-			for (uint32_t i = 0; i < count; i++)
-				dst[i] = m_gio64_cache.read_byte(BYTE4_XOR_BE(addr + i));
-		else
-			for (uint32_t i = 0; i < count; i++)
-				dst[i] = m_gio64_cache.read_byte(BYTE4_XOR_LE(addr + i));
-	}
-	else
+	const uint32_t x = big_endian ? BYTE4_XOR_BE(0) : BYTE4_XOR_LE(0);
+	if (!m_gio64_cached)
 	{
 		for (uint32_t i = 0; i < count; i++)
-			dst[i] = m_gio64_space->read_byte(big_endian ? BYTE4_XOR_BE(addr + i) : BYTE4_XOR_LE(addr + i));
+			dst[i] = m_gio64_space->read_byte((addr + i) ^ x);
+		return;
 	}
+	uint32_t i = 0;
+	if (count >= 16 && m_gio64_cache.read_ptr(addr))
+	{
+		for (; (addr + i) & 7; i++)
+			dst[i] = m_gio64_cache.read_byte((addr + i) ^ x);
+		for (; i + 8 <= count; i += 8)
+			dma_bytes_from_qword(dst + i, m_gio64_cache.read_qword(addr + i), x != 0);
+	}
+	for (; i < count; i++)
+		dst[i] = m_gio64_cache.read_byte((addr + i) ^ x);
 }
 
 uint32_t hpc3_device::scsi_dma_bulk_to_device(int channel, uint8_t *dst, uint32_t count)
