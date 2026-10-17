@@ -77,6 +77,7 @@ public:
 	const hard_disk_file::info &get_info() const;
 	bool read(uint32_t lbasector, void *buffer);
 	bool write(uint32_t lbasector, const void *buffer);
+	bool write(uint32_t lbasector, const void *buffer, uint32_t count);
 	bool flush();  // Bug fix - see chd.cpp's chd_file::flush()
 
 	bool set_block_size(uint32_t blocksize);

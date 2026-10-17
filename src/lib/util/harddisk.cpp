@@ -157,6 +157,23 @@ bool hard_disk_file::write(uint32_t lbasector, const void *buffer)
 	}
 }
 
+bool hard_disk_file::write(uint32_t lbasector, const void *buffer, uint32_t count)
+{
+	if (chd)
+	{
+		std::error_condition err = chd->write_units(lbasector, buffer, count);
+		return !err;
+	}
+	else
+	{
+		size_t actual = 0;
+		std::error_condition err = fhandle->seek(fileoffset + (uint64_t(lbasector) * hdinfo.sectorbytes), SEEK_SET);
+		if (!err)
+			std::tie(err, actual) = util::write(*fhandle, buffer, size_t(hdinfo.sectorbytes) * count);
+		return !err;
+	}
+}
+
 
 /*-------------------------------------------------
     flush - force any pending writes out to the

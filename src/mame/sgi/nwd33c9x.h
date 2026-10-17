@@ -293,6 +293,9 @@ private:
 	bool m_drq_state;
 	bulk_dma_delegate m_bulk_dma_in;
 	bulk_dma_out_delegate m_bulk_dma_out;
+	// whole sectors of a bulk DMA write, written to the disk in one call
+	static constexpr uint32_t T_STAGE_BYTES = 65536;
+	std::unique_ptr<uint8_t[]> m_t_stage;
 
 	void delay(uint32_t cycles);
 	void delay_arb_poll();

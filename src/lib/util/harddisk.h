@@ -43,6 +43,9 @@ public:
 
 	bool read(uint32_t lbasector, void *buffer);
 	bool write(uint32_t lbasector, const void *buffer);
+	// count consecutive sectors in one call; a CHD then writes each whole
+	// hunk once instead of once per sector
+	bool write(uint32_t lbasector, const void *buffer, uint32_t count);
 	bool flush();  // Bug fix - see chd.cpp's chd_file::flush()
 
 	std::error_condition get_inquiry_data(std::vector<uint8_t> &data) const;
