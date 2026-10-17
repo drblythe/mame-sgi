@@ -3,6 +3,15 @@
 #include "emu.h"
 #include "null_modem.h"
 
+// While there is nothing to send, re-check the stream once per character
+// time instead of once per bit time. Each check is a host socket poll, so
+// at 9600 baud this cuts ~9,600 polls per second to ~960; a waiting byte
+// starts at most one character time later, and back-to-back bytes are
+// unaffected (tra_complete() checks again at once).
+#ifndef MAME_SGI_NULL_MODEM_CHAR_POLL
+#define MAME_SGI_NULL_MODEM_CHAR_POLL 1
+#endif
+
 null_modem_device::null_modem_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock) :
 	device_t(mconfig, NULL_MODEM, tag, owner, clock),
 	device_serial_interface(mconfig, *this),
@@ -20,7 +29,8 @@ null_modem_device::null_modem_device(const machine_config &mconfig, const char *
 	m_rts(0),
 	m_dtr(0),
 	m_xoff(0),
-	m_cr(false)
+	m_cr(false),
+	m_poll_bits(1)
 {
 }
 
@@ -76,6 +86,9 @@ void null_modem_device::update_serial(int state)
 	stop_bits_t stopbits = convert_stopbits(m_rs232_stopbits->read());
 
 	set_data_frame(startbits, databits, parity, stopbits);
+#if MAME_SGI_NULL_MODEM_CHAR_POLL
+	m_poll_bits = startbits + databits + (parity != PARITY_NONE) + (stopbits == STOP_BITS_1 ? 1 : stopbits == STOP_BITS_0 ? 0 : 2);
+#endif
 
 	int txbaud = convert_baud(m_rs232_txbaud->read());
 	set_tra_rate(txbaud);
@@ -159,7 +172,11 @@ TIMER_CALLBACK_MEMBER(null_modem_device::update_queue)
 		}
 
 		int const txbaud = convert_baud(m_rs232_txbaud->read());
+#if MAME_SGI_NULL_MODEM_CHAR_POLL
+		m_timer_poll->adjust(attotime::from_hz(txbaud) * m_poll_bits);
+#else
 		m_timer_poll->adjust(attotime::from_hz(txbaud));
+#endif
 	}
 }
 

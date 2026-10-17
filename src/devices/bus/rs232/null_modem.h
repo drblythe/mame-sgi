@@ -53,6 +53,7 @@ private:
 	int m_dtr;
 	int m_xoff;
 	bool m_cr;
+	int m_poll_bits; // bits per character (stream re-check interval while idle)
 };
 
 DECLARE_DEVICE_TYPE(NULL_MODEM, null_modem_device)
