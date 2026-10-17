@@ -18,6 +18,8 @@
 #include "bus/nscsi/cd.h"
 #include "util/multibyte.h"
 
+#include <algorithm>
+
 #define LOG_READS       (1U << 1)
 #define LOG_WRITES      (1U << 2)
 #define LOG_COMMANDS    (1U << 3)
@@ -494,6 +496,7 @@ nwd33c9x_device::nwd33c9x_device(const machine_config &mconfig, const char *tag,
 	: device_t(mconfig, NWD33C9X, tag, owner, clock)
 	, m_irq_cb(*this)
 	, m_drq_cb(*this)
+	, m_bulk_dma_in(*this)
 	, m_aux_bridge(*this, "auxbridge")
 	, m_disk_image(*this, "disk%u", 0U)
 {
@@ -590,6 +593,7 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 
 void nwd33c9x_device::device_start()
 {
+	m_bulk_dma_in.resolve();
 	m_timer = timer_alloc(FUNC(nwd33c9x_device::update_step), this);
 	m_t_timer = timer_alloc(FUNC(nwd33c9x_device::t_update_tick), this);
 
@@ -2359,6 +2363,31 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 	// byte of every transfer always goes through the real REQ/ACK dance
 	// below, same as the last byte (loop condition excludes it).
 	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
+#if MAME_SGI_SCSI_BULK_DMA
+		// Runs of bytes straight to the host's DMA engine. Between the
+		// per-byte iterations below the FIFO is empty and DRQ is low; a run
+		// of n bytes ends in that same state with the position and the
+		// transfer count advanced by n, which is what n iterations do. The
+		// transfer count stays above 1 (as in the loop below), so its zero
+		// transition, and the last byte, are left to the real handshake.
+		if (!m_bulk_dma_in.isnull()) {
+			while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1
+					&& data_fifo_empty() && !m_drq_state) {
+				const t_disk_slot &d = m_t_disk[m_t_active_disk];
+				const uint32_t in_sector = d.bytes_per_sector - (m_t_data_buffer_pos & (d.bytes_per_sector - 1));
+				const uint32_t run = std::min({ in_sector, uint32_t(m_t_data_buffer_size - 1 - m_t_data_buffer_pos), m_transfer_count - 1 });
+				const uint32_t done = m_bulk_dma_in(t_block_at(m_t_data_buffer_pos), run);
+				m_t_data_buffer_pos += done;
+				m_transfer_count -= done;
+				if (done) {
+					i_ctrl_wait(S_REQ, S_REQ);
+					set_i_state(INIT_XFR_WAIT_REQ);
+				}
+				if (done < run)
+					break;
+			}
+		}
+#endif
 		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
 			// Root-caused 2026-10-01 (single-command isolation): the
 			// original version
@@ -2429,20 +2458,26 @@ bool nwd33c9x_device::t_command_done(uint8_t command, uint8_t length) const
 	return true;
 }
 
+// the byte at a position in the current SBUF_BLOCK transfer, reading in
+// its sector when it isn't the one in the buffer
+uint8_t *nwd33c9x_device::t_block_at(int pos)
+{
+	t_disk_slot &d = m_t_disk[m_t_active_disk];
+	int clba = d.lba + (pos >> d.sector_shift);
+	if (clba != d.cur_lba) {
+		d.cur_lba = clba;
+		if (!m_disk_image[m_t_active_disk]->read(d.cur_lba, d.block)) {
+			LOGMASKED(LOG_TARGET, "nwd33c9x target: HD READ ERROR!\n");
+			memset(d.block, 0, sizeof(d.block));
+		}
+	}
+	return &d.block[pos & (d.bytes_per_sector - 1)];
+}
+
 uint8_t nwd33c9x_device::t_get_data(int id, int pos)
 {
-	if (id == SBUF_BLOCK) {
-		t_disk_slot &d = m_t_disk[m_t_active_disk];
-		int clba = d.lba + (pos >> d.sector_shift);
-		if (clba != d.cur_lba) {
-			d.cur_lba = clba;
-			if (!m_disk_image[m_t_active_disk]->read(d.cur_lba, d.block)) {
-				LOGMASKED(LOG_TARGET, "nwd33c9x target: HD READ ERROR!\n");
-				memset(d.block, 0, sizeof(d.block));
-			}
-		}
-		return d.block[pos & (d.bytes_per_sector - 1)];
-	}
+	if (id == SBUF_BLOCK)
+		return *t_block_at(pos);
 	if (id == SBUF_SENSE)
 		return m_t_disk[m_t_active_disk].sense_buffer[pos];
 	return m_t_cmdbuf[pos];

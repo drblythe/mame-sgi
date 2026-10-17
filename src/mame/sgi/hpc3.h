@@ -86,6 +86,14 @@ public:
 	void scsi0_drq(int state);
 	void scsi1_drq(int state);
 
+	// SCSI DMA into memory of a run of bytes from the controller, with the
+	// same result as that many single-byte DRQ/DMA cycles: follows the
+	// descriptor chain, raises the descriptor-end interrupt, stops at the
+	// end of the chain. Returns how many bytes were moved; fewer than count
+	// when the channel is inactive, out of descriptors or set to transfer
+	// towards the device.
+	uint32_t scsi0_dma_bulk_in(const uint8_t *src, uint32_t count) { return scsi_dma_bulk_from_device(0, src, count); }
+
 protected:
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
@@ -145,6 +153,9 @@ protected:
 	void dump_chain(uint32_t base);
 	void fetch_chain(int channel);
 	void decrement_chain(int channel);
+	void scsi_descriptor_done(int channel);
+	uint32_t scsi_dma_bulk_from_device(int channel, const uint8_t *src, uint32_t count);
+	void dma_write_run(uint32_t addr, const uint8_t *src, uint32_t count, bool big_endian);
 	void scsi_fifo_flush(int channel);
 	void scsi_drq(bool state, int channel);
 	//void scsi_dma(int channel);
@@ -209,6 +220,11 @@ protected:
 	const address_space_config m_pio_space_config[10]{};
 
 	required_address_space m_gio64_space;
+	// direct path to memory for runs of DMA bytes, when the GIO64 space is
+	// the 32-bit address, 64-bit big-endian CPU program space it is on the
+	// systems using this; otherwise runs go through m_gio64_space
+	memory_access<32, 3, 0, ENDIANNESS_BIG>::cache m_gio64_cache;
+	bool m_gio64_cached = false;
 	address_space *m_pio_space[10]{};
 	required_device<hal2_device> m_hal2;
 	required_device<seeq80c03_device> m_enet;

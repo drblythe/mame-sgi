@@ -134,6 +134,14 @@
 // defined. Disabled by default.
 // #define MAME_SGI_SCSI_BURST_FASTPATH_COMPARE_DIAG
 
+// With MAME_SGI_SCSI_BURST_FASTPATH, a disk read in BURST mode hands runs of
+// bytes (up to the end of the current sector) to the host's DMA engine in
+// one call through the bulk_dma_in delegate, instead of a DRQ/DMA-read
+// handshake per byte. The host moves what it can and returns the count; the
+// per-byte loop takes over from there exactly as before. Unbound, nothing
+// changes.
+#define MAME_SGI_SCSI_BULK_DMA 1
+
 class nwd33c9x_device;
 
 // Multiple CD-ROMs (2026-09-20): CD-ROM support was never the
@@ -183,6 +191,10 @@ public:
 
 	auto irq_cb() { return m_irq_cb.bind(); }
 	auto drq_cb() { return m_drq_cb.bind(); }
+
+	// see MAME_SGI_SCSI_BULK_DMA
+	using bulk_dma_delegate = device_delegate<uint32_t (const uint8_t *src, uint32_t count)>;
+	template <typename... T> void set_bulk_dma_in(T &&... args) { m_bulk_dma_in.set(std::forward<T>(args)...); }
 
 	// Direct Addressing Interface
 	uint8_t dir_r(offs_t offset);
@@ -276,6 +288,7 @@ private:
 	void clear_drq();
 	devcb_write_line m_drq_cb;
 	bool m_drq_state;
+	bulk_dma_delegate m_bulk_dma_in;
 
 	void delay(uint32_t cycles);
 	void delay_arb_poll();
@@ -355,6 +368,7 @@ private:
 	void t_scsi_command();
 	void t_scsi_message();
 	uint8_t t_get_data(int id, int pos);
+	uint8_t *t_block_at(int pos);
 	void t_put_data(int id, int pos, uint8_t data);
 	void t_status_complete(uint8_t st);
 	void t_resume_deferred();

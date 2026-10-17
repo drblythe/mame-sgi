@@ -98,6 +98,11 @@ void hpc3_device::device_start()
 	for (uint32_t i = 0; i < 10; i++)
 		m_pio_space[i] = &space(AS_PIO0 + i);
 
+	m_gio64_cached = m_gio64_space->addr_width() == 32 && m_gio64_space->data_width() == 64
+			&& m_gio64_space->addr_shift() == 0 && m_gio64_space->endianness() == ENDIANNESS_BIG;
+	if (m_gio64_cached)
+		m_gio64_space->cache(m_gio64_cache);
+
 	save_item(NAME(m_intstat));
 	save_item(NAME(m_misc));
 	save_item(NAME(m_cpu_aux_ctrl));
@@ -1108,21 +1113,65 @@ void hpc3_device::decrement_chain(int channel)
 	scsi_dma_t &dma = m_scsi_dma[channel];
 	dma.m_count--;
 	if (dma.m_count == 0)
+		scsi_descriptor_done(channel);
+}
+
+// the current descriptor's byte count has run out
+void hpc3_device::scsi_descriptor_done(int channel)
+{
+	scsi_dma_t &dma = m_scsi_dma[channel];
+	if (BIT(dma.m_bc, 29))
 	{
-		if (BIT(dma.m_bc, 29))
-		{
-			LOGMASKED(LOG_SCSI_IRQ, "Raising SCSI %d IRQ\n", channel);
-			m_intstat |= 0x100 << channel;
-			m_dma_complete_int_cb(1);
-		}
-		if (BIT(dma.m_bc, 31))
-		{
-			dma.m_active = false;
-			dma.m_ctrl &= ~HPC3_DMACTRL_ENABLE;
-			return;
-		}
-		fetch_chain(channel);
+		LOGMASKED(LOG_SCSI_IRQ, "Raising SCSI %d IRQ\n", channel);
+		m_intstat |= 0x100 << channel;
+		m_dma_complete_int_cb(1);
 	}
+	if (BIT(dma.m_bc, 31))
+	{
+		dma.m_active = false;
+		dma.m_ctrl &= ~HPC3_DMACTRL_ENABLE;
+		return;
+	}
+	fetch_chain(channel);
+}
+
+// writes count bytes from addr up, swizzled as single-byte DMA cycles are
+void hpc3_device::dma_write_run(uint32_t addr, const uint8_t *src, uint32_t count, bool big_endian)
+{
+	if (m_gio64_cached)
+	{
+		if (big_endian)
+			for (uint32_t i = 0; i < count; i++)
+				m_gio64_cache.write_byte(BYTE4_XOR_BE(addr + i), src[i]);
+		else
+			for (uint32_t i = 0; i < count; i++)
+				m_gio64_cache.write_byte(BYTE4_XOR_LE(addr + i), src[i]);
+	}
+	else
+	{
+		for (uint32_t i = 0; i < count; i++)
+			m_gio64_space->write_byte(big_endian ? BYTE4_XOR_BE(addr + i) : BYTE4_XOR_LE(addr + i), src[i]);
+	}
+}
+
+uint32_t hpc3_device::scsi_dma_bulk_from_device(int channel, const uint8_t *src, uint32_t count)
+{
+	scsi_dma_t &dma = m_scsi_dma[channel];
+	uint32_t done = 0;
+	while (done < count && dma.m_active && !dma.m_to_device)
+	{
+		// m_count is 16 bits: a descriptor with a count of 0 runs for 65536
+		// bytes, as decrement_chain() wraps it
+		const uint32_t left = dma.m_count ? dma.m_count : 0x10000;
+		const uint32_t run = std::min(left, count - done);
+		dma_write_run(dma.m_cbp, src + done, run, dma.m_big_endian);
+		dma.m_cbp += run;
+		dma.m_count -= run;
+		done += run;
+		if (dma.m_count == 0)
+			scsi_descriptor_done(channel);
+	}
+	return done;
 }
 
 void hpc3_device::scsi_fifo_flush(int channel)
