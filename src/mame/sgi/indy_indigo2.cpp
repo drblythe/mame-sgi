@@ -638,6 +638,10 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	SOFTWARE_LIST(config, "sgi_mips_hdd").set_original("sgi_mips_hdd");
 }
 
+// Callers add the CPU before calling this. Devices execute in the order they
+// were added, so the CPU then runs before the keyboard controller's MCU in
+// every timeslice: the MCU trails the CPU instead of running ahead of it,
+// and a command the CPU writes never lands in the MCU's past.
 void ip24_state::ip24(machine_config &config, uint32_t system_clock)
 {
 	ip24_base(config, system_clock);
@@ -673,13 +677,13 @@ void ip24_state::ip24(machine_config &config, uint32_t system_clock)
 void ip24_state::indy_5015(machine_config &config)
 {
 	constexpr uint32_t system_clock = 50'000'000;
-	ip24(config, system_clock);
 	R5000BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x8000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x8000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
+	ip24(config, system_clock);
 }
 
 // Factory NVRAM default for the Challenge S, used only when no nvram file
@@ -749,13 +753,13 @@ void ip24_state::init_challenge_s()
 void ip24_state::challenge_s(machine_config &config)
 {
 	constexpr uint32_t system_clock = 60'000'000;
-	ip24(config, system_clock);
 	R5000BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x8000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x8000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
+	ip24(config, system_clock);
 
 	subdevice<gio64_slot_device>("gio64_gfx")->set_default_option(nullptr);
 	subdevice<pc_kbdc_device>("ioc2:kbd")->set_default_option(nullptr);
@@ -776,25 +780,25 @@ void ip24_state::challenge_s(machine_config &config)
 void ip24_state::indy_4613(machine_config &config)
 {
 	constexpr uint32_t system_clock = 44'444'444;
-	ip24(config, system_clock);
 	R4600BE(config, m_maincpu, 3 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
+	ip24(config, system_clock);
 }
 
 void ip24_state::indy_4610(machine_config &config)
 {
 	constexpr uint32_t system_clock = 50'000'000;
-	ip24(config, system_clock);
 	R4600BE(config, m_maincpu, 2 * system_clock);
 	m_maincpu->set_system_clock(system_clock);
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
+	ip24(config, system_clock);
 }
 
 void ip22_state::indigo2_4415(machine_config &config)

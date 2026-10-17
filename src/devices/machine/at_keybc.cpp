@@ -90,6 +90,28 @@
 #include "emu.h"
 #include "at_keybc.h"
 
+// Keep the controller's MCU close behind the host CPU while they talk. A host
+// write runs both in step for a short while (so the host's first status
+// reads after a command see the firmware taking it, as on hardware), and a
+// host read that finds the MCU behind ends the host's timeslice so the MCU
+// runs up to the same time before the next access (so a host polling for a
+// reply sees the firmware's progress rather than one stale value for a whole
+// timeslice). Without this a fast host CPU can run out its polling timeout
+// before the MCU has run at all. This assumes the MCU executes after the host
+// CPU in each timeslice, so that it trails rather than leads.
+#ifndef MAME_SGI_KBDC_CATCH_UP
+#define MAME_SGI_KBDC_CATCH_UP 1
+#endif
+
+#if MAME_SGI_KBDC_CATCH_UP
+#define KBDC_CATCH_UP() \
+	do { if (m_mcu->local_time() < machine().time()) machine().scheduler().abort_timeslice(); } while (0)
+#define KBDC_WRITE_INTERLEAVE() machine().scheduler().perfect_quantum(attotime::from_msec(1))
+#else
+#define KBDC_CATCH_UP() do { } while (0)
+#define KBDC_WRITE_INTERLEAVE() do { } while (0)
+#endif
+
 // Investigating a sustained ~100k/sec interrupt storm on the aux (mouse)
 // port that hangs SGI Indy boot: hle_mouse.cpp's own serial protocol is
 // rate-limited to ~10kHz (ruled out as the direct source by that timing
@@ -158,6 +180,7 @@ DEFINE_DEVICE_TYPE(PS2_KEYBOARD_CONTROLLER, ps2_keyboard_controller_device, "ps2
 
 uint8_t at_kbc_device_base::data_r()
 {
+	KBDC_CATCH_UP();
 	u8 const data = m_mcu->upi41_master_r(0U);
 	LOG("data_r 0x%02x (%s)\n", data, machine().describe_context());
 	return data;
@@ -165,6 +188,7 @@ uint8_t at_kbc_device_base::data_r()
 
 uint8_t at_kbc_device_base::status_r()
 {
+	KBDC_CATCH_UP();
 	u8 const data = m_mcu->upi41_master_r(1U);
 	LOGMASKED(LOG_STATUS, "status_r 0x%02x%s%s%s%s%s%s%s%s (%s)\n", data,
 		BIT(data, 7) ? " PER" : "", BIT(data, 6) ? " RTO" : "",
@@ -179,6 +203,7 @@ void at_kbc_device_base::data_w(uint8_t data)
 {
 	LOG("data_w 0x%02x (%s)\n", data, machine().describe_context());
 	machine().scheduler().synchronize(timer_expired_delegate(FUNC(at_kbc_device_base::write_data), this), unsigned(data));
+	KBDC_WRITE_INTERLEAVE();
 }
 
 void at_kbc_device_base::command_w(uint8_t data)
@@ -281,6 +306,7 @@ void at_kbc_device_base::command_w(uint8_t data)
 		LOG("command_w 0x%02x (%s)\n", data, machine().describe_context());
 
 	machine().scheduler().synchronize(timer_expired_delegate(FUNC(at_kbc_device_base::write_command), this), unsigned(data));
+	KBDC_WRITE_INTERLEAVE();
 }
 
 void at_kbc_device_base::kbd_clk_w(int state)
@@ -457,6 +483,7 @@ uint8_t ps2_keyboard_controller_device::data_r()
 		s_kbdc_next_dump = now + osd_ticks_per_second() * 2;
 	}
 #endif
+	KBDC_CATCH_UP();
 	set_kbd_irq(0U);
 	set_aux_irq(0U);
 	u8 const data = m_mcu->upi41_master_r(0U);
@@ -466,6 +493,7 @@ uint8_t ps2_keyboard_controller_device::data_r()
 
 uint8_t ps2_keyboard_controller_device::status_r()
 {
+	KBDC_CATCH_UP();
 	u8 const data = m_mcu->upi41_master_r(1U);
 	LOGMASKED(LOG_STATUS, "status_r 0x%02x%s%s%s%s%s%s%s%s (%s)\n", data,
 		BIT(data, 7) ? " PER" : "",     BIT(data, 6) ? " GTO" : "",
