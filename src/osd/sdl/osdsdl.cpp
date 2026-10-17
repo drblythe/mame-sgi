@@ -3,6 +3,15 @@
 
 #include "osdsdl.h"
 
+// input_update() used to pump the platform event queue (SDL_PumpEvents()),
+// and then every input module's before_poll() drained SDL's queue again
+// through process_events(), whose SDL_PollEvent() pumps the platform queue
+// on every call: several X11 round trips and clock reads per frame. With
+// this, input_update() drains the queue once and the modules' calls within
+// the same update return at once; their polls still see every event, since
+// the drain comes first.
+#define MAME_SGI_SDL_PUMP_ONCE 1
+
 #include "modules/input/input_common.h"
 #include "modules/lib/osdlib.h"
 #include "window.h"
@@ -333,8 +342,15 @@ void sdl_osd_interface::init(running_machine &machine)
 
 void sdl_osd_interface::input_update(bool relative_reset)
 {
+#if MAME_SGI_SDL_PUMP_ONCE
+	process_events();
+	m_events_drained = true;
+	poll_input_modules(relative_reset);
+	m_events_drained = false;
+#else
 	process_events_buf();
 	poll_input_modules(relative_reset);
+#endif
 }
 
 
@@ -496,6 +512,10 @@ void sdl_osd_interface::process_events_buf()
 
 void sdl_osd_interface::process_events()
 {
+#if MAME_SGI_SDL_PUMP_ONCE
+	if (m_events_drained)
+		return;
+#endif
 	std::lock_guard<std::mutex> lock(subscription_mutex());
 	SDL_Event event;
 	while (SDL_PollEvent(&event))

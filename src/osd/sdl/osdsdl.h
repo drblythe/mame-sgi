@@ -203,6 +203,9 @@ private:
 	int m_last_click_y;
 
 	bool m_enable_touch;
+	// set while input_update() polls the input modules after draining the
+	// event queue itself (MAME_SGI_SDL_PUMP_ONCE in osdsdl.cpp)
+	bool m_events_drained = false;
 	unsigned m_next_ptrdev;
 	std::vector<std::pair<SDL_TouchID, unsigned> > m_ptrdev_map;
 };
