@@ -93,6 +93,8 @@ public:
 	// when the channel is inactive, out of descriptors or set to transfer
 	// towards the device.
 	uint32_t scsi0_dma_bulk_in(const uint8_t *src, uint32_t count) { return scsi_dma_bulk_from_device(0, src, count); }
+	// the same towards the controller, from memory into dst
+	uint32_t scsi0_dma_bulk_out(uint8_t *dst, uint32_t count) { return scsi_dma_bulk_to_device(0, dst, count); }
 
 protected:
 	virtual void device_start() override ATTR_COLD;
@@ -156,6 +158,8 @@ protected:
 	void scsi_descriptor_done(int channel);
 	uint32_t scsi_dma_bulk_from_device(int channel, const uint8_t *src, uint32_t count);
 	void dma_write_run(uint32_t addr, const uint8_t *src, uint32_t count, bool big_endian);
+	uint32_t scsi_dma_bulk_to_device(int channel, uint8_t *dst, uint32_t count);
+	void dma_read_run(uint32_t addr, uint8_t *dst, uint32_t count, bool big_endian);
 	void scsi_fifo_flush(int channel);
 	void scsi_drq(bool state, int channel);
 	//void scsi_dma(int channel);

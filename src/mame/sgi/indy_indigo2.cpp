@@ -566,6 +566,7 @@ void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 	m_nwd33c9x_ctrl->drq_cb().set(m_hpc3, FUNC(hpc3_device::scsi0_drq));
 #if MAME_SGI_SCSI_BULK_DMA
 	m_nwd33c9x_ctrl->set_bulk_dma_in(m_hpc3, FUNC(hpc3_device::scsi0_dma_bulk_in));
+	m_nwd33c9x_ctrl->set_bulk_dma_out(m_hpc3, FUNC(hpc3_device::scsi0_dma_bulk_out));
 #endif
 #else
 	auto &scsibus(NSCSI_BUS(config, "scsibus"));

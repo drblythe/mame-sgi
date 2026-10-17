@@ -497,6 +497,7 @@ nwd33c9x_device::nwd33c9x_device(const machine_config &mconfig, const char *tag,
 	, m_irq_cb(*this)
 	, m_drq_cb(*this)
 	, m_bulk_dma_in(*this)
+	, m_bulk_dma_out(*this)
 	, m_aux_bridge(*this, "auxbridge")
 	, m_disk_image(*this, "disk%u", 0U)
 {
@@ -594,6 +595,7 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 void nwd33c9x_device::device_start()
 {
 	m_bulk_dma_in.resolve();
+	m_bulk_dma_out.resolve();
 	m_timer = timer_alloc(FUNC(nwd33c9x_device::update_step), this);
 	m_t_timer = timer_alloc(FUNC(nwd33c9x_device::t_update_tick), this);
 
@@ -2285,6 +2287,35 @@ void nwd33c9x_device::t_target_recv_byte()
 	// byte of every transfer always goes through the real REQ/ACK dance
 	// below, same as the last byte (loop condition excludes it).
 	if (coarse_schedule_eligible() && m_t_active_disk >= 0 && m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos > 0) {
+#if MAME_SGI_SCSI_BULK_DMA
+		// Runs of bytes straight from the host's DMA engine into the sector
+		// buffer: the mirror of t_target_send_buffer_byte()'s bulk loop. A run
+		// ends at or before the sector's end and leaves the block, cur_lba
+		// and the disk as that many t_put_data() calls would.
+		if (!m_bulk_dma_out.isnull()) {
+			while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1
+					&& data_fifo_empty() && !m_drq_state) {
+				t_disk_slot &d = m_t_disk[m_t_active_disk];
+				const int pos = m_t_data_buffer_pos;
+				const uint32_t offset = pos & (d.bytes_per_sector - 1);
+				const uint32_t run = std::min({ d.bytes_per_sector - offset, uint32_t(m_t_data_buffer_size - 1 - pos), m_transfer_count - 1 });
+				const uint32_t done = m_bulk_dma_out(&d.block[offset], run);
+				if (!done)
+					break;
+				m_t_data_buffer_pos += done;
+				m_transfer_count -= done;
+				d.cur_lba = d.lba + (pos >> d.sector_shift);
+				if (offset + done == d.bytes_per_sector) {
+					if (!m_disk_image[m_t_active_disk]->write(d.cur_lba, d.block))
+						LOGMASKED(LOG_TARGET, "nwd33c9x target: HD WRITE ERROR!\n");
+				}
+				i_ctrl_wait(S_REQ, S_REQ);
+				set_i_state(INIT_XFR_WAIT_REQ);
+				if (done < run)
+					break;
+			}
+		}
+#endif
 		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
 			// See t_target_send_buffer_byte()'s identical fix (2026-10-01)
 			// for the full rationale - same two bugs, mirrored for this

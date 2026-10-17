@@ -1154,6 +1154,44 @@ void hpc3_device::dma_write_run(uint32_t addr, const uint8_t *src, uint32_t coun
 	}
 }
 
+// reads count bytes from addr up, swizzled as single-byte DMA cycles are
+void hpc3_device::dma_read_run(uint32_t addr, uint8_t *dst, uint32_t count, bool big_endian)
+{
+	if (m_gio64_cached)
+	{
+		if (big_endian)
+			for (uint32_t i = 0; i < count; i++)
+				dst[i] = m_gio64_cache.read_byte(BYTE4_XOR_BE(addr + i));
+		else
+			for (uint32_t i = 0; i < count; i++)
+				dst[i] = m_gio64_cache.read_byte(BYTE4_XOR_LE(addr + i));
+	}
+	else
+	{
+		for (uint32_t i = 0; i < count; i++)
+			dst[i] = m_gio64_space->read_byte(big_endian ? BYTE4_XOR_BE(addr + i) : BYTE4_XOR_LE(addr + i));
+	}
+}
+
+uint32_t hpc3_device::scsi_dma_bulk_to_device(int channel, uint8_t *dst, uint32_t count)
+{
+	scsi_dma_t &dma = m_scsi_dma[channel];
+	uint32_t done = 0;
+	while (done < count && dma.m_active && dma.m_to_device)
+	{
+		// as in scsi_dma_bulk_from_device()
+		const uint32_t left = dma.m_count ? dma.m_count : 0x10000;
+		const uint32_t run = std::min(left, count - done);
+		dma_read_run(dma.m_cbp, dst + done, run, dma.m_big_endian);
+		dma.m_cbp += run;
+		dma.m_count -= run;
+		done += run;
+		if (dma.m_count == 0)
+			scsi_descriptor_done(channel);
+	}
+	return done;
+}
+
 uint32_t hpc3_device::scsi_dma_bulk_from_device(int channel, const uint8_t *src, uint32_t count)
 {
 	scsi_dma_t &dma = m_scsi_dma[channel];

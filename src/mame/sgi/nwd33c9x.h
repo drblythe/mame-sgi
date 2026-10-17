@@ -137,7 +137,8 @@
 // With MAME_SGI_SCSI_BURST_FASTPATH, a disk read in BURST mode hands runs of
 // bytes (up to the end of the current sector) to the host's DMA engine in
 // one call through the bulk_dma_in delegate, instead of a DRQ/DMA-read
-// handshake per byte. The host moves what it can and returns the count; the
+// handshake per byte, and a disk write takes runs from it through
+// bulk_dma_out. The host moves what it can and returns the count; the
 // per-byte loop takes over from there exactly as before. Unbound, nothing
 // changes.
 #define MAME_SGI_SCSI_BULK_DMA 1
@@ -195,6 +196,8 @@ public:
 	// see MAME_SGI_SCSI_BULK_DMA
 	using bulk_dma_delegate = device_delegate<uint32_t (const uint8_t *src, uint32_t count)>;
 	template <typename... T> void set_bulk_dma_in(T &&... args) { m_bulk_dma_in.set(std::forward<T>(args)...); }
+	using bulk_dma_out_delegate = device_delegate<uint32_t (uint8_t *dst, uint32_t count)>;
+	template <typename... T> void set_bulk_dma_out(T &&... args) { m_bulk_dma_out.set(std::forward<T>(args)...); }
 
 	// Direct Addressing Interface
 	uint8_t dir_r(offs_t offset);
@@ -289,6 +292,7 @@ private:
 	devcb_write_line m_drq_cb;
 	bool m_drq_state;
 	bulk_dma_delegate m_bulk_dma_in;
+	bulk_dma_out_delegate m_bulk_dma_out;
 
 	void delay(uint32_t cycles);
 	void delay_arb_poll();
