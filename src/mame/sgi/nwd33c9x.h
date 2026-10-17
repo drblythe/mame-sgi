@@ -405,6 +405,7 @@ private:
 		uint8_t block[512]{};
 		int lba = 0, cur_lba = -1, blocks = 0;
 		int bytes_per_sector = 0;
+		int sector_shift = 0;   // log2(bytes_per_sector)
 		uint8_t sense_buffer[18]{};
 		std::vector<uint8_t> inquiry_data;
 	};

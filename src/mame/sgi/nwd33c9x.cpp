@@ -636,6 +636,7 @@ void nwd33c9x_device::device_start()
 		save_item(NAME(m_t_disk[i].cur_lba), i);
 		save_item(NAME(m_t_disk[i].blocks), i);
 		save_item(NAME(m_t_disk[i].bytes_per_sector), i);
+		save_item(NAME(m_t_disk[i].sector_shift), i);
 		save_item(NAME(m_t_disk[i].sense_buffer), i);
 	}
 	for (int i = 0; i < int(std::size(m_t_buf_control)); i++) {
@@ -710,9 +711,19 @@ void nwd33c9x_device::device_reset()
 		d.sense_buffer[7] = 10;
 		if (!m_disk_image[i] || !m_disk_image[i]->exists()) {
 			d.bytes_per_sector = 0;
+			d.sector_shift = 0;
 		} else {
 			const auto &hdinfo = m_disk_image[i]->get_info();
 			d.bytes_per_sector = hdinfo.sectorbytes;
+			// t_get_data()/t_put_data() split each byte position into
+			// sector and offset with a shift and a mask, and buffer one
+			// sector in d.block
+			if (d.bytes_per_sector <= 0 || (d.bytes_per_sector & (d.bytes_per_sector - 1)) || d.bytes_per_sector > int(sizeof(d.block)))
+				fatalerror("%s: unsupported sector size %d on disk %d (a power of two up to %d is required)\n",
+						shortname(), d.bytes_per_sector, i, int(sizeof(d.block)));
+			d.sector_shift = 0;
+			while ((1 << d.sector_shift) < d.bytes_per_sector)
+				d.sector_shift++;
 			m_disk_image[i]->get_inquiry_data(d.inquiry_data);
 		}
 		d.cur_lba = -1;
@@ -2422,7 +2433,7 @@ uint8_t nwd33c9x_device::t_get_data(int id, int pos)
 {
 	if (id == SBUF_BLOCK) {
 		t_disk_slot &d = m_t_disk[m_t_active_disk];
-		int clba = d.lba + pos / d.bytes_per_sector;
+		int clba = d.lba + (pos >> d.sector_shift);
 		if (clba != d.cur_lba) {
 			d.cur_lba = clba;
 			if (!m_disk_image[m_t_active_disk]->read(d.cur_lba, d.block)) {
@@ -2430,7 +2441,7 @@ uint8_t nwd33c9x_device::t_get_data(int id, int pos)
 				memset(d.block, 0, sizeof(d.block));
 			}
 		}
-		return d.block[pos % d.bytes_per_sector];
+		return d.block[pos & (d.bytes_per_sector - 1)];
 	}
 	if (id == SBUF_SENSE)
 		return m_t_disk[m_t_active_disk].sense_buffer[pos];
@@ -2441,9 +2452,9 @@ void nwd33c9x_device::t_put_data(int id, int pos, uint8_t data)
 {
 	if (id == SBUF_BLOCK) {
 		t_disk_slot &d = m_t_disk[m_t_active_disk];
-		const int offset = pos % d.bytes_per_sector;
+		const int offset = pos & (d.bytes_per_sector - 1);
 		d.block[offset] = data;
-		d.cur_lba = d.lba + pos / d.bytes_per_sector;
+		d.cur_lba = d.lba + (pos >> d.sector_shift);
 		if (offset == d.bytes_per_sector - 1) {
 			if (!m_disk_image[m_t_active_disk]->write(d.cur_lba, d.block))
 				LOGMASKED(LOG_TARGET, "nwd33c9x target: HD WRITE ERROR!\n");
