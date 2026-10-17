@@ -15,6 +15,74 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include "mame_sgi_framecost.h"
+#include <map>
+#include <x86intrin.h>
+
+// MAME_SGI_FRAME_LOAD per-source split of the busy time outside the
+// categories in mame_sgi_framecost.h: the exclusive time (less any of those
+// categories nested inside) of each timer callback, keyed by its name, and
+// of each executing device, keyed by the device. Counted only while
+// mame_sgi_frame_cost_on is set; written by video_manager with the other
+// frame load figures.
+namespace {
+struct mame_sgi_cost_source
+{
+	const void *key = nullptr;
+	const char *name = nullptr;
+	bool exec = false;
+	uint64_t ticks = 0, calls = 0, max = 0;
+};
+constexpr int MAME_SGI_COST_SOURCES = 1024;
+mame_sgi_cost_source s_mame_sgi_cost_sources[MAME_SGI_COST_SOURCES];
+
+void mame_sgi_cost_source_add(const void *key, const char *name, bool exec, int64_t ticks)
+{
+	if (ticks < 0)
+		ticks = 0;
+	unsigned i = unsigned((uintptr_t(key) * 0x9e3779b97f4a7c15ULL) >> 54) & (MAME_SGI_COST_SOURCES - 1);
+	for (int n = 0; n < MAME_SGI_COST_SOURCES; n++, i = (i + 1) & (MAME_SGI_COST_SOURCES - 1))
+	{
+		mame_sgi_cost_source &e = s_mame_sgi_cost_sources[i];
+		if (e.key == key || !e.key)
+		{
+			if (!e.key)
+			{
+				e.key = key;
+				e.name = name ? name : "<unnamed>";
+				e.exec = exec;
+			}
+			e.ticks += ticks;
+			e.calls++;
+			if (uint64_t(ticks) > e.max)
+				e.max = ticks;
+			return;
+		}
+	}
+}
+} // anonymous namespace
+
+// one line per source, merged by name, cumulative since start:
+//   SOURCE kind=timer|exec s=<seconds> calls=<n> max_ms=<longest call> name=<name>
+void mame_sgi_cost_sources_dump(FILE *f, double tsc_hz)
+{
+	struct total { uint64_t ticks = 0, calls = 0, max = 0; };
+	std::map<std::pair<bool, std::string>, total> merged;
+	for (const mame_sgi_cost_source &e : s_mame_sgi_cost_sources)
+		if (e.key)
+		{
+			total &t = merged[std::make_pair(e.exec, std::string(e.name))];
+			t.ticks += e.ticks;
+			t.calls += e.calls;
+			t.max = std::max(t.max, e.max);
+		}
+	for (const auto &[k, t] : merged)
+		fprintf(f, "SOURCE kind=%s s=%.4f calls=%llu max_ms=%.3f name=%s\n", k.first ? "exec" : "timer",
+				double(t.ticks) / tsc_hz, (unsigned long long)t.calls, 1000.0 * double(t.max) / tsc_hz, k.second.c_str());
+}
+#endif
+
 // TEMPORARY diagnostic (2026-08-24, reworked same day) - bisecting the
 // scheduler's own major phases (CPU execution vs timer/device callback
 // processing) to find which one clobbers the host MXCSR. The original
@@ -635,7 +703,20 @@ void device_scheduler::timeslice()
 						sched_mxcsr_diag_check("before_exec_run");
 #endif
 						if (!call_debugger)
-							exec->run();
+						{
+#if defined(__x86_64__) || defined(_M_X64)
+							if (mame_sgi_frame_cost_on)
+							{
+								const uint64_t mame_sgi_n0 = mame_sgi_frame_cost_nested();
+								const uint64_t mame_sgi_t0 = __rdtsc();
+								exec->run();
+								mame_sgi_cost_source_add(&exec->device(), exec->device().tag(), true,
+										int64_t(__rdtsc() - mame_sgi_t0) - int64_t(mame_sgi_frame_cost_nested() - mame_sgi_n0));
+							}
+							else
+#endif
+								exec->run();
+						}
 						else
 						{
 							exec->debugger_start_cpu_hook(target);
@@ -1163,7 +1244,18 @@ inline void device_scheduler::execute_timers()
 #ifdef MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
 				auto const mame_sgi_outlier_t0 = std::chrono::steady_clock::now();
 #endif
-				timer.m_callback(timer.m_param);
+#if defined(__x86_64__) || defined(_M_X64)
+				if (mame_sgi_frame_cost_on)
+				{
+					const uint64_t mame_sgi_n0 = mame_sgi_frame_cost_nested();
+					const uint64_t mame_sgi_t0 = __rdtsc();
+					timer.m_callback(timer.m_param);
+					mame_sgi_cost_source_add(timer.m_callback.name(), timer.m_callback.name(), false,
+							int64_t(__rdtsc() - mame_sgi_t0) - int64_t(mame_sgi_frame_cost_nested() - mame_sgi_n0));
+				}
+				else
+#endif
+					timer.m_callback(timer.m_param);
 #ifdef MAME_SGI_TIMER_CALLBACK_OUTLIER_DIAG
 				{
 					auto const mame_sgi_outlier_t1 = std::chrono::steady_clock::now();

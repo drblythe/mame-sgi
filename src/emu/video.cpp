@@ -87,6 +87,8 @@ osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
 #include "mame_sgi_framecost.h"
+// per-source split of the remaining busy time (schedule.cpp)
+void mame_sgi_cost_sources_dump(FILE *f, double tsc_hz);
 namespace {
 struct frame_load_stats
 {
@@ -192,7 +194,6 @@ struct frame_load_stats
 		if (!path)
 			return;
 		const uint64_t now = __rdtsc();
-		last_end_tsc = now;
 		have_prev = true;
 		if (lag > lag_max)
 			lag_max = lag;
@@ -200,10 +201,15 @@ struct frame_load_stats
 			lag_weighted += lag;
 		if (now >= next_dump_tsc)
 		{
+			// writing the file is measurement overhead, not emulation: count
+			// it with the throttle wait and start the next frame's busy time
+			// after it
+			MAME_SGI_FRAME_COST(MSFC_THROTTLE);
 			tsc_hz = double(now - cal_tsc0) * osd_ticks_per_second() / double(osd_ticks() - cal_os0);
 			next_dump_tsc = now + uint64_t(tsc_hz);
 			dump();
 		}
+		last_end_tsc = __rdtsc();
 	}
 
 	void dump()
@@ -234,6 +240,7 @@ struct frame_load_stats
 		for (int c = 0; c < NREPORT; c++)
 			fprintf(f, " %s=%llu", names[c], (unsigned long long)top_over[c]);
 		fprintf(f, "\n");
+		mame_sgi_cost_sources_dump(f, tsc_hz);
 		fclose(f);
 	}
 } s_frame_load;
@@ -438,7 +445,12 @@ void video_manager::frame_update(bool from_debugger)
 		s_frame_load.before(current_time);
 #endif
 	if (!from_debugger && phase > machine_phase::INIT && !m_low_latency && effective_throttle())
+	{
+#ifdef MAME_SGI_FRAME_LOAD
+		MAME_SGI_FRAME_COST(MSFC_THROTTLE);
+#endif
 		update_throttle(current_time);
+	}
 #ifdef MAME_SGI_FRAME_LOAD
 	if (frame_load_point)
 		s_frame_load.after((m_throttle_realtime - m_throttle_emutime).as_double());
@@ -477,7 +489,12 @@ void video_manager::frame_update(bool from_debugger)
 #ifdef MAME_SGI_FRAME_LOAD
 		s_frame_load.before(current_time);
 #endif
-		update_throttle(current_time);
+		{
+#ifdef MAME_SGI_FRAME_LOAD
+			MAME_SGI_FRAME_COST(MSFC_THROTTLE);
+#endif
+			update_throttle(current_time);
+		}
 #ifdef MAME_SGI_FRAME_LOAD
 		s_frame_load.after((m_throttle_realtime - m_throttle_emutime).as_double());
 #endif

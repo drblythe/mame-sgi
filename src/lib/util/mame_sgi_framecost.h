@@ -26,6 +26,9 @@ enum mame_sgi_frame_cost_category
 	MSFC_CHD,           // CHD hunk reads (disk and CD-ROM)
 	MSFC_CPU,           // the main CPU's execute loop, inclusive of the
 	                    // compile, flush and REX3 time spent inside it
+	MSFC_THROTTLE,      // the throttle wait at each frame and the frame load
+	                    // file writes (not busy time; counted so that time
+	                    // nested in a timer callback can leave it out)
 	MSFC_COUNT
 };
 
@@ -51,6 +54,14 @@ private:
 	uint64_t m_start;
 };
 #define MAME_SGI_FRAME_COST(category) mame_sgi_frame_cost_scope mame_sgi_frame_cost_scope_(category)
+
+// the time already attributed above that a timer callback or another
+// executing device can contain (REX3, compile and flush are inside the CPU)
+inline uint64_t mame_sgi_frame_cost_nested()
+{
+	return mame_sgi_frame_cost[MSFC_CPU] + mame_sgi_frame_cost[MSFC_COMPOSITE] + mame_sgi_frame_cost[MSFC_PRESENT]
+			+ mame_sgi_frame_cost[MSFC_CHD] + mame_sgi_frame_cost[MSFC_THROTTLE];
+}
 #else
 #define MAME_SGI_FRAME_COST(category) do { } while (0)
 #endif
