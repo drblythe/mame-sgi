@@ -11,7 +11,8 @@
 // blocks instead of being rejected, MODE SENSE returns the device
 // configuration and medium partition pages (one unpartitioned medium), and
 // SPACE with a negative count spaces backward (the count was unsigned, so
-// every SPACE went forward).
+// every SPACE went forward), and a tape replaced by another is reported as
+// a medium change only.
 #ifndef MAME_SGI_TAPE_DAT_SUPPORT
 #define MAME_SGI_TAPE_DAT_SUPPORT 1
 #endif
@@ -157,7 +158,15 @@ void nscsi_tape_device::scsi_command()
 		m_has_tape = m_image->get_file();
 		m_tape_changed = true;
 		m_rw_pending = false;
+#if MAME_SGI_TAPE_DAT_SUPPORT
+		// a tape replaced by another one between two commands is reported as
+		// a medium change only (UNIT ATTENTION), as a drive whose cartridge
+		// was swapped without the host polling it in between would; a tape
+		// unloaded and not replaced is still reported as removed first
+		if (had_tape && !m_has_tape) {
+#else
 		if (had_tape) { // we report no tape to let initiator know old tape has been removed
+#endif
 			LOG("command %s (ignored)\n", command_names[cmd], cmd);
 			return report_no_medium();
 		}
