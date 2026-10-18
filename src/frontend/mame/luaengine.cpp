@@ -9,6 +9,11 @@
 ***************************************************************************/
 
 #include "emu.h"
+
+// Fix a data race in emu.thread(): see thread_context::start().
+#ifndef MAME_SGI_LUA_THREAD_RACE_FIX
+#define MAME_SGI_LUA_THREAD_RACE_FIX 1
+#endif
 #include "luaengine.ipp"
 
 #include "mame.h"
@@ -110,6 +115,60 @@ public:
 		if (m_busy)
 			return false;
 
+#if MAME_SGI_LUA_THREAD_RACE_FIX
+		// The thread runs Lua on m_state without the lock, so nothing else may
+		// touch m_state while it runs: the load result is popped here, before
+		// the thread exists, and the thread drops its call result and its
+		// function reference before it clears m_busy (after which the next
+		// start() may load into m_state again).
+		sol::protected_function func;
+		{
+			sol::load_result res = m_state.load(scr);
+			if (!res.valid())
+			{
+				sol::error err = res;
+				luaL_error(s, err.what());
+				return false; // unreachable - luaL_error throws
+			}
+			func = res.get<sol::protected_function>();
+		}
+
+		std::thread th(
+				[this, func = std::move(func)] () mutable
+				{
+					bool ok;
+					std::optional<std::string> result;
+					std::string error;
+					{
+						auto ret = func();
+						ok = ret.valid();
+						if (ok)
+						{
+							auto value = ret.get<std::optional<char const *> >();
+							if (value)
+								result = *value ? std::string(*value) : std::string();
+						}
+						else
+						{
+							sol::error err = ret;
+							error = err.what();
+						}
+					}
+					func = sol::protected_function();
+					std::unique_lock<std::mutex> result_lock(m_guard);
+					if (!ok)
+						osd_printf_error("[LUA ERROR] in thread: %s\n", error);
+					else if (!result)
+						osd_printf_error("[LUA ERROR] in thread: return value must be string\n");
+					else
+						m_result = std::move(*result);
+					m_busy = false;
+				});
+		m_busy = true;
+		m_yield = false;
+		th.detach();
+		return true;
+#else
 		sol::load_result res = m_state.load(scr);
 		if (!res.valid())
 		{
@@ -144,6 +203,7 @@ public:
 		m_yield = false;
 		th.detach(); // FIXME: this is unsafe as the thread function modifies members of the object
 		return true;
+#endif
 	}
 
 	void resume(char const *val)
