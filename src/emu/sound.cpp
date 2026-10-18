@@ -10,6 +10,14 @@
 
 #include "emu.h"
 
+// The Lua sound hook scan in streams_update() walks a cached list of the
+// machine's sound interfaces instead of enumerating the whole device tree
+// (a dynamic_cast per device) on every update. Devices don't change after
+// start.
+#ifndef MAME_SGI_SOUND_IFACE_CACHE
+#define MAME_SGI_SOUND_IFACE_CACHE 1
+#endif
+
 #include "audio_effects/aeffect.h"
 #include "resampler.h"
 
@@ -2704,8 +2712,16 @@ void sound_manager::streams_update()
 	// Send the hooked samples to lua
 	{
 		std::map<std::string, std::vector<std::pair<const float *, int>>> sound_data;
+#if MAME_SGI_SOUND_IFACE_CACHE
+		if(m_sound_interfaces.empty())
+			for(device_sound_interface &sound : sound_interface_enumerator(machine().root_device()))
+				m_sound_interfaces.push_back(&sound);
+		for(device_sound_interface *soundp : m_sound_interfaces)
+			if(device_sound_interface &sound = *soundp; sound.get_sound_hook()) {
+#else
 		for(device_sound_interface &sound : sound_interface_enumerator(machine().root_device()))
 			if(sound.get_sound_hook()) {
+#endif
 				std::vector<std::pair<const float *, int>> buffers;
 				if(sound.device().type() == SPEAKER) {
 					const emu::detail::output_buffer_flat<sample_t> &buffer = m_speakers[static_cast<speaker_device &>(sound.device()).get_id()].m_buffer;

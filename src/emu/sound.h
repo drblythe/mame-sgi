@@ -662,6 +662,7 @@ private:
 	// streams data
 	std::vector<std::unique_ptr<sound_stream>> m_stream_list; // list of streams
 	std::vector<sound_stream *> m_ordered_streams;  // Streams in update order
+	std::vector<device_sound_interface *> m_sound_interfaces; // every sound interface, for the Lua sound hook scan (filled on first use)
 	u32 m_outputs_count;
 
 	// resampler data
