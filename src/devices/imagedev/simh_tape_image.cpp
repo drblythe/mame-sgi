@@ -47,7 +47,11 @@ std::pair<std::error_condition, std::string> simh_tape_image_device::call_create
 {
 	LOG("simh_tape_image_device::call_create filename=%s format_type=%d\n", filename(), format_type);
 	try {
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+		u64 file_size = 0; // a new tape is an empty file that grows as it's written
+#else
 		u64 file_size = 62914560; // we default to 60MB; TODO: allow specifying tape image size, once MAME supports it
+#endif
 		m_file.reset(new simh_tape_file(image_core_file(), file_size, is_readonly(), true));
 	}
 	catch (std::exception &e) { // error: creating tape failed

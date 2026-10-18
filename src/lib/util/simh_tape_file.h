@@ -12,13 +12,25 @@
 
 #include <string>
 
+// Growable tape images: the tape's capacity is nominal, max(file size,
+// SIMH_TAPE_NOMINAL_CAPACITY); the file holds only what has been written,
+// bytes past its end read as blank tape (0xff, the EOM marker), and every
+// write or erase cuts the file off at the new end of data, as writing a real
+// tape makes everything after it unreadable.
+#define MAME_SGI_SIMH_TAPE_GROWABLE
+
 //////////////////////////////////////////////////////////////////////////////
 
 class simh_tape_file : public tape_file_interface
 {
 public:
 	// construction and destruction
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	static constexpr osd::u64 SIMH_TAPE_NOMINAL_CAPACITY = 2'000'000'000; // DDS-1, 90 m tape
+	simh_tape_file(util::core_file &file, osd::u64 file_size, bool read_only, bool create = false);
+#else
 	simh_tape_file(util::random_read_write &file, osd::u64 file_size, bool read_only, bool create = false);
+#endif
 	virtual ~simh_tape_file();
 
 	// position-preserving operations
@@ -52,10 +64,19 @@ protected:
 	void write_bytes(const osd::u64 pos, const osd::u8 *const buf, const osd::u32 len) const;
 	void write_byte_repeat(const osd::u64 pos, const osd::u8 data, const osd::u32 len) const;
 	void write_word(const osd::u64 pos, const osd::u32 data) const;
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	void end_data_at(const osd::u64 pos);
+#endif
 
 	// state
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	util::core_file &m_file; // tape image file
+	osd::u64 m_file_size; // nominal capacity of the tape
+	osd::u64 m_data_size; // size of tape image file; the tape is blank from here on
+#else
 	util::random_read_write &m_file; // tape image file
 	osd::u64 m_file_size; // size of tape image file
+#endif
 	bool m_read_only; // should we disallow destructive operations on tape image
 	osd::u64 m_pos; // tape position
 };

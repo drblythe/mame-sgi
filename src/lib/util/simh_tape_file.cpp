@@ -7,8 +7,12 @@
 #include "simh_tape_file.h"
 
 #include "ioprocs.h"
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+#include "corefile.h"
+#endif
 #include "multibyte.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <cstring>
@@ -87,6 +91,22 @@ inline osd::u32 get_simh_marker_value(const simh_marker marker)
 
 // construction
 
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+simh_tape_file::simh_tape_file(util::core_file &file, osd::u64 file_size, bool read_only, bool create)
+	: m_file(file)
+	, m_file_size(std::max(file_size, SIMH_TAPE_NOMINAL_CAPACITY))
+	, m_data_size(file_size)
+	, m_read_only(read_only)
+	, m_pos(0)
+{
+	if (create) {
+		if (read_only) // error: we cannot create read-only file
+			throw std::runtime_error("read-only file");
+
+		end_data_at(0); // a new tape is blank: an empty file
+	}
+}
+#else
 simh_tape_file::simh_tape_file(util::random_read_write &file, osd::u64 file_size, bool read_only, bool create)
 	: m_file(file)
 	, m_file_size(file_size)
@@ -100,6 +120,7 @@ simh_tape_file::simh_tape_file(util::random_read_write &file, osd::u64 file_size
 		write_byte_repeat(0, 0xff, m_file_size); // we assume simh_marker::EOM == 0xffffffff
 	}
 }
+#endif
 
 simh_tape_file::~simh_tape_file()
 {
@@ -133,6 +154,14 @@ void simh_tape_file::raw_write(const osd::u8 *const buf, const osd::u32 len) con
 
 void simh_tape_file::read_bytes(const osd::u64 pos, osd::u8 *const buf, const osd::u32 len) const
 {
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	if (pos >= m_data_size) { // blank tape past the end of the file
+		memset(buf, 0xff, len); // we assume simh_marker::EOM == 0xffffffff
+		return;
+	}
+	if (pos + len > m_data_size) // error: file ends inside a marker or block
+		throw std::runtime_error("truncated file");
+#endif
 	raw_seek(pos);
 	raw_read(buf, len);
 }
@@ -141,8 +170,12 @@ osd::u32 simh_tape_file::read_word(const osd::u64 pos) const
 {
 	const osd::u32 tmp_len = 4;
 	osd::u8 tmp_buf[tmp_len];
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	read_bytes(pos, tmp_buf, tmp_len);
+#else
 	raw_seek(pos);
 	raw_read(tmp_buf, tmp_len);
+#endif
 	return get_u32le(tmp_buf);
 }
 
@@ -171,6 +204,22 @@ void simh_tape_file::write_word(const osd::u64 pos, const osd::u32 data) const
 	raw_seek(pos);
 	raw_write(tmp_buf, tmp_len);
 }
+
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+void simh_tape_file::end_data_at(const osd::u64 pos)
+{
+	// data after a write or erase is gone, so the file ends here; positions
+	// only reach past the file's end by erasing or by moving to EOM, and
+	// writes there fail with EOM, so the file never needs a gap filled
+	assert(pos <= m_data_size);
+	if (pos < m_data_size) {
+		std::error_condition err = m_file.truncate(pos);
+		if (err) // error: we failed to cut the file off
+			throw std::runtime_error(std::string("failed truncate: ") + err.message());
+	}
+	m_data_size = pos;
+}
+#endif
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -580,9 +629,15 @@ void simh_tape_file::erase(bool eom)
 	assert(!m_read_only);
 	assert(m_pos <= m_file_size);
 	assert(m_pos % 2 == 0);
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	if (m_pos < m_data_size) // we always erase entire remainder of tape
+		end_data_at(m_pos);
+	m_pos = m_file_size;
+#else
 	const osd::u32 write_len = m_file_size - m_pos; // we always erase entire remainder of tape
 	write_byte_repeat(m_pos, 0xff, write_len); // we assume simh_marker::EOM == 0xffffffff
 	m_pos += write_len;
+#endif
 }
 
 tape_status simh_tape_file::write_block(const osd::u8 *buf, osd::u32 req_block_len)
@@ -600,6 +655,12 @@ tape_status simh_tape_file::write_block(const osd::u8 *buf, osd::u32 req_block_l
 	write_byte_repeat(m_pos + 4 + req_block_len, 0, pad_len);
 	write_word(m_pos + 4 + req_block_len + pad_len, req_block_len);
 	m_pos += write_len;
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	if (m_pos > m_data_size)
+		m_data_size = m_pos;
+	else
+		end_data_at(m_pos);
+#endif
 	return is_ew() ? tape_status::EW : tape_status::OK; // success: we wrote another block
 }
 
@@ -616,6 +677,12 @@ tape_status simh_tape_file::write_filemarks(osd::u32 req_filemarks_num, bool set
 	for (osd::u32 i = 0; i < write_len; i += 4)
 		write_word(m_pos + i, osd::u32(simh_marker::TAPE_MARK));
 	m_pos += write_len;
+#ifdef MAME_SGI_SIMH_TAPE_GROWABLE
+	if (m_pos > m_data_size)
+		m_data_size = m_pos;
+	else
+		end_data_at(m_pos);
+#endif
 	return is_ew() ? tape_status::EW : tape_status::OK; // success: we wrote all filemarks
 }
 
