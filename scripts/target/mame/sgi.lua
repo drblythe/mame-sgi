@@ -132,8 +132,9 @@ BUSES["GIO64"] = true
 -- BUSES["HEATHZENITH_H19"] = true         -- unused: no SGI driver file
 -- BUSES["HEATHZENITH_INTR_CNTRL"] = true  -- references anything HeathZenith.
 -- BUSES["NSCSI"] = true  -- pulls in all 18 NSCSI peripheral types (36 files);
--- indy_indigo2.cpp's own scsi_devices() only ever instantiates NSCSI_CDROM_SGI
--- and NSCSI_HARDDISK, so those two device files are hand-listed below instead.
+-- indy_indigo2.cpp's own scsi_devices() only ever instantiates NSCSI_CDROM_SGI,
+-- NSCSI_HARDDISK and NSCSI_TAPE_SGI, so those device files are hand-listed
+-- below instead.
 BUSES["PC_KBD"] = true
 -- BUSES["RS232"] = true  -- pulls in ~19 historic serial peripheral types (42
 -- files) via rs232.cpp's default_rs232_devices(). That function was removed
@@ -257,6 +258,8 @@ files{
 	MAME_DIR .. "src/devices/bus/nscsi/cd.h",
 	MAME_DIR .. "src/devices/bus/nscsi/hd.cpp",
 	MAME_DIR .. "src/devices/bus/nscsi/hd.h",
+	MAME_DIR .. "src/devices/bus/nscsi/tape.cpp",
+	MAME_DIR .. "src/devices/bus/nscsi/tape.h",
 	MAME_DIR .. "src/devices/bus/rs232/rs232.cpp",
 	MAME_DIR .. "src/devices/bus/rs232/rs232.h",
 	MAME_DIR .. "src/devices/bus/rs232/loopback.cpp",

@@ -6,6 +6,16 @@
 
 #include "emu.h"
 
+// Support what a DAT drive driver needs beyond the basics (IRIX's tpsc for
+// a DDS drive): MODE SELECT with block length 0 selects variable-length
+// blocks instead of being rejected, MODE SENSE returns the device
+// configuration and medium partition pages (one unpartitioned medium), and
+// SPACE with a negative count spaces backward (the count was unsigned, so
+// every SPACE went forward).
+#ifndef MAME_SGI_TAPE_DAT_SUPPORT
+#define MAME_SGI_TAPE_DAT_SUPPORT 1
+#endif
+
 #include "tape.h"
 
 #include "util/multibyte.h"
@@ -43,6 +53,7 @@ void clear_response(uint8_t (&buf)[N], T len)
 
 DEFINE_DEVICE_TYPE(NSCSI_TAPE, nscsi_tape_device, "scsi_tape", "SCSI tape");
 DEFINE_DEVICE_TYPE(NSCSI_TAPE_NEWS, nscsi_tape_news_device, "scsi_tape_news", "SCSI tape NEWS");
+DEFINE_DEVICE_TYPE(NSCSI_TAPE_SGI, nscsi_tape_sgi_device, "scsi_tape_sgi", "SCSI DAT tape SGI");
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -75,6 +86,14 @@ nscsi_tape_device::nscsi_tape_device(const machine_config &config, const char *t
 // See /usr/src/sys/newsiodev/stdefs.c for more information (or to compile a kernel with support for other drives)
 nscsi_tape_news_device::nscsi_tape_news_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock) :
 	nscsi_tape_device(mconfig, NSCSI_TAPE_NEWS, tag, owner, clock, "ARCHIVE", "VIPER 150", "0000")
+{
+}
+
+// An Archive Python 25601 DDS-1 DAT drive, as IRIX's SCSI tape table
+// (master.d/scsi, tpsc_types) knows it: type DATTAPE, variable and fixed
+// blocks, partition-aware. The INQUIRY strings are what IRIX matches.
+nscsi_tape_sgi_device::nscsi_tape_sgi_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock) :
+	nscsi_tape_device(mconfig, NSCSI_TAPE_SGI, tag, owner, clock, "ARCHIVE", "Python 25601", "5.45")
 {
 }
 
@@ -322,13 +341,21 @@ void nscsi_tape_device::continue_handling_mode_select_6()
 		if (blocks_num) // error: we don't support changing block length for only some amount of blocks
 			return report_bad_pl_field();
 
+#if MAME_SGI_TAPE_DAT_SUPPORT
+		// block length 0 selects variable-length blocks (SCSI-2 section 10.3.3);
+		// READ and WRITE take the mode from their own fixed bit, so keep the
+		// fixed-block length as it is
+		if (block_len != 0) {
+#else
 		if (block_len == 0) // error: requested block length is bad
 			return report_bad_pl_field();
-
+		{
+#endif
 		m_fixed_block_len = block_len;
 		if (m_fixed_block_len > m_rw_buf_size) {
 			m_rw_buf_size = m_fixed_block_len;
 			m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
+		}
 		}
 	}
 	u32 page_num = 0;
@@ -384,14 +411,27 @@ void nscsi_tape_device::handle_mode_sense_6() // mandatory; SCSI-2 sections 8.2.
 	if ((m_scsi_cmdbuf[1] & 0x17) || m_scsi_cmdbuf[3]) // error: reserved bits set
 		return report_bad_cdb_field();
 
+#if MAME_SGI_TAPE_DAT_SUPPORT
+	if (page_code && page_code != SPC_RETURN_ALL_MODE_PAGES && page_code != SPC_DEVICE_CONFIGURATION_PAGE && page_code != SPC_MEDIUM_PARTITION_PAGE_1)
+		return report_bad_cdb_field();
+#else
 	if (page_code && page_code != SPC_RETURN_ALL_MODE_PAGES) // error: we don't support pages other than 0
 		return report_bad_cdb_field();
+#endif
 
 	// TODO: support more pages, such as SPC_DATA_COMPRESSION_PAGE, and SPC_DEVICE_CONFIGURATION_PAGE with BIS bit set to indicate we support reporting block addresses in response to READ POSITION
 	if (page_control == SPC_SAVED_VALUES) // error: we don't support saving parameters
 		return report_no_saving_params();
 
+#if MAME_SGI_TAPE_DAT_SUPPORT
+	const u8 alloc_len = m_scsi_cmdbuf[4];
+	const bool all = page_code == SPC_RETURN_ALL_MODE_PAGES;
+	const bool devconf = all || page_code == SPC_DEVICE_CONFIGURATION_PAGE;
+	const bool partition = all || page_code == SPC_MEDIUM_PARTITION_PAGE_1;
+	const u8 resp_len = (bd_disable ? 4 : 12) + (devconf ? 16 : 0) + (partition ? 8 : 0); // response length
+#else
 	const u8 resp_len = bd_disable ? 4 : 12; // response length
+#endif
 	clear_response(m_scsi_cmdbuf, resp_len);
 	m_scsi_cmdbuf[0] = resp_len - 1; // mode data length does not include itself, per SCSI-2 section 8.3.3
 	m_scsi_cmdbuf[2] = (m_has_tape && m_image->get_file()->is_read_only()) ? 0x80 : 0; // device-specific parameter
@@ -400,7 +440,23 @@ void nscsi_tape_device::handle_mode_sense_6() // mandatory; SCSI-2 sections 8.2.
 		m_scsi_cmdbuf[4] = m_has_tape ? m_image->get_file()->get_density_code() : 0; // density code
 		put_u24be(&m_scsi_cmdbuf[9], m_fixed_block_len); // block length
 	}
+#if MAME_SGI_TAPE_DAT_SUPPORT
+	u8 *page = &m_scsi_cmdbuf[bd_disable ? 4 : 12];
+	if (devconf) { // device configuration page, SCSI-2 section 10.3.3.1: partition 0 active, block identifiers supported
+		page[0] = SPC_DEVICE_CONFIGURATION_PAGE;
+		page[1] = 14;
+		page[8] = 0x40; // BIS: READ POSITION reports block addresses
+		page += 16;
+	}
+	if (partition) { // medium partition page 1, SCSI-2 section 10.3.3.3: one partition, none additional
+		page[0] = SPC_MEDIUM_PARTITION_PAGE_1;
+		page[1] = 6;
+		page[5] = 0x03; // medium format recognition: format and partition recognition
+	}
+	scsi_data_in(SBUF_MAIN, std::min<u32>(resp_len, alloc_len));
+#else
 	scsi_data_in(SBUF_MAIN, resp_len);
+#endif
 	scsi_status_complete(SS_GOOD);
 }
 
@@ -745,7 +801,11 @@ void nscsi_tape_device::handle_rewind() // mandatory; SCSI-2 section 10.2.11
 void nscsi_tape_device::handle_space() // mandatory; SCSI-2 section 10.2.12
 {
 	const u8 items_type = m_scsi_cmdbuf[1] & 0x07; // what type of items should we space over
+#if MAME_SGI_TAPE_DAT_SUPPORT
+	const s32 req_dir_items_num = get_s24be(&m_scsi_cmdbuf[2]); // requested direction and number of items to space over; "count" (signed: negative spaces backward)
+#else
 	const u32 req_dir_items_num = get_s24be(&m_scsi_cmdbuf[2]); // requested direction and number of items to space over; "count"
+#endif
 	LOG("command SPACE items_type=0x%02x req_dir_items_num=%d\n", items_type, req_dir_items_num);
 	if (m_scsi_cmdbuf[1] & 0x18) // error: reserved bits set
 		return report_bad_cdb_field();

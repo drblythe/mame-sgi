@@ -63,6 +63,7 @@
 #include "bus/gio64/gio64.h"
 #include "bus/nscsi/cd.h"
 #include "bus/nscsi/hd.h"
+#include "bus/nscsi/tape.h"
 #include "bus/pc_kbd/pc_kbdc.h"
 #include "cpu/mips/mips3.h"
 #include "machine/ds1386.h"
@@ -505,6 +506,7 @@ void ip24_state::scsi_devices(device_slot_interface &device)
 {
 	device.option_add("cdrom", NSCSI_CDROM_SGI);
 	device.option_add("harddisk", NSCSI_HARDDISK);
+	device.option_add("tape", NSCSI_TAPE_SGI); // DDS-1 DAT drive (SIMH .tap image)
 	//device.set_option_machine_config("cdrom", cdrom_config);
 }
 

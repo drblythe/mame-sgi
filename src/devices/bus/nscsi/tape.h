@@ -11,6 +11,7 @@
 
 DECLARE_DEVICE_TYPE(NSCSI_TAPE, nscsi_tape_device);
 DECLARE_DEVICE_TYPE(NSCSI_TAPE_NEWS, nscsi_tape_news_device)
+DECLARE_DEVICE_TYPE(NSCSI_TAPE_SGI, nscsi_tape_sgi_device)
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -88,6 +89,13 @@ class nscsi_tape_news_device : public nscsi_tape_device
 {
 public:
 	nscsi_tape_news_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock = 0);
+};
+
+// Archive Python 25601 DDS-1 DAT drive, as IRIX knows it
+class nscsi_tape_sgi_device : public nscsi_tape_device
+{
+public:
+	nscsi_tape_sgi_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock = 0);
 };
 
 //////////////////////////////////////////////////////////////////////////////

@@ -16,6 +16,7 @@
 #include "nwd33c9x.h"
 
 #include "bus/nscsi/cd.h"
+#include "bus/nscsi/tape.h"
 #include "util/multibyte.h"
 
 #include <algorithm>
@@ -490,6 +491,7 @@ void nwd33c9x_aux_bridge_device::scsi_ctrl_changed()
 void nwd33c9x_device::cdrom_devices(device_slot_interface &device)
 {
 	device.option_add("cdrom", NSCSI_CDROM_SGI);
+	device.option_add("tape", NSCSI_TAPE_SGI); // DDS-1 DAT drive (SIMH .tap image)
 }
 
 nwd33c9x_device::nwd33c9x_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
