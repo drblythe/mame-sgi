@@ -153,19 +153,6 @@ namespace uml {
 		OP_BREAK,                   // BREAK
 		OP_EXIT,                    // EXIT    src1[,c]
 		OP_HASHJMP,                 // HASHJMP mode,pc,handle
-		OP_DIRECTJMP,               // DIRECTJMP slotptr - PROTOTYPE (2026-08-08, SGI driver):
-		                            // resets the host stack pointer (same invariant
-		                            // HASHJMP's own preamble maintains) then jumps
-		                            // through the host code pointer stored at
-		                            // *slotptr - no mode/pc table walk at all. Only
-		                            // safe when the caller has already established,
-		                            // by some other means, that *slotptr holds a
-		                            // valid, resolved target for the current dispatch
-		                            // (see mips3.h/mips3drc.cpp's guard-based inline
-		                            // cache for the actual safety argument - this op
-		                            // provides no validation of its own). x64-only;
-		                            // not implemented in drcbearm64.cpp/drcbec.cpp
-		                            // since this driver never runs on those backends.
 		OP_JMP,                     // JMP     imm[,c]
 		OP_EXH,                     // EXH     handle,param[,c]
 		OP_CALLH,                   // CALLH   handle[,c]
@@ -471,7 +458,6 @@ namespace uml {
 		void exit(parameter param) { configure(OP_EXIT, 4, param); }
 		void exit(condition_t cond, parameter param) { configure(OP_EXIT, 4, param, cond); }
 		void hashjmp(parameter mode, parameter pc, code_handle &handle) { configure(OP_HASHJMP, 4, mode, pc, handle); }
-		void directjmp(void const *slotptr) { configure(OP_DIRECTJMP, 4, parameter::make_memory(slotptr)); }
 		void jmp(code_label label) { configure(OP_JMP, 4, label); }
 		void jmp(condition_t cond, code_label label) { configure(OP_JMP, 4, label, cond); }
 		void exh(code_handle &handle, parameter param) { configure(OP_EXH, 4, handle, param); }

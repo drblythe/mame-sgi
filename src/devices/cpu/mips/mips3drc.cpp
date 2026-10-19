@@ -731,35 +731,6 @@ std::string drc_compile_rate_timestamp()
 // test; not re-enabled since.
 // #define MAME_SGI_SEQUENCE_LENGTH_DIAG
 
-// TEMPORARY diagnostic toggle (2026-08-08) - per-call-site inline-cache
-// hit-rate probe at the jmpdest HASHJMP site, see
-// m_diag_callsite_ic_state's comment in mips3.h. NOT cheap like the
-// counters above - this is a real UML_CALLC (full C++ call + hash-map
-// lookup) on every jmpdest dispatch (~115M/boot partial-boot measurement,
-// 2026-08-07), specifically to answer one question before committing to
-// the self-patching/inline-caching redesign (2026-08-08): does
-// a 1-slot per-call-site cache actually hit, or does JR $ra (polymorphic
-// return, ~26% of indirect_jump terminations) thrash it. Wall time under
-// this diagnostic is expected to be significantly distorted (same
-// methodology caveat as -debug) - only the hit/miss ratio is meaningful,
-// not absolute timing. Off by default.
-// DISABLED (2026-08-17) for the stock-vs-modified A/B
-// test; not re-enabled since.
-// #define MAME_SGI_CALLSITE_IC_HITRATE_DIAG
-
-// PROTOTYPE toggle (2026-08-08) - the guard-based per-call-site inline
-// cache at the jmpdest site, see the class-scope comment near
-// m_diag_callsite_ic_state in mips3.h for the full design and history
-// (two earlier redesigns - a per-call-site heap allocation, then a
-// UML_CALLH + runtime byte-patching scheme found genuinely unsafe via a
-// real guest-level crash - both preceded this one). Current design uses
-// a new backend primitive, OP_DIRECTJMP (uml.h/drcbex64.cpp), to jump
-// directly through a per-slot memory address with no table walk and no
-// byte patching - the rsp-reset invariant that made byte-patching unsafe
-// is handled correctly inside the new op itself, mirroring op_hashjmp's
-// own preamble.
-// #define MAME_SGI_CALLSITE_IC_PROTOTYPE
-
 
 // TEMPORARY diagnostic (2026-08-24) - MXCSR-desync investigation
 // (fcvt_r/%f leading-digit corruption). Scheduler-level checkpoints
@@ -898,9 +869,6 @@ static void cfunc_printf_exception(void *param);
 static void cfunc_get_cycles(void *param);
 static void cfunc_printf_probe(void *param);
 static void cfunc_debug_break(void *param);
-#ifdef MAME_SGI_CALLSITE_IC_PROTOTYPE
-static void cfunc_ic_learn_and_arm(void *param);
-#endif
 
 
 /***************************************************************************
@@ -1165,27 +1133,6 @@ void mips3_device::code_flush_cache()
 			block.end();
 		}
 
-#ifdef MAME_SGI_CALLSITE_IC_PROTOTYPE
-		// PROTOTYPE (2026-08-08): reset every per-call-site inline-cache
-		// slot's guard expectation to the sentinel - covers both every
-		// later flush AND the very first, pre-flush setup, since this
-		// whole function runs unconditionally once before any dynamic
-		// compile (execute_run(), mips3.cpp). No handles to (re)arm with
-		// the OP_DIRECTJMP design - see the class-scope comment near
-		// m_diag_callsite_ic_state (mips3.h) for the full design/history.
-		// ic_site_target doesn't strictly need resetting (func_ic_learn_
-		// and_arm() only ever reads/writes it together with committing a
-		// non-sentinel expected_pc, so a stale value can never be
-		// observed - see that function's own comment) but zeroing it
-		// anyway costs nothing and makes a bug in that invariant fail
-		// loudly (a jump through nullptr) instead of silently.
-		for (int i = 0; i < MAME_SGI_IC_SITE_COUNT; i++)
-		{
-			m_core->ic_site_expected_mode[i] = 0xFFFFFFFFu;
-			m_core->ic_site_expected_pc[i] = 0xFFFFFFFFu;
-			m_core->ic_site_target[i] = 0;
-		}
-#endif
 
 		/* add subroutines for memory accesses */
 		for (mode = 0; mode < 3; mode++)
@@ -2185,7 +2132,6 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 
 
-
 				// DISABLED (2026-07-29): like the COMPILETIME(elocore_exl_N)
 				// print above, this was never gated - found while
 				// investigating whether repeated recompiles of the known
@@ -2612,87 +2558,6 @@ static void cfunc_get_cycles(void *param)
 {
 	((mips3_device *)param)->func_get_cycles();
 }
-
-
-/*-------------------------------------------------
-    cfunc_callsite_ic_probe - TEMPORARY diagnostic
-    (2026-08-08): see m_diag_callsite_ic_state's
-    comment in mips3.h. Called on every jmpdest
-    dispatch when MAME_SGI_CALLSITE_IC_HITRATE_DIAG
-    is on - looks up this call site's (desc->pc) last
-    resolved {mode,pc}, compares against the live
-    values, updates hit/miss counts, and stores the
-    live values as the new "last seen" pair.
--------------------------------------------------*/
-
-void mips3_device::func_callsite_ic_probe()
-{
-	callsite_ic_entry &entry = m_diag_callsite_ic_state[m_core->diag_ic_probe_callsite];
-	if (entry.seen && entry.last_mode == m_core->diag_ic_probe_mode && entry.last_pc == m_core->jmpdest)
-		entry.hits++;
-	else
-		entry.misses++;
-	entry.seen = true;
-	entry.last_mode = m_core->diag_ic_probe_mode;
-	entry.last_pc = m_core->jmpdest;
-}
-
-#ifdef MAME_SGI_CALLSITE_IC_HITRATE_DIAG
-static void cfunc_callsite_ic_probe(void *param)
-{
-	((mips3_device *)param)->func_callsite_ic_probe();
-}
-#endif
-
-
-#ifdef MAME_SGI_CALLSITE_IC_PROTOTYPE
-/*-------------------------------------------------
-    cfunc_ic_learn_and_arm - PROTOTYPE (2026-08-08):
-    see the class-scope comment near m_diag_callsite_
-    ic_state (mips3.h) for the full design/history.
-    Runs on the guard-miss path, the first time a
-    given slot is touched this generation (expected_pc
-    still the sentinel) - never again until the next
-    flush resets it.
-
-    Commits expected_mode/expected_pc and ic_site_
-    target TOGETHER, and only once hash_exists()/
-    get_codeptr() have actually succeeded - if the
-    target isn't compiled yet, the slot is left at the
-    sentinel entirely (retried on the next dispatch of
-    this slot, whatever call site that turns out to be)
-    rather than "established but unresolved". This is
-    the invariant that makes OP_DIRECTJMP safe to reach
-    unconditionally on a guard hit: expected_pc !=
-    sentinel is only ever true when ic_site_target also
-    holds a valid, resolved codeptr - there's no
-    intermediate state where a hit could jump through a
-    null/stale slot.
--------------------------------------------------*/
-
-void mips3_device::func_ic_learn_and_arm()
-{
-	uint32_t const idx = m_core->ic_slot_index;
-	if (m_core->ic_site_expected_pc[idx] != 0xFFFFFFFFu)
-		return;   // already established this generation - nothing to do
-
-	uint32_t const mode = m_core->ic_live_mode;
-	uint32_t const pc = m_core->jmpdest;
-
-	if (!m_drcuml->hash_exists(mode, pc))
-		return;   // not compiled yet - stays at the sentinel, retried on the next dispatch of this slot
-
-	drccodeptr const target = m_drcuml->get_codeptr(mode, pc);
-	m_core->ic_site_target[idx] = (uint64_t)(uintptr_t)target;
-	m_core->ic_site_expected_mode[idx] = mode;
-	m_core->ic_site_expected_pc[idx] = pc;
-}
-
-static void cfunc_ic_learn_and_arm(void *param)
-{
-	((mips3_device *)param)->func_ic_learn_and_arm();
-}
-#endif
 
 
 /*-------------------------------------------------
@@ -4911,8 +4776,6 @@ static void cfunc_unimplemented(void *param)
 }
 
 
-
-
 #ifdef MAME_SGI_TASK101_REENTRY_FREQ_DIAG
 // See diag_entry_reentry_count's comment in mips3.h. Called via UML_CALLC
 // at the very top of static_generate_entry_point()'s generated code -
@@ -6761,64 +6624,6 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 		UML_MOVc(block, COND_E, I2, 1);                                         // mov     i2,1,E
 		UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_crosspage), mem(&m_core->diag_jmpdest_dispatch_crosspage), I2);
 		UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_total), mem(&m_core->diag_jmpdest_dispatch_total), 1);
-#endif
-#ifdef MAME_SGI_CALLSITE_IC_HITRATE_DIAG
-		// TEMPORARY diagnostic (2026-08-08) - see cfunc_callsite_ic_probe's
-		// comment above and m_diag_callsite_ic_state's comment in mips3.h.
-		// desc->pc (this JR/JALR instruction's own guest address) is the
-		// call-site identity - stable across re-executions of this same
-		// compiled instance, which is what a real per-call-site inline
-		// cache would key on. I3 already holds the live resolved dispatch
-		// key (generate_select_dispatch_key() just above); jmpdest itself
-		// already holds the live target pc, read directly in the probe.
-		UML_MOV(block, mem(&m_core->diag_ic_probe_callsite), desc->pc);
-		UML_MOV(block, mem(&m_core->diag_ic_probe_mode), I3);
-		UML_CALLC(block, cfunc_callsite_ic_probe, this);
-#endif
-#ifdef MAME_SGI_CALLSITE_IC_PROTOTYPE
-		// PROTOTYPE (2026-08-08) - see the class-scope comment near
-		// m_diag_callsite_ic_state (mips3.h) for the full design/history.
-		// ic_idx is a purely compile-time hash of this call site's own
-		// desc->pc into the fixed slot table - different call sites CAN
-		// collide on the same slot, which is safe (the guard always
-		// re-validates live values before trusting the fast path; a
-		// collision just means more guard misses for the colliding
-		// sites, never a wrong jump). Guard reads the slot's current
-		// expectation live via mem() - NOT baked as an immediate, since
-		// func_ic_learn_and_arm() sets these at runtime, after this code
-		// is already generated. On a hit, OP_DIRECTJMP jumps straight
-		// through &m_core->ic_site_target[ic_idx] - a fixed, compile-
-		// time-known host address (m_core never moves once allocated),
-		// so unlike the earlier byte-patched design there's no
-		// instruction-address-capture problem to solve at all here.
-		//
-		// On a MISS, additionally check (cheaply - one more CMP against
-		// the sentinel, only reached on the already-taken slow path)
-		// whether this slot has never been established; if so, call
-		// cfunc_ic_learn_and_arm() to seed it from THIS dispatch's live
-		// values. This only actually does anything the first time each
-		// slot is touched per generation (at most MAME_SGI_IC_SITE_COUNT
-		// times total, not per-dispatch) - every later use of an
-		// established slot either guard-hits (fast path, untouched by
-		// this) or guard-misses against a REAL (non-sentinel)
-		// expectation and correctly does nothing further here.
-		{
-			uint32_t const ic_idx = (desc->pc >> 2) % MAME_SGI_IC_SITE_COUNT;
-			uml::code_label const ic_slow = compiler_temp.labelnum++;
-			uml::code_label const ic_established = compiler_temp.labelnum++;
-			UML_CMP(block, I3, mem(&m_core->ic_site_expected_mode[ic_idx]));   // cmp     <mode>,[ic_site_expected_mode[idx]]
-			UML_JMPc(block, COND_NE, ic_slow);                                  // jmp     ic_slow,NE
-			UML_CMP(block, mem(&m_core->jmpdest), mem(&m_core->ic_site_expected_pc[ic_idx])); // cmp [jmpdest],[ic_site_expected_pc[idx]]
-			UML_JMPc(block, COND_NE, ic_slow);                                  // jmp     ic_slow,NE
-			UML_DIRECTJMP(block, &m_core->ic_site_target[ic_idx]);             // directjmp &ic_site_target[idx]
-			UML_LABEL(block, ic_slow);                                          // ic_slow:
-			UML_CMP(block, mem(&m_core->ic_site_expected_pc[ic_idx]), 0xFFFFFFFFU); // cmp [ic_site_expected_pc[idx]],SENTINEL
-			UML_JMPc(block, COND_NE, ic_established);                          // jmp     ic_established,NE
-			UML_MOV(block, mem(&m_core->ic_live_mode), I3);                     // mov     [ic_live_mode],<mode>
-			UML_MOV(block, mem(&m_core->ic_slot_index), ic_idx);                // mov     [ic_slot_index],ic_idx
-			UML_CALLC(block, cfunc_ic_learn_and_arm, this);                     // callc   ic_learn_and_arm
-			UML_LABEL(block, ic_established);                                   // ic_established:
-		}
 #endif
 		UML_HASHJMP(block, I3, mem(&m_core->jmpdest), *m_nocode);   // hashjmp <mode>,<rsreg>,nocode
 #else

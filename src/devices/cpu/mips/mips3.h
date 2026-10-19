@@ -37,14 +37,6 @@ MIPS III/IV emulator.
 // build-verify convention for this exact gotcha.
 #define MIPS3_DEBUG_HELPERS
 
-// PROTOTYPE (2026-08-08): fixed slot count for the per-call-site guard-
-// based inline cache (see the class-scope comment, below, near
-// m_diag_callsite_ic_state). Must be visible to internal_mips3_state,
-// which embeds the near-cache-resident slot arrays - a plain #define,
-// not a class member, since internal_mips3_state is declared before any
-// class-scope constant would be.
-#define MAME_SGI_IC_SITE_COUNT 256
-
 // WAIT (R4600/R4700/R5000) idles until the next scheduled event instead of
 // executing as a no-op: when no enabled-and-pending interrupt is visible in
 // Cause & Status, the CPU gives up the rest of its timeslice. Emulated time
@@ -927,55 +919,6 @@ protected:
 		uint32_t        diag_seqexit_hashjmp_target_in_batch;
 		uint32_t        diag_seqexit_hashjmp_target_outside_batch;
 
-		// TEMPORARY diagnostic (2026-08-08) - live values read by
-		// func_callsite_ic_probe() (mips3drc.cpp), fed from the jmpdest
-		// HASHJMP call site (generate_delay_slot_and_branch). diag_ic_probe_
-		// callsite is desc->pc, baked in at compile time as this JR/JALR's
-		// own address (the call-site identity); diag_ic_probe_mode is the
-		// live resolved dispatch key (I3). jmpdest itself already holds the
-		// live target pc, read directly by the probe - no separate field
-		// needed. See m_diag_callsite_ic_state's comment for the full
-		// mechanism/purpose.
-		uint32_t        diag_ic_probe_callsite;
-		uint32_t        diag_ic_probe_mode;
-
-		// PROTOTYPE (2026-08-08) - live values read by
-		// func_ic_learn_and_arm() (mips3drc.cpp), fed from the jmpdest
-		// guard-miss/establish path (generate_delay_slot_and_branch).
-		// ic_live_mode is the live resolved dispatch key (I3), stashed to
-		// memory because it's not guaranteed to survive the CALLC's
-		// underlying host call. ic_slot_index identifies which slot just
-		// missed, a compile-time immediate at each call site
-		// (= hash(desc->pc) % MAME_SGI_IC_SITE_COUNT). jmpdest itself
-		// already holds the live target pc. An earlier version of this
-		// design also needed a third field here (the call site's own
-		// instruction address, for byte-patching) - no longer necessary
-		// now that OP_DIRECTJMP (uml.h/drcbex64.cpp) reads its target
-		// from a fixed, compile-time-known host address
-		// (&m_core->ic_site_target[idx]) rather than needing any runtime-
-		// captured instruction address at all. See the class-scope
-		// comment near m_diag_callsite_ic_state for the full mechanism.
-		uint32_t        ic_live_mode;
-		uint32_t        ic_slot_index;
-
-		// PROTOTYPE (2026-08-08): the per-call-site guard-based inline
-		// cache's slot table itself - parallel arrays (not an array of
-		// structs, to avoid a nested-struct forward reference to a type
-		// declared later in this class) of MAME_SGI_IC_SITE_COUNT guard
-		// expectations plus their resolved targets, indexed by
-		// ic_slot_index. Deliberately embedded directly in
-		// internal_mips3_state so it's automatically near-cache-resident
-		// (same allocation as m_core itself) - critically, this also
-		// means &ic_site_target[idx] is a fixed, compile-time-known host
-		// address usable directly as OP_DIRECTJMP's PTR parameter, with
-		// none of the "capture an assembled instruction's address" timing
-		// problems the earlier byte-patch design fought - see the
-		// class-scope comment near m_diag_callsite_ic_state for the full
-		// design/history.
-		uint32_t        ic_site_expected_mode[MAME_SGI_IC_SITE_COUNT];
-		uint32_t        ic_site_expected_pc[MAME_SGI_IC_SITE_COUNT];
-		uint64_t        ic_site_target[MAME_SGI_IC_SITE_COUNT];
-
 													/* parameters for subroutines */
 		uint64_t        numcycles;                  /* return value from gettotalcycles */
 		const char *    format;                     /* format string for print_debug */
@@ -1249,86 +1192,6 @@ protected:
 	// m_diag_usermode_recompile_counts in device_stop() (mips3.cpp).
 	std::unordered_set<uint32_t> m_diag_kernel_dispatch_mode_values;
 
-	// TEMPORARY diagnostic (2026-08-08): measures whether a 1-slot
-	// per-call-site inline cache would actually hit at jmpdest (JR/JALR),
-	// the hottest HASHJMP dispatch site - the deciding question before
-	// implementing the self-patching/inline-caching redesign discussed
-	// 2026-08-08 (targets HASHJMP's 3-dependent-load table walk,
-	// shown to cost DRC 38.6x more cache-misses/instruction than the
-	// interpreter on identical guest work). Keyed by desc->pc (this JR/JALR
-	// instruction's own guest address - the call-site identity, stable
-	// across re-executions of the same compiled instance). Each entry
-	// tracks the last resolved {mode,pc} pair seen at that call site plus
-	// hit/miss counts against that 1-slot model. JR $ra (function return)
-	// is the specific risk: the same physical call site's target varies by
-	// caller, the classic polymorphic case that thrashes a monomorphic
-	// cache. Populated in func_callsite_ic_probe() (mips3drc.cpp), gated on
-	// MAME_SGI_CALLSITE_IC_HITRATE_DIAG there; dumped alongside the other
-	// diagnostic maps in mips3.cpp's device_stop().
-	struct callsite_ic_entry
-	{
-		bool     seen = false;
-		uint32_t last_mode = 0;
-		uint32_t last_pc = 0;
-		uint32_t hits = 0;
-		uint32_t misses = 0;
-	};
-	std::unordered_map<uint32_t, callsite_ic_entry> m_diag_callsite_ic_state;
-
-	// PROTOTYPE (2026-08-08): per-call-site guard-based inline cache for
-	// the jmpdest HASHJMP site (targets the measured 38.6x cache-
-	// miss/instruction gap between DRC and the interpreter, traced to
-	// HASHJMP's 3 sequential dependent loads through large, sparse
-	// global tables). Two full redesigns preceded this one: (1) a
-	// per-call-site heap allocation, broken by this backend's mem()/
-	// MABS() addressing requiring every operand within 2GB of rbp and
-	// by the near-cache's tiny fixed 128KB budget; (2) a `UML_CALLH` +
-	// runtime byte-patching scheme (convert a compiled `call` into a
-	// `jmp` in place), which got as far as a working address-capture
-	// mechanism but was then found to be UNSAFE - `op_hashjmp` resets
-	// the host stack pointer before every jump (`mov rsp, [m_near.
-	// stacksave]`), an invariant a raw patched jmp can't replicate
-	// (5 bytes, no room, and the field is private to drcbe_x64 anyway)
-	// - confirmed by a real guest-level `Memory fault(coredump)` on the
-	// first proper boot test. That's what motivated OP_DIRECTJMP (uml.h/
-	// drcbex64.cpp) - a new backend primitive that does the same rsp
-	// reset HASHJMP does, then one indirect jump through a memory slot,
-	// no table walk.
-	//
-	// Current (third) design, using OP_DIRECTJMP: a small, FIXED-SIZE
-	// table of MAME_SGI_IC_SITE_COUNT slots, embedded directly in
-	// internal_mips3_state as parallel arrays (ic_site_expected_mode/
-	// ic_site_expected_pc/ic_site_target - not an array-of-structs, to
-	// avoid a nested-struct forward reference to a type declared later
-	// in this class), automatically near-cache-resident along with
-	// m_core itself. A call site's own slot index is a cheap,
-	// compile-time hash of its own desc->pc, mod MAME_SGI_IC_SITE_COUNT
-	// - no allocation at compile time, and critically, NO per-instruction
-	// address capture either: `&m_core->ic_site_target[idx]` is a fixed,
-	// compile-time-known host address the moment m_core itself is
-	// allocated (device_start()), so it can be passed directly as
-	// OP_DIRECTJMP's PTR parameter with none of the "capture an
-	// assembled instruction's address" timing problems the byte-patch
-	// design fought. Different call sites CAN collide on the same slot;
-	// this is safe, not a correctness bug - the guard always
-	// re-validates live {mode,pc} against the slot's current expectation
-	// before trusting the fast path, so a collision just means more
-	// guard misses (degraded to the always-correct HASHJMP fallback)
-	// for the colliding sites, never a wrong jump.
-	//
-	// expected_mode/expected_pc are reset to the sentinel UINT32_MAX (a
-	// MIPS jmpdest value that can never legitimately occur) for every
-	// slot at the start of every flush (code_flush_cache(), mips3drc.cpp)
-	// - this also covers the very first, pre-flush setup, since
-	// code_flush_cache() unconditionally runs once before any dynamic
-	// compile (execute_run(), mips3.cpp). func_ic_learn_and_arm()
-	// (mips3drc.cpp) commits expected_mode/expected_pc and ic_site_target
-	// TOGETHER, in the same operation, and only once hash_exists()/
-	// get_codeptr() have actually succeeded - guaranteeing "established"
-	// (non-sentinel expected_pc) always implies a valid, resolved
-	// ic_site_target, so a guard-hit can never reach OP_DIRECTJMP with
-	// an unresolved (null) target. Never updated again until the next
-	// flush resets them.
 	void generate_exception(int exception, int backup);
 	void generate_tlb_exception(int exception, offs_t address);
 
@@ -1418,8 +1281,6 @@ private:
 	void code_compile_block(uint32_t mode, offs_t pc);
 public:
 	void func_get_cycles();
-	void func_callsite_ic_probe();
-	void func_ic_learn_and_arm();
 	void func_printf_exception();
 	void func_lockstate_probe(int site);
 	void func_mutex_wake_entry_probe();

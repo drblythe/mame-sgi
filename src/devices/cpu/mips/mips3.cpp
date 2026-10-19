@@ -626,65 +626,6 @@ void mips3_device::device_stop()
 				unsigned(m_diag_kernel_dispatch_mode_values.size()), values.c_str());
 	}
 
-	// TEMPORARY diagnostic (2026-08-08): dump the per-call-site inline-
-	// cache hit-rate probe - see mips3.h's comment on
-	// m_diag_callsite_ic_state for the full mechanism/purpose. Buckets
-	// call sites by their own hit rate (hits/(hits+misses)) and reports
-	// both site-count and dispatch-volume share per bucket, since a
-	// minority of high-traffic polymorphic sites (e.g. a shared JR $ra
-	// epilogue) could dominate volume even if most distinct sites are
-	// monomorphic. Unconditionally safe when empty - only populated if
-	// MAME_SGI_CALLSITE_IC_HITRATE_DIAG was defined in mips3drc.cpp.
-	if (!m_diag_callsite_ic_state.empty())
-	{
-		static constexpr int NUM_BUCKETS = 5;
-		static const char *const bucket_labels[NUM_BUCKETS] =
-				{ "<10%", "10-50%", "50-90%", "90-99%", "100%" };
-		uint64_t bucket_sites[NUM_BUCKETS] = {};
-		uint64_t bucket_probes[NUM_BUCKETS] = {};
-		uint64_t total_hits = 0, total_probes = 0;
-
-		for (auto const &pair : m_diag_callsite_ic_state)
-		{
-			callsite_ic_entry const &entry = pair.second;
-			uint64_t const probes = uint64_t(entry.hits) + entry.misses;
-			if (probes == 0)
-				continue;
-			double const rate = double(entry.hits) / double(probes);
-			int bucket;
-			if (rate >= 1.0)
-				bucket = 4;
-			else if (rate >= 0.90)
-				bucket = 3;
-			else if (rate >= 0.50)
-				bucket = 2;
-			else if (rate >= 0.10)
-				bucket = 1;
-			else
-				bucket = 0;
-			bucket_sites[bucket]++;
-			bucket_probes[bucket] += probes;
-			total_hits += entry.hits;
-			total_probes += probes;
-		}
-
-		osd_printf_verbose(
-				"Call-site IC hit-rate diag: %u distinct call sites, %llu total probes, "
-				"%.2f%% overall hit rate\n",
-				unsigned(m_diag_callsite_ic_state.size()),
-				(unsigned long long)total_probes,
-				total_probes ? 100.0 * double(total_hits) / double(total_probes) : 0.0);
-		osd_printf_verbose("  hit-rate bucket   sites          probes (share of total)\n");
-		for (int b = 0; b < NUM_BUCKETS; b++)
-		{
-			osd_printf_verbose(
-					"  %-15s   %-12u   %llu (%.2f%%)\n",
-					bucket_labels[b], unsigned(bucket_sites[b]),
-					(unsigned long long)bucket_probes[b],
-					total_probes ? 100.0 * double(bucket_probes[b]) / double(total_probes) : 0.0);
-		}
-	}
-
 	if (m_drcfe != nullptr)
 	{
 		m_drcfe = nullptr;

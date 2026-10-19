@@ -608,7 +608,6 @@ private:
 	void op_debug(Assembler &a, const uml::instruction &inst);
 	void op_exit(Assembler &a, const uml::instruction &inst);
 	void op_hashjmp(Assembler &a, const uml::instruction &inst);
-	void op_directjmp(Assembler &a, const uml::instruction &inst);
 	void op_jmp(Assembler &a, const uml::instruction &inst);
 	void op_exh(Assembler &a, const uml::instruction &inst);
 	void op_callh(Assembler &a, const uml::instruction &inst);
@@ -766,7 +765,6 @@ inline void drcbe_x64::generate_one(Assembler &a, const uml::instruction &inst)
 	case uml::OP_DEBUG:   op_debug(a, inst);      break; // DEBUG   pc
 	case uml::OP_EXIT:    op_exit(a, inst);       break; // EXIT    src1[,c]
 	case uml::OP_HASHJMP: op_hashjmp(a, inst);    break; // HASHJMP mode,pc,handle
-	case uml::OP_DIRECTJMP: op_directjmp(a, inst); break; // DIRECTJMP slotptr
 	case uml::OP_JMP:     op_jmp(a, inst);        break; // JMP     imm[,c]
 	case uml::OP_EXH:     op_exh(a, inst);        break; // EXH     handle,param[,c]
 	case uml::OP_CALLH:   op_callh(a, inst);      break; // CALLH   handle[,c]
@@ -2514,40 +2512,6 @@ void drcbe_x64::op_hashjmp(Assembler &a, const instruction &inst)
 
 	mov_mem_param(a, MABS(&m_state.exp, 4), pcp);
 	a.call(MABS(exp.handle().codeptr_addr()));
-}
-
-
-//-------------------------------------------------
-//  op_directjmp - process a DIRECTJMP opcode -
-//  PROTOTYPE (2026-08-08, SGI driver): see uml.h's
-//  comment on OP_DIRECTJMP. Deliberately minimal -
-//  no mode/pc table walk, no nocode fallback (the
-//  caller is required to have already confirmed the
-//  target slot holds a valid, resolved codeptr before
-//  ever reaching this op). Mirrors exactly the one
-//  piece of op_hashjmp's preamble that matters for
-//  correctness here - the rsp reset - which is why
-//  this op exists at all rather than being expressible
-//  as a driver-level byte patch: m_near.stacksave is
-//  private to this backend, with no UML-level hook to
-//  reach it from outside.
-//-------------------------------------------------
-
-void drcbe_x64::op_directjmp(Assembler &a, const instruction &inst)
-{
-	// validate instruction
-	assert(inst.size() == 4 || inst.size() == 8);
-	assert_no_condition(inst);
-	assert_no_flags(inst);
-
-	// normalize parameters - PTR-typed, always a fixed host address (mirrors op_load's basep)
-	be_parameter slotp(*this, inst.param(0), PTYPE_M);
-
-	// reset the stack base, same invariant every other dispatch mechanism maintains
-	a.mov(rsp, MABS(&m_near.stacksave));
-
-	// jump through the slot's own contents - the one memory load this whole op exists to make cheap
-	a.jmp(MABS(slotp.memory(), 8));
 }
 
 
