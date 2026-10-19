@@ -2675,8 +2675,12 @@ inline void mips3_device::set_cop1_creg(int idx, uint64_t val)
 		// anything guest-visible. Without this, the interpreter silently
 		// ignores CTC1-requested rounding modes and always rounds to
 		// nearest - unlike the DRC, whose UML_SETFMOD (driven by this
-		// same RM field via m_fpmode) does apply it.
-		fesetround(fesetround_source[val & 3]);
+		// same RM field via m_fpmode) does apply it. Only while the
+		// interpreter runs; execute_run() applies the mode on entry and
+		// restores the host's own on exit, so it never leaks into other
+		// devices on this thread.
+		if (m_interp_running)
+			fesetround(fesetround_source[val & 3]);
 	}
 }
 
@@ -5759,6 +5763,25 @@ void mips3_device::execute_run()
 
 		return;
 	}
+
+	// interpreter: guest FP arithmetic runs as host float/double ops, so the
+	// guest's FCR31 rounding mode applies to the host FPU while it runs, and
+	// the host's own mode comes back on the way out
+	struct interp_rounding_scope
+	{
+		mips3_device &cpu;
+		int const saved;
+		interp_rounding_scope(mips3_device &c, int mode) : cpu(c), saved(fegetround())
+		{
+			cpu.m_interp_running = true;
+			fesetround(mode);
+		}
+		~interp_rounding_scope()
+		{
+			fesetround(saved);
+			cpu.m_interp_running = false;
+		}
+	} const rounding_scope(*this, fesetround_source[m_core->ccr[1][31] & 3]);
 
 	/* count cycles and interrupt cycles */
 	m_core->icount -= m_interrupt_cycles;

@@ -1090,6 +1090,7 @@ protected:
 		uint32_t    cycles;                     /* number of cycles to eat when hit */
 	}               m_hotspot[MIPS3_MAX_HOTSPOTS];
 	bool            m_isdrc;
+	bool            m_interp_running = false;   // interpreter execute_run() active (guest FP rounding applied to the host)
 
 	// TEMPORARY diagnostic (2026-07-28): the literal `pc` argument passed to
 	// the currently-executing code_compile_block() call - the address that
