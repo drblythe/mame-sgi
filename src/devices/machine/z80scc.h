@@ -38,6 +38,8 @@
 #include "machine/z80daisy.h"
 #include "diserial.h"
 
+#include <deque>
+
 //**************************************************************************
 //  TYPE DEFINITIONS
 //**************************************************************************
@@ -296,6 +298,12 @@ protected:
 	int m_index;
 	z80scc_device *m_uart;
 
+	// second-stage TX/RX overflow queues, when the owner enables them for
+	// this channel (z80scc_device::set_overflow_queue)
+	bool m_overflow_queue;
+	std::deque<uint8_t> m_tx_overflow_queue;
+	std::deque<uint8_t> m_rx_overflow_queue;
+
 	// SCC specifics
 	int m_ph;       // Point high command to access regs 08-0f
 	uint8_t m_zc;
@@ -333,6 +341,16 @@ public:
 	auto out_int_callback() { return m_out_int_cb.bind(); }
 
 	void set_cputag(const char *tag) { m_cputag = tag; }
+
+	// Keep bytes the real FIFOs would lose on this channel (0 = A, 1 = B):
+	// TX bytes written while the 4-slot transmit FIFO is full, and RX
+	// bytes arriving while the receive FIFO is full, wait in software
+	// queues and are fed back into the FIFOs as slots free up; a transmit
+	// shift register reset requested mid-character is deferred until the
+	// character is out. Off by default (overruns behave as on the real
+	// chip); for hosts that burst far faster than the emulated baud rate
+	// can drain, such as a guest console bridged to a host socket.
+	void set_overflow_queue(int channel, bool enable) { m_overflow_queue[channel] = enable; }
 
 	void configure_channels(int rxa, int txa, int rxb, int txb)
 	{
@@ -433,6 +451,8 @@ protected:
 
 	required_device<z80scc_channel> m_chanA;
 	required_device<z80scc_channel> m_chanB;
+
+	bool m_overflow_queue[2] = { false, false };
 
 	// internal state
 	int m_rxca;

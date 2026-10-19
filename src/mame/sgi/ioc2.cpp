@@ -87,6 +87,10 @@ ioport_constructor ioc2_device::device_input_ports() const
 void ioc2_device::device_add_mconfig(machine_config &config)
 {
 	SCC85230(config, m_scc, SCC_PCLK);
+	// channel B is the console (null_modem to a host socket): the host can
+	// burst far faster than 9600 baud drains, so keep the bytes the real
+	// FIFOs would drop on overrun
+	m_scc->set_overflow_queue(1, true);
 	m_scc->configure_channels(SCC_RXA_CLK.value(), SCC_TXA_CLK.value(), SCC_RXB_CLK.value(), SCC_TXB_CLK.value());
 	m_scc->out_txda_callback().set(RS232A_TAG, FUNC(rs232_port_device::write_txd));
 	m_scc->out_dtra_callback().set(RS232A_TAG, FUNC(rs232_port_device::write_dtr));
