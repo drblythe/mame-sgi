@@ -11,6 +11,12 @@
 
 #pragma once
 
+// Hardware-accuracy fixes to the HPC3 and the Indy/Indigo2 driver
+// (hpc3.cpp, indy_indigo2.cpp), kept under one name so they're easy to find
+// and to upstream separately. Defined here so that every build that compiles
+// those files, full or reduced, gets them.
+#define MAME_SGI_HW_FIXES
+
 #include "hal2.h"
 #include "machine/edlc.h"
 

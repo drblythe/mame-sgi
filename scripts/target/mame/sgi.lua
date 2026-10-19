@@ -171,15 +171,11 @@ function createProjects_mame_sgi(_target, _subtarget)
 		GEN_DIR  .. "mame/layout",
 	}
 
-	-- Guards genuine hardware-emulation bug fixes to the upstream SGI driver
-	-- (not bespoke-build trimming) so they're clearly identifiable and easy
-	-- to disable/upstream separately. See hpc3.cpp/indy_indigo2.cpp for uses.
-	-- Confirmed NOT required to avoid the "Start System" panic (eaddr alone
-	-- is sufficient — see wiki/assets.md) but kept enabled anyway: it's
-	-- real, datasheet-verified hardware-accurate behavior with no observed
-	-- downside across a full successful boot-to-shutdown cycle.
 	defines {
-		"MAME_SGI_HW_FIXES",
+		-- the reduced build's trimmed slot-option lists
+		-- (sgi_rs232_devices.cpp, sgi_centronics_devices.cpp); also set for
+		-- the devices project in scripts/src/devices.lua
+		"MAME_SGI_REDUCED_BUILD",
 	}
 
 	-- NOTE: MAME_DRC_BUGFIXES is NOT defined here. Files under

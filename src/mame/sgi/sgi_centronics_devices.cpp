@@ -2,20 +2,21 @@
 // copyright-holders:
 /**********************************************************************
 
-    Bespoke replacement for bus/centronics/ctronics.cpp's
-    centronics_devices(). See sgi_rs232_devices.cpp for the full
-    explanation — same reason, same pattern: upstream's version pulls in
-    ~18 unrelated Centronics-port peripherals (chess computer interfaces,
-    dot-matrix printers, sound adapters) that don't apply to an SGI Indy,
-    and MAME's makedep.py dependency scanner can't be steered away from
-    them with a preprocessor guard because it doesn't understand one.
+    The reduced SGI build's (SUBTARGET=sgi, MAME_SGI_REDUCED_BUILD)
+    centronics_devices(), in place of bus/centronics/ctronics.cpp's, which
+    that build leaves out together with the ~18 peripherals it names (chess
+    computer interfaces, dot-matrix printers, sound adapters). A full build
+    uses ctronics.cpp's list and compiles nothing from this file.
 
-    machine/pc_lpt.cpp (the only caller) wires up "printer" as its actual
-    default device, so that's the only option kept here.
+    machine/pc_lpt.cpp (the only caller in the SGI drivers) wires up
+    "printer" as its default device, so that's the only option kept here.
 
 **********************************************************************/
 
 #include "emu.h"
+
+#ifdef MAME_SGI_REDUCED_BUILD
+
 #include "bus/centronics/ctronics.h"
 #include "bus/centronics/printer.h"
 
@@ -23,3 +24,5 @@ void centronics_devices(device_slot_interface &device)
 {
 	device.option_add("printer", CENTRONICS_PRINTER);
 }
+
+#endif // MAME_SGI_REDUCED_BUILD
