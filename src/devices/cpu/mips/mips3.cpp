@@ -261,15 +261,20 @@ void mame_sgi_mxcsr_diag_check(const char *checkpoint);
 // driven redundancy - unlike the 2026-07-28 bump above, which fixed an
 // actual pathological thrashing hang, not just ordinary flush count.
 // Reverted to 128MB; a bigger cache alone isn't the lever here.
-#define DRC_CACHE_SIZE              (128 * 1024 * 1024)
+// The SGI drivers set 128MB (set_drc_cache_mb), which is what ended that
+// hang; other systems keep upstream's 32MB.
+#define DRC_CACHE_SIZE              (32 * 1024 * 1024)
 
-// MAME_SGI_DRC_CACHE_OPTION: -drc_cache_mb (command line, mame.ini or a
-// per-system ini) overrides DRC_CACHE_SIZE at startup. Clamped to
-// 32MB-1GB: generated code reaches internal state relative to RBP, which
-// is limited to +/-2GB across the whole cache.
-static size_t drc_cache_bytes(const machine_config &mconfig)
+// MAME_SGI_DRC_CACHE_OPTION: the code cache size is -drc_cache_mb
+// (command line, mame.ini or a per-system ini) when set, else the
+// driver's set_drc_cache_mb(), else DRC_CACHE_SIZE. Clamped to 32MB-1GB:
+// generated code reaches internal state relative to RBP, which is limited
+// to +/-2GB across the whole cache.
+static size_t drc_cache_bytes(const machine_config &mconfig, int driver_mb)
 {
-	int const mb = mconfig.options().drc_cache_mb();
+	int mb = mconfig.options().drc_cache_mb();
+	if (mb <= 0)
+		mb = driver_mb;
 	if (mb <= 0)
 		return DRC_CACHE_SIZE;
 	return size_t(std::clamp(mb, 32, 1024)) * 1024 * 1024;
@@ -371,7 +376,7 @@ mips3_device::mips3_device(const machine_config &mconfig, device_type type, cons
 	, c_secondary_cache_line_size(0)
 	, m_fastram_select(0)
 	, m_debugger_temp(0)
-	, m_drc_cache(drc_cache_bytes(mconfig) + sizeof(internal_mips3_state) + 0x800000)
+	, m_drc_cache(DRC_CACHE_SIZE + sizeof(internal_mips3_state) + 0x800000)
 	, m_drcuml(nullptr)
 	, m_drcfe(nullptr)
 	, m_drcoptions(0)
@@ -830,6 +835,8 @@ void mips3_device::mame_sgi_presave_diag()
 void mips3_device::device_start()
 {
 	m_isdrc = allow_drc();
+	if (!m_drc_cache_size_set)
+		m_drc_cache.set_size(drc_cache_bytes(mconfig(), m_drc_cache_mb) + sizeof(internal_mips3_state) + 0x800000);
 	m_drc_cache.allocate_cache(mconfig().options().drc_rwx());
 
 	/* allocate the implementation-specific state from the full cache */

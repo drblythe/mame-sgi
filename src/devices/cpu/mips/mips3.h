@@ -328,7 +328,9 @@ public:
 	mips3_device(const machine_config &mconfig, device_type type, const char *tag, device_t *owner, uint32_t clock, mips3_flavor flavor, endianness_t endiannes, uint32_t data_bits);
 	virtual ~mips3_device();
 
-	void set_drc_cache_size(size_t bytes) { m_drc_cache.set_size(bytes); }
+	void set_drc_cache_size(size_t bytes) { m_drc_cache.set_size(bytes); m_drc_cache_size_set = true; }
+	// Preferred code cache size in MB (32-1024); -drc_cache_mb overrides it.
+	void set_drc_cache_mb(int mb) { m_drc_cache_mb = mb; }
 	void set_icache_size(size_t icache_size) { c_icache_size = icache_size; }
 	// MAME_SGI_HASH32: use the DRC hash table with 32-bit entries (half the
 	// size; see drcbex64.cpp). Off by default, so other drivers keep stock.
@@ -1165,6 +1167,8 @@ protected:
 	uint32_t m_recompile_study_serial = 0;
 	bool m_drc_hash32 = false;                  // MAME_SGI_HASH32, see set_drc_hash32()
 	bool m_drc_asid_dispatch = false;           // see set_drc_asid_dispatch()
+	int m_drc_cache_mb = 0;                     // see set_drc_cache_mb()
+	bool m_drc_cache_size_set = false;          // set_drc_cache_size() used: exact size, no option
 	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled
 	uint32_t m_compile_entry_mode = 0;
 	uint64_t m_stale_stub_container_recompiles = 0;

@@ -684,6 +684,7 @@ void ip24_state::indy_5015(machine_config &config)
 	m_maincpu->set_icache_size(0x8000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_drc_asid_dispatch(true);   // IRIX runs many processes at the same virtual addresses
+	m_maincpu->set_drc_cache_mb(128);   // 32MB thrashes under IRIX (recompile storm)
 	m_maincpu->set_dcache_size(0x8000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 	ip24(config, system_clock);
@@ -761,6 +762,7 @@ void ip24_state::challenge_s(machine_config &config)
 	m_maincpu->set_icache_size(0x8000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_drc_asid_dispatch(true);   // IRIX runs many processes at the same virtual addresses
+	m_maincpu->set_drc_cache_mb(128);   // 32MB thrashes under IRIX (recompile storm)
 	m_maincpu->set_dcache_size(0x8000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 	ip24(config, system_clock);
@@ -789,6 +791,7 @@ void ip24_state::indy_4613(machine_config &config)
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_drc_asid_dispatch(true);   // IRIX runs many processes at the same virtual addresses
+	m_maincpu->set_drc_cache_mb(128);   // 32MB thrashes under IRIX (recompile storm)
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 	ip24(config, system_clock);
@@ -802,6 +805,7 @@ void ip24_state::indy_4610(machine_config &config)
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_drc_asid_dispatch(true);   // IRIX runs many processes at the same virtual addresses
+	m_maincpu->set_drc_cache_mb(128);   // 32MB thrashes under IRIX (recompile storm)
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip24_state::ip24_map);
 	ip24(config, system_clock);
@@ -815,6 +819,7 @@ void ip22_state::indigo2_4415(machine_config &config)
 	m_maincpu->set_icache_size(0x4000);
 	m_maincpu->set_drc_hash32(true);   // MAME_SGI_HASH32: 32-bit DRC hash table entries
 	m_maincpu->set_drc_asid_dispatch(true);   // IRIX runs many processes at the same virtual addresses
+	m_maincpu->set_drc_cache_mb(128);   // 32MB thrashes under IRIX (recompile storm)
 	m_maincpu->set_dcache_size(0x4000);
 	m_maincpu->set_addrmap(AS_PROGRAM, &ip22_state::ip22_map);
 
