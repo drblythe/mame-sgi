@@ -48,6 +48,10 @@ protected:
 	// modeled transfer time for len bytes at m_bandwidth (zero when unthrottled)
 	attotime transfer_delay(int len) const;
 	bool unthrottled() const { return m_unthrottled; }
+	// devices that implement recv_busy() call this from their constructor:
+	// while unthrottled, a frame they can't accept yet is held and retried
+	// instead of discarded (allocates the retry timer)
+	void enable_recv_retry() { m_recv_retry = true; }
 
 	// bandwidth in bytes per second
 	u32 m_bandwidth;
@@ -56,6 +60,7 @@ protected:
 	int m_intf;
 	bool m_loopback_control;
 	bool m_unthrottled;
+	bool m_recv_retry;
 
 private:
 	TIMER_CALLBACK_MEMBER(poll_device);

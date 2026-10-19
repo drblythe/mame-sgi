@@ -22,6 +22,7 @@ device_network_interface::device_network_interface(const machine_config &mconfig
 	m_intf = -1;
 	m_loopback_control = false;
 	m_unthrottled = false;
+	m_recv_retry = false;
 }
 
 device_network_interface::~device_network_interface()
@@ -33,7 +34,8 @@ void device_network_interface::interface_post_start()
 	m_poll_timer = device().machine().scheduler().timer_alloc(timer_expired_delegate(FUNC(device_network_interface::poll_device), this));
 	m_send_timer = device().machine().scheduler().timer_alloc(timer_expired_delegate(FUNC(device_network_interface::send_complete), this));
 	m_recv_timer = device().machine().scheduler().timer_alloc(timer_expired_delegate(FUNC(device_network_interface::recv_complete), this));
-	m_retry_timer = device().machine().scheduler().timer_alloc(timer_expired_delegate(FUNC(device_network_interface::recv_retry), this));
+	if (m_recv_retry)
+		m_retry_timer = device().machine().scheduler().timer_alloc(timer_expired_delegate(FUNC(device_network_interface::recv_retry), this));
 
 	device().save_item(NAME(m_loopback_control));
 }
@@ -132,7 +134,7 @@ void device_network_interface::recv_cb(u8 *buf, int len)
 		// schedule receive complete callback
 		m_recv_timer->adjust(transfer_delay(len), result);
 	}
-	else if (!m_loopback_control && m_dev && unthrottled() && recv_busy())
+	else if (m_retry_timer && !m_loopback_control && m_dev && unthrottled() && recv_busy())
 	{
 		// Without the bandwidth model, frames can arrive faster than the
 		// guest can possibly service them (with zero transfer delay, a

@@ -43,6 +43,7 @@ seeq8003_device::seeq8003_device(machine_config const &mconfig, device_type type
 	, m_out_rxrdy(*this)
 	, m_out_txrdy(*this)
 {
+	enable_recv_retry();
 }
 
 seeq8003_device::seeq8003_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock)
