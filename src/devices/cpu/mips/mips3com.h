@@ -81,7 +81,6 @@
 #define EXECUTE_RESET_CACHE             3
 
 
-
 #define LOPTR(x)                ((uint32_t *)(x) + NATIVE_ENDIAN_VALUE_LE_BE(0,1))
 
 

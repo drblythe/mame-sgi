@@ -85,7 +85,11 @@ osd_ticks_t mame_sgi_throttle_idle_ticks = 0;
 // subtract two snapshots for any interval. rdtsc, calibrated against
 // osd_ticks(), since osd_ticks() can be a costly clock source.
 #if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
 #include <x86intrin.h>
+#endif
 #include "mame_sgi_framecost.h"
 // per-source split of the remaining busy time (schedule.cpp)
 void mame_sgi_cost_sources_dump(FILE *f, double tsc_hz);

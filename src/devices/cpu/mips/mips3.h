@@ -14,24 +14,6 @@ MIPS III/IV emulator.
 
 #pragma once
 
-// TEMPORARY diagnostic (2026-09-10) - per user direction: stop
-// chasing narrow, targeted hypotheses one at a time and instead build a
-// complete, end-to-end trace of DRC-level events (fresh compiles AND
-// re-entries into already-compiled code) across a whole cc1 invocation,
-// for a matched OK/PREDICATE pair - looking for where a genuinely
-// comparable pass diverges into a fail, without assuming in advance
-// which mechanism it'll be. Deliberately does NOT add any UML
-// instructions to compiled guest code (the exact risk the user flagged
-// - this project's own prior instrumentation, including this session's
-// own $s3 probe, can shift COMPILE_MAX_SEQUENCE boundaries and change
-// behavior). Both event sources logged here are pure host-side C++,
-// called BETWEEN JIT block executions (execute_run()'s own dispatch
-// loop in mips3.cpp) or entirely outside the compiled-code path
-// (code_compile_block() itself, mips3drc.cpp) - zero footprint on the
-// actual generated code or its timing. Shared here (not file-local like
-// most other task84 macros) because it gates code in both mips3.cpp
-// (execute_run) and mips3drc.cpp (code_compile_block, log_drc_event).
-// #define MAME_SGI_TASK84_DRC_EVENT_LOG
 
 #include "ps2vu.h"
 
@@ -303,7 +285,6 @@ INTERRUPT CONSTANTS
 #define MIPS3_IRQ5      5       /* IRQ5 */
 
 
-
 /***************************************************************************
 STRUCTURES
 ***************************************************************************/
@@ -397,13 +378,20 @@ public:
 	// by default (see MIPS3_DEBUG_HELPERS below) since this is purely a
 	// debugging aid with no purpose in a normal build.
 #ifdef MIPS3_DEBUG_HELPERS
+#if defined(__GNUC__)
+#define MIPS3_DEBUG_HELPER_ATTR __attribute__((used, noinline))
+#elif defined(_MSC_VER)
+#define MIPS3_DEBUG_HELPER_ATTR __declspec(noinline)
+#else
+#define MIPS3_DEBUG_HELPER_ATTR
+#endif
 	// `used` is required in addition to `noinline` - noinline only
 	// blocks inlining at call sites, it does not stop the compiler from
 	// dead-code-eliminating the entire function when nothing in the
 	// codebase ever calls it (confirmed live: without `used`, these two
 	// functions simply did not exist as symbols at all after a build,
 	// `nm` found nothing).
-	__attribute__((used, noinline)) void *debug_get_codeptr(uint32_t mode, offs_t pc)
+	MIPS3_DEBUG_HELPER_ATTR void *debug_get_codeptr(uint32_t mode, offs_t pc)
 	{
 		return m_drcuml ? (void *)m_drcuml->get_codeptr(mode, pc) : nullptr;
 	}
@@ -422,7 +410,7 @@ public:
 	// validation of the memory range itself, matching the trust level
 	// already implied by using host gdb to call this in the first
 	// place. Returns the byte offset of the first match, or -1.
-	__attribute__((used, noinline)) int32_t debug_scan_for_immediate(const uint8_t *start, uint32_t len, uint32_t needle)
+	MIPS3_DEBUG_HELPER_ATTR int32_t debug_scan_for_immediate(const uint8_t *start, uint32_t len, uint32_t needle)
 	{
 		if (len < 4)
 			return -1;
@@ -1032,21 +1020,10 @@ protected:
 		uint32_t        diag_mxcsr_desync_pc;        /* TEMPORARY (2026-08-24): guest pc of the instruction boundary where real MXCSR RC diverged from what CCR1(31)'s RM field predicts, read by func_mxcsr_desync_diag */
 		uint32_t        diag_mxcsr_desync_guest_rm;  /* TEMPORARY (2026-08-24): CCR1(31)&3 at the same boundary, stashed alongside diag_mxcsr_desync_pc */
 		uint32_t        diag_mxcsr_desync_real_rc;   /* TEMPORARY (2026-08-24): real live MXCSR RC bits (13:14) read via the repurposed GETFMOD, stashed alongside diag_mxcsr_desync_pc */
-		uint64_t        diag_task84_inert_scratch;   /* TEMPORARY (2026-09-04): register-inert control-test destination for MAME_SGI_TASK84_INERT_ONLY - must live in m_core, not a free-standing static, so drcbe_x64's compact RBP-relative addressing can reach it (a free-standing static crashed with "offset_from_rbp: delta out of range") */
-		uint32_t        diag_task84_armed;           /* TEMPORARY (2026-09-04): MAME_SGI_TASK84_WINDOW_TRACE - set to 1 at pc==0x1007df50 (right after cpp_get_token() returns), cleared at pc==0x1007dffc (the loop-exit check) - confines save/reload tracing below to the exact narrow window between them, regardless of which handler/process's activity fires it */
-		uint32_t        diag_task84_trace_site;      /* TEMPORARY (2026-09-04): site tag set immediately before each MAME_SGI_TASK84_WINDOW_TRACE CALLC (1=nocode, 2=out_of_cycles, 3=tlb_mismatch, 4=exception) so one shared logging function can identify which save_fast_iregs() call site fired */
-		uint64_t        diag_task84_last_saved_r2;   /* TEMPORARY (2026-09-04): shadow copy of m_core->r[2] written by save_fast_iregs() itself (so ALL 9 call sites are covered by construction, not by patching each one). The entry point compares the live r[2] against this immediately before load_fast_iregs() - a mismatch means r[2] changed between the last save and this reload, which is precisely the stale-reload the fast-register audit is hunting. */
 		uint32_t        diag_ctc1_mxcsr_pc;          /* TEMPORARY (2026-08-24): guest pc of the CTC1 whose own just-emitted UML_SETFMOD didn't produce the expected real MXCSR RC, read by func_ctc1_mxcsr_check_diag */
 		uint32_t        diag_ctc1_mxcsr_fmod;        /* TEMPORARY (2026-08-24): the fmod value (uml::float_rounding_mode) that CTC1 just requested via UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_ctc1_mxcsr_real_rc;     /* TEMPORARY (2026-08-24): real live MXCSR RC bits actually observed right after that UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
 		uint32_t        diag_sd_pc;                  /* TEMPORARY (2026-07-27): desc->pc of the SD instruction, for func_sd_value_probe to report */
-		uint64_t        diag_task84_save_count;      /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BALANCE_DIAG - incremented by save_fast_iregs() itself (covers all 4 active call sites by construction), read alongside diag_task84_load_count to check the save/load structural balance the user proposed. */
-		uint64_t        diag_task84_load_count;      /* TEMPORARY (2026-09-05): companion to diag_task84_save_count, incremented by load_fast_iregs() (the single active call site, static_generate_entry_point). Expected to stay within {0,1} of diag_task84_save_count if save/load structurally alternate as assumed - an imbalance beyond that would be a genuine, previously-unverified structural finding. */
-		uint64_t        diag_task84_bracket_save_entry; /* TEMPORARY (2026-09-05): MAME_SGI_TASK84_SAVELOAD_BRACKET_DIAG - snapshot of diag_task84_save_count taken at cpp_get_token's own call site (0x1007df48), so func_task84_saveload_bracket_exit (at the return site, 0x1007df50) can compute the exact save/load activity delta for ONE invocation in guest-instruction order, not wall-clock. */
-		uint64_t        diag_task84_bracket_load_entry; /* TEMPORARY (2026-09-05): companion to diag_task84_bracket_save_entry, for diag_task84_load_count. */
-		uint64_t        diag_v0_shadow;               /* TEMPORARY (2026-09-07): MAME_SGI_TASK84_V0_SHADOW_DIAG - mirrors the live value of R64(2) ($v0), updated unconditionally after every guest instruction (generate_sequence_instruction). Compared against the live value again before the NEXT instruction; any mismatch is an out-of-band change (something touched $v0 without going through this same instrumented path) - see the macro's own comment for the full design. */
-		uint32_t        diag_v0_divergence_pc;        /* TEMPORARY (2026-09-07): desc->pc of the instruction boundary where a divergence was NOTICED (not necessarily where it was caused), stashed for func_v0_shadow_diag. */
-		uint64_t        diag_v0_divergence_current;   /* TEMPORARY (2026-09-07): the live R64(2) value at the moment of the divergence, stashed alongside diag_v0_divergence_pc - diag_v0_shadow itself still holds the OLD (pre-divergence) value at logging time, so both are visible. */
 	};
 
 	/* core state */
@@ -1170,36 +1147,6 @@ protected:
 		uint32_t    cycles;                     /* number of cycles to eat when hit */
 	}               m_hotspot[MIPS3_MAX_HOTSPOTS];
 	bool            m_isdrc;
-
-	// MAME_DRC_BUGFIXES (2026-07-28): persistent, address-keyed record of PCs
-	// that have ever been found to need checkints/checksoftints armed by any
-	// of code_compile_block()'s detection scans. describe_code() rebuilds its
-	// sequence/branch-target analysis from scratch on every compile, scoped
-	// only to that call's own window - the same address can be correctly
-	// flagged this time and silently missed next time purely because a
-	// different neighboring PC triggered the compile, causing the same
-	// (pc,state) to be recompiled and rehashed over and over (confirmed live:
-	// one hot PC recompiled 108 times across only 13 cache flushes). Once an
-	// address earns checkints here, via any window, it stays armed on every
-	// future compile regardless of what that particular call's own analysis
-	// finds - see code_compile_block() for where this is consulted/updated.
-	std::unordered_set<offs_t> m_checkints_addrs;
-
-	// TEMPORARY diagnostic (2026-09-17, checkints scoping) - what fraction
-	// of all distinct compiled PCs actually end up in m_checkints_addrs
-	// above? Answers the open scoping question directly rather than
-	// guessing between "bound growth via clear-on-flush" (sound if this is
-	// a modest minority - the sticky-set granularity is doing real work)
-	// and "question the whole mechanism" (if it's a large majority,
-	// per-PC tracking is solving the wrong problem and checkints should
-	// probably be closer to unconditional instead). Tracks the same
-	// seqhead->pc key, at the same call site, unconditionally (regardless
-	// of whether checkints ends up armed) - see code_compile_block() for
-	// where this is populated. Reserved generously up front (mirroring
-	// this session's own m_diag_usermode_recompile_counts fix) so this
-	// diagnostic doesn't introduce a new rehash-driven stall while
-	// measuring one.
-	std::unordered_set<offs_t> m_diag_checkints_all_compiled_pcs;
 
 	// TEMPORARY diagnostic (2026-07-28): the literal `pc` argument passed to
 	// the currently-executing code_compile_block() call - the address that
@@ -1530,35 +1477,6 @@ public:
 	void func_debug_break();
 	void func_unimplemented();
 	void func_checksum_mismatch_diag(void *ctx);
-	void func_task84_tlb_mismatch_diag();
-	void func_task84_v0_diag();
-	void func_task84_s3_check_diag();
-	void func_task84_window_trace_save();
-	void func_task84_window_trace_reload();
-	void func_task84_entry_pc_diag();
-	void func_v0_shadow_diag();
-	void func_t9_got_diag();
-	void func_call_trace_diag();
-	void func_cpperror_callsite_diag();
-	void func_cpperror_cond_trace_diag();
-	void func_source_text_diag();
-	void func_beql_s3_diag();
-	void func_breakcheck_s3_diag();
-	void func_s3_increment_diag();
-	void func_token_result_diag();
-	void func_pid_calibration_diag();
-	void log_drc_event(const char *type, uint32_t pc);
-	void log_drc_exception();
-	void log_tlb_mismatch_entry();
-	void func_tlbmiss_redispatch_diag();
-	void func_tlbmiss_redispatch_e020_diag();
-	uint32_t read_guest_dword_translated(offs_t addr);
-	uint32_t read_current_pid();
-	void func_task84_t9_once_diag();
-	void func_task84_reload_mismatch();
-	void func_task84_entry_irq_diag();
-	void func_task84_saveload_bracket_entry();
-	void func_task84_saveload_bracket_exit();
 	void func_task101_entry_reentry_diag();
 	void func_task101_out_of_cycles_diag();
 private:

@@ -18,7 +18,11 @@
 #if defined(__x86_64__) || defined(_M_X64)
 #include "mame_sgi_framecost.h"
 #include <map>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
 #include <x86intrin.h>
+#endif
 
 // MAME_SGI_FRAME_LOAD per-source split of the busy time outside the
 // categories in mame_sgi_framecost.h: the exclusive time (less any of those

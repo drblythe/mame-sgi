@@ -14,7 +14,11 @@
 #include <cstdint>
 
 #if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
 #include <x86intrin.h>
+#endif
 
 enum mame_sgi_frame_cost_category
 {

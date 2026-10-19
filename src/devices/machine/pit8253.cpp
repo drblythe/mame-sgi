@@ -280,7 +280,9 @@ void pit_counter_device::device_start()
 	save_item(NAME(m_last_updated));
 	save_item(NAME(m_clock_signal));
 
+#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
 	machine().save().register_postload(save_prepost_delegate(FUNC(pit_counter_device::mame_sgi_postload_diag), this));
+#endif
 
 	/* zerofill */
 	m_gate = 1;
@@ -1158,11 +1160,13 @@ void pit8254_device::readback_command(uint8_t data)
 
 TIMER_CALLBACK_MEMBER(pit_counter_device::update_tick)
 {
+#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
 	{
 		static std::map<int, uint64_t> s_mame_sgi_diag_calls;
 		if ((++s_mame_sgi_diag_calls[m_index] % 20000) == 1)
 			mame_sgi_postload_diag();
 	}
+#endif
 #ifdef MAME_SGI_PIT_RATE_DIAG
 	s_mame_sgi_pit_update_tick_calls[tag()]++;
 	osd_ticks_t mame_sgi_pit_now = osd_ticks();

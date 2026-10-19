@@ -24,50 +24,6 @@
 #include <algorithm>
 #include <cstdio>
 
-// TEMPORARY diagnostic (2026-09-10) - the user's
-// insight: BEQL/BNEL/BLEZL/BGTZL ("branch likely") delay slots must be
-// ANNULLED (not executed) when the branch is not taken - unlike plain
-// BEQ/BNE/etc, whose delay slot always executes. mips3drc.cpp's case 0x04/
-// 0x14 codegen block is IDENTICAL for BEQ and BEQL (a plain UML_JMPc-over-
-// generate_delay_slot_and_branch); the only place annulment is actually
-// implemented is here in the frontend, via desc->skipslots (set to 1 only
-// for the "L" opcodes in mips3fe.cpp) making build_sequence() below
-// exclude the delay-slot instruction from the live per-PC sequence, so it
-// is reachable ONLY through generate_delay_slot_and_branch (i.e. only on
-// the taken path). That skip is silently CANCELLED at the "belay the skip
-// order" check a few lines down whenever the delay-slot instruction is
-// independently flagged is_branch_target() - which would make the delay
-// slot live unconditionally, breaking annulment. Our specific case is the
-// beql at guest PC 0x1007DFFC (parse_answer's `if (acount == 0)` check,
-// cplus/cpplib.c) whose delay slot at 0x1007E000 sits on a fresh page
-// (first byte after 0x1007DFFC's page) - exactly the kind of PC a TLB-
-// mismatch redispatch or independent compile could plausibly also enter
-// directly, which is what would set is_branch_target() on it. Hardcoded
-// guest PCs are intentional and temporary - this file is a generic
-// template shared by every DRC-based CPU core (ppc/sh/e132xs/mb86235/
-// mips3/unsp/dspp/sharc), so the guard must stay narrow and self-
-// contained (no dependency on any one core's helpers) to stay inert for
-// all of them. Self-capped; not PID-tagged (single mamesgi process per
-// investigation run in this session).
-// #define MAME_SGI_TASK84_BEQL_ANNUL_DIAG
-#ifdef MAME_SGI_TASK84_BEQL_ANNUL_DIAG
-namespace {
-	inline void task84_beql_annul_log(const char *tag, uint32_t pc, int skipslots, int is_branch_target, int skipsleft, int appended)
-	{
-		static FILE *s_f = nullptr;
-		static uint64_t s_seq = 0;
-		if (s_f == nullptr)
-			s_f = fopen("/home/blythe/mame-sgi/task84_beql_annul.log", "a");
-		if (s_f == nullptr)
-			return;
-		if (++s_seq > 200000)
-			return;
-		fprintf(s_f, "%llu %s pc=%08x skipslots=%d is_branch_target=%d skipsleft=%d appended=%d\n",
-			(unsigned long long)s_seq, tag, (unsigned)pc, skipslots, is_branch_target, skipsleft, appended);
-		fflush(s_f);
-	}
-}
-#endif
 
 // TEMPORARY diagnostic (2026-08-08, mame-sgi investigation) - categorizes
 // which of build_sequence()'s four independent set_end_sequence() call
@@ -442,10 +398,6 @@ void drc_frontend_base<Desc>::build_sequence(int start, int end, bool redispatch
 				seqstart = -1;
 			}
 
-#ifdef MAME_SGI_TASK84_BEQL_ANNUL_DIAG
-			if (curdesc->pc == 0x1007dffc || curdesc->pc == 0x1007e000 || curdesc->pc == 0x1007e004)
-				task84_beql_annul_log("pre_belay", curdesc->pc, curdesc->skipslots, curdesc->is_branch_target() ? 1 : 0, skipsleft, -1);
-#endif
 			// if we have instructions remaining to be skipped, and this instruction is a branch target
 			// belay the skip order
 			if ((skipsleft > 0) && curdesc->is_branch_target())
@@ -456,10 +408,6 @@ void drc_frontend_base<Desc>::build_sequence(int start, int end, bool redispatch
 				m_desc_live_list.append(*curdesc);
 			else
 				m_desc_allocator.reclaim(*curdesc);
-#ifdef MAME_SGI_TASK84_BEQL_ANNUL_DIAG
-			if (curdesc->pc == 0x1007dffc || curdesc->pc == 0x1007e000 || curdesc->pc == 0x1007e004)
-				task84_beql_annul_log("post_decision", curdesc->pc, curdesc->skipslots, curdesc->is_branch_target() ? 1 : 0, skipsleft, skipsleft == 0 ? 1 : 0);
-#endif
 
 			// if the current instruction starts skipping, reset our skip count
 			// otherwise, just decrement

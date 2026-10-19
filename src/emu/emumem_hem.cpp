@@ -29,7 +29,7 @@ namespace {
 			return;
 		static uint64_t s_count = 0;
 		s_count++;
-		FILE *f = fopen("/tmp/mame_sgi_fastram_dump.txt", "a");
+		FILE *f = fopen("mame_sgi_fastram_dump.txt", "a");
 		if (!f)
 			return;
 		fprintf(f, "[MAME_SGI_FASTRAM_WRITE_TRACE_DIAG] #%llu %s offset=0x%08x data=0x%016llx mask=0x%016llx\n",
@@ -42,7 +42,7 @@ namespace {
 			return;
 		static uint64_t s_count = 0;
 		s_count++;
-		FILE *f = fopen("/tmp/mame_sgi_fastram_dump.txt", "a");
+		FILE *f = fopen("mame_sgi_fastram_dump.txt", "a");
 		if (!f)
 			return;
 		fprintf(f, "[MAME_SGI_FASTRAM_WRITE_TRACE_DIAG] #%llu %s offset=0x%08x m_base=%p address_base=0x%08x address_mask=0x%08x value=0x%016llx\n",

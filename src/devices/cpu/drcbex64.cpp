@@ -258,135 +258,6 @@
 // investigation session.
 // #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024d14
 
-// TEMPORARY diagnostic (2026-09-03, Opus-review followup):
-// range variant of the above, narrowing -drc_log_native's per-block
-// disasm_code_range() dump to any block whose seqhead PC falls inside
-// cc1's parse_answer()/_cpp_do__Pragma critical window
-// (0x1007de40-0x1007e02c, real function bounds per its disassembly -
-// kept a little wider on both sides as margin). Goal: capture the actual compiled x86 bytes for
-// this region across a natural-rate loop run and diff whether a
-// pass-then-fail transition corresponds to a recompile at all (if the
-// same block serves both outcomes, that rules out "persistently
-// mis-compiled block" and points back toward an execution-time/register
-// mechanism instead).
-//
-// EXTENDED (2026-09-05): added a second, disjoint window for
-// cpp_get_token() itself - the actual callee that computes $v0, never
-// covered by the original window and never dumped at all despite 15
-// UML-op/register-path hypotheses in the caller's own three-instruction
-// resumption window (dmov/dand/dcmp) all coming back clean by source
-// reading.
-// cpp_get_token's real entry, 0x10076008, is independently confirmed two
-// ways: live gdb (a breakpoint there, conditioned on $ra==0x1007df4c,
-// forced 26/26 failures matching the established bisection) and a fresh
-// static GOT read against cc1_extracted this session (gp=0x103b2630,
-// call site's `lw $t9,-31128($gp)` -> GOT slot 0x103aac98 -> value
-// 0x10076008). The window below is centered on that entry with margin
-// generous enough to cover everything traced inside the function so far
-// (the _cpp_lex_token call site at 0x100761c8, the macro-check calls at
-// 0x100760e0/0x1007610c, the non-macro fast-path return at 0x10076120)
-// without needing the function's exact end address - a single OP_HASH
-// landing anywhere in-range is enough to log the whole compiled block,
-// whatever its true extent turns out to be. Kept as a second range
-// rather than widening the first: the two functions are ~32KB apart, and
-// spanning that whole gap would reintroduce the "log every block in the
-// system" cost this diagnostic exists to avoid.
-// #define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER
-// Widened 2026-09-09 to cover cpp_get_token's whole function body (was
-// 0x10076140, only the first ~5 seqheads) - the flush/recompile-
-// checkints experiment found two flush cycles with the IDENTICAL set of
-// compiled seqheads (same structural split points) but wildly different
-// pass/fail rates (53% vs 0% across matched samples) - ruling out
-// seqhead-structure as the differentiator and reopening the question of
-// whether the actual emitted BYTES differ between a "good" and "bad"
-// compile instance that looks structurally identical. Needs the whole
-// function in view to do that comparison properly, not just the entry.
-#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_LO 0x10076000
-#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_HI 0x10076400
-// Retargeted 2026-09-10 to parse_answer's own sibling function
-// (0x1007de40-0x1007e100) - the one containing BOTH cpp_get_token call
-// sites (the outer open-paren check at 0x1007de88 and the answer-list
-// loop's own repeated call at 0x1007df48) and the cpp_error call site
-// itself (0x1007dec4/0x1007e020's failure branch). Live-timing-race
-// hypotheses for this region were just ruled out (2026-09-10, tracing
-// state before the first (loop) cpp_get_token call - warm-phase
-// PREDICATE runs show zero re-entry/exception events
-// in the $v0-consumption window yet still fail), narrowing the remaining
-// candidate to a compile-time LINKAGE/register-liveness defect - this is
-// the whole point of getting the real emitted x86 in view rather than
-// reasoning from UML/MIPS-level logs alone. Same matched-pair byte-diff
-// methodology already validated on cpp_get_token/parse_answer
-// themselves. Revert to 0x1007b5c0/0x1007c700 (second cpp_get_token
-// caller) or 0x10078aa0/0x10078b60 (_cpp_temp_token) if resuming either
-// of those instead.
-#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_LO 0x1007de40
-#define MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_HI 0x1007e100
-
-// TEMPORARY diagnostic (2026-09-05): host-side-only wall-clock
-// timestamp for every fresh compile whose seqhead is EXACTLY
-// cpp_get_token's own entry (0x10076008) - not just anywhere in the
-// window above, which also matches interior branch targets not relevant
-// to this specific question. Written from inside generate() itself,
-// BEFORE any code is emitted into the guest's code cache - this is plain
-// host C++ file I/O, not an instruction inserted into the compiled
-// block, so it cannot perturb DRC sequence-boundary decisions or any
-// guest-visible timing (any inserted probe can perturb interrupt/event
-// ordering, so that distinction is load-bearing here, not incidental).
-// Purpose:
-// correlate "when did cpp_get_token get freshly recompiled" against
-// console_live.log's own --timestamps output after the fact, entirely
-// via wall-clock proximity in two independently-written passive logs -
-// no gdb attach, no runtime hook, nothing added to either the caller's
-// or callee's guest-executed instruction stream.
-// #define MAME_SGI_TASK84_CPPGETTOKEN_COMPILE_TIMESTAMP
-
-// TEMPORARY diagnostic (2026-09-09): logs EVERY fresh compile's
-// first seqhead PC, completely unfiltered - not scoped to cpp_get_token
-// or parse_answer at all. Motivation: this investigation has now proven
-// (2026-09-09) that cpp_get_token's AND
-// parse_answer's own compiled bytes are identical between a passing and
-// a failing instance, for multiple matched pairs - closing off both
-// functions directly implicated in this bug as the source of the
-// non-determinism. Combined with the earlier flush/recompile finding
-// (outcome decided once, near a fresh compile event, sticky thereafter),
-// the remaining candidate is that some OTHER function - one that also
-// gets freshly recompiled by the same full-cache flush, running earlier
-// in the same cc1 invocation - has real codegen variance that produces
-// different DATA for cpp_get_token/parse_answer to correctly process.
-// This logs just "which PC, in what order" (one line per compile, no
-// disassembly) to keep volume bounded for a single short cc1-on-/dev/null
-// run, unlike a full unfiltered -drc_log_native capture (900MB/minute
-// for a full boot - this is orders of magnitude
-// smaller in scope, one cc1 invocation's worth of compiles only).
-// Same host-side-only, zero-guest-perturbation shape as the timestamp
-// diagnostic just above.
-// #define MAME_SGI_TASK84_COMPILE_ORDER_DIAG
-
-// TEMPORARY diagnostic (2026-08-17): logs the REAL native code
-// address/size of whatever block was just compiled, whenever that block
-// contains the specific gated UML_MOV this investigation cares about
-// (mips3drc.cpp's MAME_SGI_LWC1_DELAYSLOT_PROBE sets
-// g_mame_sgi_lwc1_target_block when it emits that exact instruction into
-// the block currently being built). This sidesteps reconstructing a
-// (mode,pc) cache key and calling get_codeptr() after the fact - that
-// technique turned out to be resolving to the nocode_point miss-fallback
-// stub rather than a real block for this whole investigation. Volume is
-// bounded by the same gate as the existing probe (~a handful of hits per
-// boot), not one line per compiled block system-wide. Self-defined here
-// rather than via sgi.lua for the same reason as every other diagnostic
-// in this file - src/devices/ files compile into the shared "optional"
-// project, which sgi.lua's defines{} block never reaches.
-// DISABLED (2026-08-17) - investigation concluded; the actual root cause
-// was MIPS3DRC_STRICT_COP1 never being enabled,
-// not a DRC codegen omission - this probe's own finding (the store IS
-// correctly emitted) is what helped establish that. Commented out, not
-// deleted; the matching mips3drc.cpp-side gate
-// (MAME_SGI_LWC1_DELAYSLOT_PROBE) is disabled in the same way.
-// #define MAME_SGI_LWC1_BLOCK_ADDR_PROBE
-#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
-extern bool g_mame_sgi_lwc1_target_block;
-#endif
-
 // Query the host cache line size once, when the back-end is constructed,
 // instead of at the start of every generate() call. On Linux,
 // osd_get_cache_line_size() opens, parses and closes a sysfs file, which
@@ -398,30 +269,6 @@ extern bool g_mame_sgi_lwc1_target_block;
 // and JMP. Same labels, bound the same way; only the lookup changes.
 #define MAME_SGI_DRC_LABEL_MAP
 
-// TEMPORARY diagnostic (2026-09-08): the narrow, targeted
-// follow-up to the broad global $v0 shadow-divergence detector
-// (mips3drc.cpp's MAME_SGI_TASK84_V0_SHADOW_DIAG) - that one never caught
-// r15 diverging from guest-written state at any INSTRUCTION boundary, but
-// never tested the one place a REAL C++ function call happens WITHIN a
-// single instruction's own codegen: op_read/op_write's call to
-// accessors.resolved.*.func (reached on every single memory access this
-// whole system makes, since this driver has no fastram configured -
-// mips3.cpp's m_fastram_select stays 0, confirmed no add_fastram() call
-// anywhere in indy_indigo2.cpp - a real, opt-in speed optimization other
-// MIPS3 drivers in this tree use and this one simply doesn't, per
-// midway/seattle.cpp's own commented-out add_fastram calls). SysV ABI
-// requires the callee to preserve r15 (callee-saved); this call site has
-// zero explicit protection for it, trusting that guarantee entirely. This
-// tests that trust directly rather than continuing to reason about it.
-// See emit_task84_r15_guard_save/_check's own comment for the mechanism.
-// Reverted 2026-09-08 for a clean baseline ahead of the predicate-stress
-// reduced-test-case experiment: this guard wraps every op_read/op_write
-// call site unconditionally (save+compare on every guest memory access,
-// system-wide), a real confound to leave active for a fresh, independent
-// experiment. Already gave its clean negative result (530 invocations,
-// 135 failures, 0 clobbers) - re-enable only if
-// resuming that specific ABI-trust line of investigation.
-// #define MAME_SGI_TASK84_MEMOP_R15_GUARD
 
 // MAME_SGI_DRC_EXH_COLD: a conditional EXH branches out to a stub after the
 // block's end instead of jumping around the exception call inline, so the
@@ -454,7 +301,6 @@ using namespace asmjit::x86;
 #define USE_RSQRTSS_FOR_SINGLES (0)
 #define USE_RCPSS_FOR_DOUBLES   (0)
 #define USE_RSQRTSS_FOR_DOUBLES (0)
-
 
 
 //**************************************************************************
@@ -557,7 +403,6 @@ const u8 fprnd_map[4] =
 //const u64 size_to_mask[] = { 0, 0xff, 0xffff, 0, 0xffffffff, 0, 0, 0, 0xffffffffffffffffU };
 
 
-
 //**************************************************************************
 //  MACROS
 //**************************************************************************
@@ -569,7 +414,6 @@ const u8 fprnd_map[4] =
 #define assert_any_condition(inst)      assert((inst).condition() == uml::COND_ALWAYS || ((inst).condition() >= uml::COND_Z && (inst).condition() < uml::COND_MAX))
 #define assert_no_flags(inst)           assert((inst).flags() == 0)
 #define assert_flags(inst, valid)       assert(((inst).flags() & ~(valid)) == 0)
-
 
 
 class ThrowableErrorHandler : public ErrorHandler
@@ -591,7 +435,6 @@ inline bool is_nonvolatile_register(Gp reg)
 	return (r == rbx) || (r == rbp) || (r == r12) || (r == r13) || (r == r14) || (r == r15);
 #endif
 }
-
 
 
 //**************************************************************************
@@ -702,9 +545,6 @@ private:
 #ifdef MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
 		u32                 mame_sgi_getfmod_diag_scratch; // dedicated scratch for op_getfmod real-MXCSR diagnostic
 #endif
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		u64                 task84_r15_shadow;      // TEMPORARY (2026-09-08): r15 snapshotted immediately before a memory-accessor C++ call in op_read/op_write, compared immediately after - see emit_task84_r15_guard_save/_check's own comments.
-#endif
 
 		u32                 ssecontrol[4];          // copy of the sse_control array
 		float               single1;                // 1.0 in single-precision
@@ -749,10 +589,6 @@ private:
 	std::vector<cold_exh> m_cold_exh;
 #endif
 	void emit_memaccess_setup(Assembler &a, const memory_accessors &accessors, const address_space::specific_access_info::side &side) const;
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-	void emit_task84_r15_guard_save(Assembler &a) const;
-	void emit_task84_r15_guard_check(Assembler &a, u32 site) const;
-#endif
 
 	[[noreturn]] void end_of_block() const;
 	static void debug_log_hashjmp(char const *tag, offs_t pc, int mode);
@@ -907,7 +743,6 @@ private:
 	resolved_member_function m_drcmap_get_value;
 	std::vector<memory_accessors> m_memory_accessors;
 };
-
 
 
 //**************************************************************************
@@ -1190,27 +1025,6 @@ inline Gp drcbe_x64::get_base_register_and_offset(Assembler &a, void *target, Gp
 }
 
 
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-// Called by raw address from generated code (see emit_task84_r15_guard_check)
-// with args in the plain SysV integer convention (rdi,rsi,edx) - not a
-// UML_CALLC, so no `this`/mips3_device parameter; logs directly. Site
-// values: 1-5 = op_read (1=shift/mask general case, 2/3/4/5=byte/word/
-// dword/qword direct), 11-15 = the same for op_write.
-static void cfunc_task84_memop_r15_clobber(uint64_t before, uint64_t after, uint32_t site)
-{
-	static uint64_t s_hits = 0;
-	++s_hits;
-	if (s_hits > 500)
-		return;
-	FILE *f = fopen("/home/blythe/mame-sgi/task84_window_trace.log", "a");
-	if (!f)
-		return;
-	fprintf(f, "[MEMOP_R15_CLOBBER] #%llu site=%u before=%016llx after=%016llx\n",
-		(unsigned long long)s_hits, site, (unsigned long long)before, (unsigned long long)after);
-	fclose(f);
-}
-#endif
-
 //-------------------------------------------------
 //  smart_call_r64 - generate a call either
 //  directly or via a call through pointer
@@ -1227,69 +1041,6 @@ inline void drcbe_x64::smart_call_r64(Assembler &a, x86code *target, Gp const &r
 		a.call(reg);                                                                    // call  reg
 	}
 }
-
-
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-//-------------------------------------------------
-//  emit_task84_r15_guard_save/_check (2026-09-08)
-//  - the narrow, targeted version of the
-//  question raised after the broad per-instruction
-//  shadow detector: does the real C++ function
-//  op_read/op_write calls (accessors.resolved.*.func,
-//  reached only because this driver has no fastram
-//  configured - see mips3.cpp's m_fastram_select,
-//  always 0 here) ever fail to preserve r15 across
-//  the call, as SysV ABI callee-saved-register rules
-//  require? Unlike the per-instruction detector, this
-//  wraps the ONE specific, previously-unverified call
-//  site directly - no guest-instruction-boundary
-//  blind spot, no delay-slot/compiler_temp labelnum
-//  hazard (no manual label needed here at all; this
-//  is asmjit's own Label type, a completely different
-//  mechanism from drcuml's uml::code_label, so
-//  neither of tonight's earlier bugs can recur here),
-//  and no dependence on load_fast_iregs() resync
-//  (this checks WITHIN a single op_read/op_write call,
-//  never across a DRC re-entry).
-//
-//  Save snapshots live r15 immediately before the
-//  call; check compares immediately after, on every
-//  return path, and calls the diagnostic ONLY on
-//  mismatch (self-capped at 500 hits, same convention
-//  as every other task84 log function - see
-//  MAME_SGI_TASK84_WINDOW_TRACE's own comment for why
-//  that cap exists). RAX (the call's own result/status)
-//  is explicitly preserved across the diagnostic's own
-//  nested call via push/pop, with a matching sub/add
-//  rsp,8 to keep the nested call's own entry 16-byte
-//  aligned per the SysV ABI (push shifts alignment by
-//  8; without the compensating sub, the diagnostic's
-//  OWN call would itself violate the very convention
-//  this probe exists to test, which would be a
-//  needless irony to introduce by accident).
-//-------------------------------------------------
-
-void drcbe_x64::emit_task84_r15_guard_save(Assembler &a) const
-{
-	a.mov(MABS(&m_near.task84_r15_shadow), r15);
-}
-
-void drcbe_x64::emit_task84_r15_guard_check(Assembler &a, u32 site) const
-{
-	Label const ok = a.new_label();
-	a.cmp(r15, MABS(&m_near.task84_r15_shadow));
-	a.je(ok);
-	a.push(rax);                                                                     // preserve the call's own result/status
-	a.mov(rdi, MABS(&m_near.task84_r15_shadow));                                     // arg1 = before
-	a.mov(rsi, r15);                                                                 // arg2 = after
-	a.mov(edx, imm(site));                                                           // arg3 = site id
-	a.sub(rsp, 8);                                                                   // realign for our own nested call (push above shifted by 8)
-	smart_call_r64(a, (x86code *)&cfunc_task84_memop_r15_clobber, rax);
-	a.add(rsp, 8);
-	a.pop(rax);
-	a.bind(ok);
-}
-#endif
 
 
 //-------------------------------------------------
@@ -1353,7 +1104,6 @@ void drcbe_x64::emit_memaccess_setup(Assembler &a, const memory_accessors &acces
 	else
 		smart_call_r64(a, (x86code *)side.function, rax);                                    // call non-virtual member function
 }
-
 
 
 //**************************************************************************
@@ -1802,53 +1552,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	m_map.block_begin(block);
 	m_invariant_block = block.invariant();
 
-#ifdef MAME_SGI_TASK84_CODEDIFF_LOG_FILTER
-	// TEMPORARY diagnostic (2026-09-03) - see the macro's own comment
-	// near the top of this file. Range variant of
-	// MAME_SGI_DRC_LOG_FILTER_PC below, both mutually exclusive in
-	// practice (only one is ever defined at a time).
-	bool log_this_block = false;
-	for (u32 inum = 0; inum < numinst; inum++)
-	{
-		if (instlist[inum].opcode() == OP_HASH)
-		{
-			offs_t const seqpc = (offs_t)instlist[inum].param(1).immediate();
-			if ((seqpc >= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_LO) && seqpc <= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER_HI)) ||
-				(seqpc >= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_LO) && seqpc <= offs_t(MAME_SGI_TASK84_CODEDIFF_LOG_FILTER2_HI)))
-			{
-				log_this_block = true;
-				break;
-			}
-		}
-	}
-#ifdef MAME_SGI_TASK84_CPPGETTOKEN_COMPILE_TIMESTAMP
-	// See the macro's own comment near the top of this file. Deliberately
-	// a separate scan from the one above (matches only the exact entry
-	// PC, not the whole window) rather than folding into it, so this
-	// stays trivially removable independent of the broader codediff
-	// filter.
-	for (u32 inum = 0; inum < numinst; inum++)
-	{
-		if (instlist[inum].opcode() == OP_HASH && (offs_t)instlist[inum].param(1).immediate() == offs_t(0x10076008))
-		{
-			FILE *f = fopen("task84_cppgettoken_compile_times.log", "a");
-			if (f)
-			{
-				using namespace std::chrono;
-				auto const now = system_clock::now();
-				auto const ms = duration_cast<milliseconds>(now.time_since_epoch()).count();
-				time_t const secs = time_t(ms / 1000);
-				struct tm tmval;
-				localtime_r(&secs, &tmval);
-				fprintf(f, "[%02d:%02d:%02d.%03d] compiled cpp_get_token entry (0x10076008)\n",
-					tmval.tm_hour, tmval.tm_min, tmval.tm_sec, int(ms % 1000));
-				fclose(f);
-			}
-			break;
-		}
-	}
-#endif
-#elif defined(MAME_SGI_DRC_LOG_FILTER_PC)
+#if defined(MAME_SGI_DRC_LOG_FILTER_PC)
 	// TEMPORARY diagnostic (2026-08-02) - see the macro's own comment
 	// near the top of this file. Only this block's logging decision is
 	// affected; block_begin() above and the actual code generation below
@@ -1862,48 +1566,10 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 			break;
 		}
 	}
-#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
-	// Also log via the precise g_mame_sgi_lwc1_target_block gate (set by
-	// mips3drc.cpp's MAME_SGI_LWC1_DELAYSLOT_PROBE) rather than only the
-	// PC-scan filter above - this gets MAME's own already-proven
-	// disasm_code_range()/add_comment() disassembly (with UML-source
-	// comments interleaved) for the exact block ground-truth-identified
-	// by MAME_SGI_LWC1_BLOCK_ADDR_PROBE, without relying on raw byte-scan
-	// signature guesses. Read, not cleared, here - the address-probe
-	// block below still needs it and clears it once, after emit().
-	if (g_mame_sgi_lwc1_target_block)
-		log_this_block = true;
-#endif
 #else
 	constexpr bool log_this_block = true;
 #endif
 
-#ifdef MAME_SGI_TASK84_COMPILE_ORDER_DIAG
-	// See the macro's own comment near the top of this file. Independent
-	// of log_this_block/the filter chain above by design - this must fire
-	// for EVERY compile, not just ones inside cpp_get_token/parse_answer's
-	// own windows, since the whole point is to see what ELSE compiles.
-	{
-		offs_t first_seqhead = 0xffffffff;
-		for (u32 inum = 0; inum < numinst; inum++)
-		{
-			if (instlist[inum].opcode() == OP_HASH)
-			{
-				first_seqhead = (offs_t)instlist[inum].param(1).immediate();
-				break;
-			}
-		}
-		if (first_seqhead != 0xffffffff)
-		{
-			FILE *f = fopen("task84_compile_order.log", "a");
-			if (f)
-			{
-				fprintf(f, "0x%08x\n", first_seqhead);
-				fclose(f);
-			}
-		}
-	}
-#endif
 
 	// compute the base by aligning the cache top to a cache line
 #ifdef MAME_SGI_DRC_LINESIZE_ONCE
@@ -2006,20 +1672,6 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	if (!bytes)
 		block.abort();
 
-#ifdef MAME_SGI_LWC1_BLOCK_ADDR_PROBE
-	if (g_mame_sgi_lwc1_target_block)
-	{
-		FILE *f = fopen("/home/blythe/mame-sgi/block_addr_probe.log", "a");
-		if (f)
-		{
-			fprintf(f, "[BLOCK_ADDR_PROBE] %s dst=%p end=%p bytes=%zu\n",
-				blockname.empty() ? "Unknown block" : blockname.c_str(),
-				(void *)dst, (void *)(dst + bytes), bytes);
-			fclose(f);
-		}
-		g_mame_sgi_lwc1_target_block = false;
-	}
-#endif
 
 	// log it
 	if (m_log && log_this_block)
@@ -2651,7 +2303,6 @@ void drcbe_x64::op_mapvar(Assembler &a, const instruction &inst)
 }
 
 
-
 /***************************************************************************
     CONTROL FLOW OPCODES
 ***************************************************************************/
@@ -3108,7 +2759,6 @@ void drcbe_x64::op_recover(Assembler &a, const instruction &inst)
 	smart_call_r64(a, m_drcmap_get_value.func, rax);
 	mov_param_reg(a, dstp, eax);
 }
-
 
 
 /***************************************************************************
@@ -3592,7 +3242,6 @@ void drcbe_x64::op_restore(Assembler &a, const instruction &inst)
 }
 
 
-
 /***************************************************************************
     INTEGER OPERATIONS
 ***************************************************************************/
@@ -3859,9 +3508,6 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 	// restore caller's floating point environment
 	a.ldmxcsr(MABS(&m_near.ssemode));
 
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-	emit_task84_r15_guard_save(a);
-#endif
 
 	// set up a call to the read handler
 	auto const &accessors = m_memory_accessors[spacesizep.space()];
@@ -3876,9 +3522,6 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 			a.mov(gpq(REG_PARAM3), make_bitmask<u64>(accessors.specific.native_bytes << 3));
 
 		emit_memaccess_setup(a, accessors, accessors.specific.read);                                // get dispatch table entry
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 1);
-#endif
 	}
 	else if (have_specific && ((1 << spacesizep.size()) < accessors.specific.native_bytes))
 	{
@@ -3964,41 +3607,26 @@ void drcbe_x64::op_read(Assembler &a, const instruction &inst)
 			a.shr(eax, cl);                                                                      // shift result by masked bit address
 		else
 			a.shr(rax, cl);                                                                      // shift result by masked bit address
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 2);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_BYTE)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_byte.obj);
 		smart_call_r64(a, accessors.resolved.read_byte.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 3);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_WORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_word.obj);
 		smart_call_r64(a, accessors.resolved.read_word.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 4);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_DWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_dword.obj);
 		smart_call_r64(a, accessors.resolved.read_dword.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 5);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_QWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.read_qword.obj);
 		smart_call_r64(a, accessors.resolved.read_qword.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 6);
-#endif
 	}
 
 	// restore our rounding mode
@@ -4222,9 +3850,6 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 	// restore caller's floating point environment
 	a.ldmxcsr(MABS(&m_near.ssemode));
 
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-	emit_task84_r15_guard_save(a);
-#endif
 
 	// set up a call to the write handler
 	auto const &accessors = m_memory_accessors[spacesizep.space()];
@@ -4243,9 +3868,6 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 			a.mov(gpq(REG_PARAM4), make_bitmask<u64>(accessors.specific.native_bytes << 3));
 
 		emit_memaccess_setup(a, accessors, accessors.specific.write);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 11);
-#endif
 	}
 	else if (have_specific && ((1 << spacesizep.size()) < accessors.specific.native_bytes))
 	{
@@ -4317,41 +3939,26 @@ void drcbe_x64::op_write(Assembler &a, const instruction &inst)
 			a.call(ptr(r10, accessors.specific.write.function));                                 // call virtual member function
 		else
 			smart_call_r64(a, (x86code *)accessors.specific.write.function, rax);                // call non-virtual member function
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 12);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_BYTE)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_byte.obj);
 		smart_call_r64(a, accessors.resolved.write_byte.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 13);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_WORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_word.obj);
 		smart_call_r64(a, accessors.resolved.write_word.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 14);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_DWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_dword.obj);
 		smart_call_r64(a, accessors.resolved.write_dword.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 15);
-#endif
 	}
 	else if (spacesizep.size() == SIZE_QWORD)
 	{
 		mov_r64_imm(a, gpq(REG_PARAM1), accessors.resolved.write_qword.obj);
 		smart_call_r64(a, accessors.resolved.write_qword.func, rax);
-#ifdef MAME_SGI_TASK84_MEMOP_R15_GUARD
-		emit_task84_r15_guard_check(a, 16);
-#endif
 	}
 
 	// restore our rounding mode

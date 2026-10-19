@@ -276,7 +276,6 @@ static size_t drc_cache_bytes(const machine_config &mconfig)
 }
 
 
-
 static const uint8_t fcc_shift[8] = { 23, 25, 26, 27, 28, 29, 30, 31 };
 
 /* lookup table for FP modes */
@@ -430,11 +429,13 @@ device_memory_interface::space_config_vector mips3_device::memory_space_config()
 
 void mips3_device::device_stop()
 {
+	// The exit summaries below are for investigating this core (shown
+	// with -verbose).
 	// MAME_SGI_RECOMPILE_STUDY_DIAG (mips3drc.cpp) - no-op unless populated.
 	recompile_study_dump();
-	report_hash_stats("exit");  // MAME_SGI_HASH_TABLE_STATS_DIAG (mips3drc.cpp); always cheap
+	report_hash_stats("exit");  // no-op unless MAME_SGI_HASH_TABLE_STATS_DIAG (mips3drc.cpp)
 	if (m_stale_stub_container_recompiles)
-		osd_printf_info("MAME_SGI_STALE_STUB_FIX summary: container_recompiles=%llu\n", (unsigned long long)m_stale_stub_container_recompiles);
+		osd_printf_verbose("MAME_SGI_STALE_STUB_FIX summary: container_recompiles=%llu\n", (unsigned long long)m_stale_stub_container_recompiles);
 
 	// TEMPORARY diagnostic (2026-08-01): dump before m_drcfe/m_drcuml
 	// (and the drc_cache they depend on) get torn down below. See
@@ -447,7 +448,7 @@ void mips3_device::device_stop()
 		uint64_t total = 0;
 		for (auto const &entry : m_diag_usermode_recompile_counts)
 			total += entry.second;
-		osd_printf_info(
+		osd_printf_verbose(
 				"USER-mode recompile diag: %u distinct (mode,pc) keys, %llu total compile events (%.2fx average)\n",
 				unsigned(m_diag_usermode_recompile_counts.size()),
 				(unsigned long long)total,
@@ -458,27 +459,13 @@ void mips3_device::device_stop()
 		std::partial_sort(
 				sorted.begin(), sorted.begin() + std::min<size_t>(20, sorted.size()), sorted.end(),
 				[] (auto const &a, auto const &b) { return a.second > b.second; });
-		osd_printf_info("Top repeat offenders (mode, pc, count):\n");
+		osd_printf_verbose("Top repeat offenders (mode, pc, count):\n");
 		for (size_t i = 0; i < std::min<size_t>(20, sorted.size()); i++)
 		{
 			uint32_t mode = uint32_t(sorted[i].first >> 32);
 			uint32_t pc = uint32_t(sorted[i].first);
-			osd_printf_info("  mode=%u pc=%08x count=%u\n", mode, pc, sorted[i].second);
+			osd_printf_verbose("  mode=%u pc=%08x count=%u\n", mode, pc, sorted[i].second);
 		}
-	}
-
-	// Clean-exit summary for MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG
-	// (mips3drc.cpp) - see m_diag_checkints_all_compiled_pcs's comment in
-	// mips3.h. Unconditionally safe when empty - only ever populated if
-	// that macro was defined in mips3drc.cpp at compile time.
-	if (!m_diag_checkints_all_compiled_pcs.empty())
-	{
-		osd_printf_info(
-				"MAME_SGI_CHECKINTS_ARMED_FRACTION_DIAG summary: armed=%u total_distinct_pcs=%u armed_fraction=%.2f%%\n",
-				unsigned(m_checkints_addrs.size()),
-				unsigned(m_diag_checkints_all_compiled_pcs.size()),
-				m_diag_checkints_all_compiled_pcs.empty() ? 0.0
-						: 100.0 * double(m_checkints_addrs.size()) / double(m_diag_checkints_all_compiled_pcs.size()));
 	}
 
 	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX -
@@ -491,7 +478,7 @@ void mips3_device::device_stop()
 	// are untouched - only this reporting moved.
 	if (m_core->diag_tlb_mismatch_skip_total != 0)
 	{
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_TLB_MISMATCH_REFRESH_FIX summary: skip_total=%u redispatched=%u (%.2f%% avoided a recompile)\n",
 				m_core->diag_tlb_mismatch_skip_total,
 				m_core->diag_tlb_mismatch_refresh_hits,
@@ -504,7 +491,7 @@ void mips3_device::device_stop()
 	// incremented in static_generate_nocode_handler().
 	if (m_core->diag_nocode_skip_total != 0)
 	{
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_NOCODE_REFRESH_FIX summary: skip_total=%u redispatched=%u (%.2f%% avoided a recompile)\n",
 				m_core->diag_nocode_skip_total,
 				m_core->diag_nocode_refresh_hits,
@@ -519,7 +506,7 @@ void mips3_device::device_stop()
 	// the instructions/cycles-based perf_ab_stats.sh comparisons above.
 	if (m_core->diag_compile_stall_event_count != 0)
 	{
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_STALL_DURATION_DIAG compile summary: events=%u total=%.1fms max=%.1fms over_%ums_threshold=%u\n",
 				m_core->diag_compile_stall_event_count,
 				double(m_core->diag_compile_stall_total_ns) / 1e6,
@@ -529,7 +516,7 @@ void mips3_device::device_stop()
 	}
 	if (m_core->diag_flush_stall_event_count != 0)
 	{
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_STALL_DURATION_DIAG flush summary: events=%u total=%.1fms max=%.1fms over_%ums_threshold=%u\n",
 				m_core->diag_flush_stall_event_count,
 				double(m_core->diag_flush_stall_total_ns) / 1e6,
@@ -554,14 +541,14 @@ void mips3_device::device_stop()
 		double const denom_y = n * m_core->diag_compile_corr_sum_y2 - m_core->diag_compile_corr_sum_y * m_core->diag_compile_corr_sum_y;
 		double const denom = std::sqrt(denom_x * denom_y);
 		double const r = (denom != 0.0) ? (num / denom) : 0.0;
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG summary: n=%llu mean_instructions=%.2f mean_ns=%.0f mean_describe_ns=%.0f pearson_r=%.4f\n",
 				(unsigned long long)m_core->diag_compile_corr_n,
 				m_core->diag_compile_corr_sum_x / n,
 				m_core->diag_compile_corr_sum_y / n,
 				double(m_core->diag_describe_code_total_ns) / n,
 				r);
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG longest event: pc=%08X ns=%llu instructions=%u describe_ns=%llu\n",
 				m_core->diag_compile_longest_pc,
 				(unsigned long long)m_core->diag_compile_longest_ns,
@@ -571,7 +558,7 @@ void mips3_device::device_stop()
 		// characterizes the full distribution's shape (sharp isolated
 		// outliers vs. a smoother tail) before drilling further into any
 		// one of them.
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG histogram: <1us=%llu <10us=%llu <100us=%llu <1ms=%llu <10ms=%llu >=10ms=%llu\n",
 				(unsigned long long)m_core->diag_compile_duration_histogram[0],
 				(unsigned long long)m_core->diag_compile_duration_histogram[1],
@@ -600,7 +587,7 @@ void mips3_device::device_stop()
 		double const max_interval_effective_hz = (m_core->diag_entry_interval_max_ns > 0)
 				? (double(m_core->diag_entry_max_interval_guest_cycles) * 1e9 / double(m_core->diag_entry_interval_max_ns))
 				: 0.0;
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_SGI_TASK101_REENTRY_FREQ_DIAG summary: entry_reentries=%llu out_of_cycles_exits=%llu "
 				"mean_interval_ns=%.0f min_interval_ns=%llu max_interval_ns=%llu "
 				"max_interval_guest_cycles=%llu max_interval_effective_hz=%.0f cpu_clock_hz=%llu\n",
@@ -620,7 +607,7 @@ void mips3_device::device_stop()
 	// reporting is optional.
 	if (m_core->diag_null_seqlast_count != 0)
 	{
-		osd_printf_info(
+		osd_printf_verbose(
 				"MAME_DRC_BUGFIXES null-seqlast summary: count=%u last_seqhead_pc=0x%08x\n",
 				m_core->diag_null_seqlast_count, m_core->diag_null_seqlast_last_pc);
 	}
@@ -634,7 +621,7 @@ void mips3_device::device_stop()
 		std::string values;
 		for (uint32_t v : m_diag_kernel_dispatch_mode_values)
 			values += std::to_string(v) + " ";
-		osd_printf_info(
+		osd_printf_verbose(
 				"KERNEL dispatch_mode sanity check: %u distinct value(s) seen (expect exactly {0,1}): %s\n",
 				unsigned(m_diag_kernel_dispatch_mode_values.size()), values.c_str());
 	}
@@ -681,16 +668,16 @@ void mips3_device::device_stop()
 			total_probes += probes;
 		}
 
-		osd_printf_info(
+		osd_printf_verbose(
 				"Call-site IC hit-rate diag: %u distinct call sites, %llu total probes, "
 				"%.2f%% overall hit rate\n",
 				unsigned(m_diag_callsite_ic_state.size()),
 				(unsigned long long)total_probes,
 				total_probes ? 100.0 * double(total_hits) / double(total_probes) : 0.0);
-		osd_printf_info("  hit-rate bucket   sites          probes (share of total)\n");
+		osd_printf_verbose("  hit-rate bucket   sites          probes (share of total)\n");
 		for (int b = 0; b < NUM_BUCKETS; b++)
 		{
-			osd_printf_info(
+			osd_printf_verbose(
 					"  %-15s   %-12u   %llu (%.2f%%)\n",
 					bucket_labels[b], unsigned(bucket_sites[b]),
 					(unsigned long long)bucket_probes[b],
@@ -833,7 +820,6 @@ void mips3_device::invalid_instruction(uint32_t op)
 	fatalerror("Invalid instruction! %08x\n", op);
 	generate_exception(EXCEPTION_INVALIDOP, 1);
 }
-
 
 
 /***************************************************************************
@@ -1722,7 +1708,6 @@ std::unique_ptr<util::disasm_interface> r5900_device::create_disassembler()
 }
 
 
-
 /***************************************************************************
     TLB HANDLING
 ***************************************************************************/
@@ -2464,7 +2449,6 @@ inline bool r5900be_device::RQUAD(offs_t address, uint64_t *result_hi, uint64_t 
 	}
 	return true;
 }
-
 
 
 /***************************************************************************
@@ -3236,7 +3220,6 @@ void mips3_device::handle_cop1_fr1(uint32_t op)
 }
 
 
-
 /***************************************************************************
     COP1X (FPU EXTRA) EXECUTION HANDLING
 ***************************************************************************/
@@ -3398,7 +3381,6 @@ void mips3_device::handle_cop1x_fr1(uint32_t op)
 			break;
 	}
 }
-
 
 
 /***************************************************************************
@@ -5712,29 +5694,6 @@ void mips3_device::execute_run()
 			mame_sgi_mxcsr_diag_record();
 #endif
 
-#ifdef MAME_SGI_TASK84_DRC_EVENT_LOG
-			// See the macro's own comment in mips3.h. Logs why
-			// m_drcuml->execute() just returned control to this host
-			// C++ loop - a real, host-side re-entry boundary - BEFORE
-			// any of the handling below, so m_core->pc reflects exactly
-			// where execution stopped/will resume. EXECUTE_OUT_OF_CYCLES
-			// deliberately excluded (2026-09-10, after the first test run
-			// showed it alone consuming 2.27M of a 3M budget in a single
-			// cc1 invocation): confirmed via generate_update_cycles()
-			// (mips3drc.cpp ~7493) that this is MAME's ordinary
-			// cooperative-scheduling boundary - icount going negative at
-			// a branch/jump, exiting so other emulated devices get their
-			// turn - not a DRC-compilation-path event at all, and firing
-			// this often it drowns out the events actually worth seeing.
-			if (execute_result != EXECUTE_OUT_OF_CYCLES)
-			{
-				const char *reason = "OTHER";
-				if (execute_result == EXECUTE_MISSING_CODE) reason = "MISSING_CODE";
-				else if (execute_result == EXECUTE_UNMAPPED_CODE) reason = "UNMAPPED";
-				else if (execute_result == EXECUTE_RESET_CACHE) reason = "RESET_CACHE";
-				log_drc_event(reason, m_core->pc);
-			}
-#endif
 
 			/* if we need to recompile, do it */
 			if (execute_result == EXECUTE_MISSING_CODE)
@@ -6127,7 +6086,6 @@ void mips3_device::execute_run()
 }
 
 
-
 /***************************************************************************
     COMPLEX OPCODE IMPLEMENTATIONS
 ***************************************************************************/
@@ -6207,7 +6165,6 @@ void mips3_device::sdr_be(uint32_t op)
 	uint64_t mask = 0xffffffffffffffffU << shift;
 	WDOUBLE_MASKED(offs & ~7, RTVAL64 << shift, mask);
 }
-
 
 
 void mips3_device::lwl_le(uint32_t op)

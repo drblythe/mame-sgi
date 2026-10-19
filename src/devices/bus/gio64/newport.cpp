@@ -331,7 +331,7 @@ inline bool normal_planes_zero(uint32_t table_entry, uint32_t pix)
 #ifdef MAME_SGI_COLOR_SRC_DIAG
 static void color_src_diag_log(const char *fmt, ...)
 {
-	FILE *f = fopen("/home/blythe/mame-sgi/color_src_diag.log", "a");
+	FILE *f = fopen("color_src_diag.log", "a");
 	if (!f)
 		return;
 	va_list args;
