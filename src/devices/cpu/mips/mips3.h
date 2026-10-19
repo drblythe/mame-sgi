@@ -333,6 +333,11 @@ public:
 	// MAME_SGI_HASH32: use the DRC hash table with 32-bit entries (half the
 	// size; see drcbex64.cpp). Off by default, so other drivers keep stock.
 	void set_drc_hash32(bool enable) { m_drc_hash32 = enable; }
+	// Key compiled code on writable pages by address space (ASID) as well
+	// as mode, so two processes' different code at the same virtual
+	// address is never confused (needed for multi-process guests such as
+	// IRIX). Costs a TLB lookup at each indirect dispatch; off by default.
+	void set_drc_asid_dispatch(bool enable) { m_drc_asid_dispatch = enable; }
 	void set_dcache_size(size_t dcache_size) { c_dcache_size = dcache_size; }
 	void set_secondary_cache_line_size(uint8_t secondary_cache_line_size) { c_secondary_cache_line_size = secondary_cache_line_size; }
 	void set_system_clock(uint32_t system_clock) { c_system_clock = system_clock; }
@@ -1159,6 +1164,7 @@ protected:
 	void report_hash_stats(char const *when);  // MAME_SGI_HASH_TABLE_STATS_DIAG
 	uint32_t m_recompile_study_serial = 0;
 	bool m_drc_hash32 = false;                  // MAME_SGI_HASH32, see set_drc_hash32()
+	bool m_drc_asid_dispatch = false;           // see set_drc_asid_dispatch()
 	uint32_t m_compile_entry_pc = 0;            // MAME_SGI_STALE_STUB_FIX: entry pc/key of the block being compiled
 	uint32_t m_compile_entry_mode = 0;
 	uint64_t m_stale_stub_container_recompiles = 0;

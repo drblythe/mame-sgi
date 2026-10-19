@@ -891,14 +891,14 @@ void mips3_device::device_start()
 	if (m_drc_hash32)
 		flags |= DRCUML_OPTION_HASH32;    // MAME_SGI_HASH32
 	/* initialize the UML generator */
-	// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01): widened from 8 to 2048
+	// With ASID dispatch (set_drc_asid_dispatch), 2048 modes instead of 8,
 	// to fit dispatch_mode's 11-bit encoding (see internal_mips3_state's
 	// comment on that field) - cost stays bounded regardless of this
 	// nominal range since drc_hash_table's L1 tables are lazily allocated
 	// only for values actually seen at runtime, not this whole range.
 	// COMPILE_FORWARDS_BYTES (last arg) is upstream 0.289's new
 	// max_sequence_length parameter backing hash_invalidate_range().
-	m_drcuml = std::make_unique<drcuml_state>(*this, m_drc_cache, flags, 2048, 32, 2, COMPILE_FORWARDS_BYTES);
+	m_drcuml = std::make_unique<drcuml_state>(*this, m_drc_cache, flags, m_drc_asid_dispatch ? 2048 : 8, 32, 2, COMPILE_FORWARDS_BYTES);
 
 	/* add symbols for our stuff */
 	m_drcuml->symbol_add(&m_core->pc, sizeof(m_core->pc), "pc");

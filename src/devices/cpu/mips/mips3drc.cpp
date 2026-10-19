@@ -1718,203 +1718,204 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 		m_core->diag_0fac5ffc_compile_gen++;
 #endif
 
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-	// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2: the caller (execute_run(),
-	// mips3.cpp) always passes m_core->dispatch_mode (the ASID-scoped
-	// composite) as `mode` regardless of variant - override it to the
-	// ASID-independent shared key (m_core->mode) whenever pc's own page is
-	// currently non-writable, since content on a read-only page can't
-	// differ per process.
-	//
-	// FIX 1 (2026-08-06) was tried here twice - first checking every
-	// instruction in the compiled desclist, then narrowed to just this
-	// pc's page plus its delay slot's page - both attempts caused a real
-	// early-boot livelock (console frozen, CPU pegged, zero forward
-	// progress). Root cause, found by reading static_dispatch_key()/
-	// live_dispatch_key() (mips3.h): those two functions - used by every
-	// OTHER compiled block's HASHJMP to decide what key to look a target
-	// pc up under - only ever call this same single-page
-	// dispatch_page_writable(pc) check, with no knowledge of any delay
-	// slot. Fix 1 changed the key code_compile_block() *registers* a
-	// block under (this site) without also changing the key every
-	// HASHJMP *looks it up* under (those two sites) - so on any
-	// delay-slot branch where the two checks disagree, the block is
-	// registered under one key and never found under the other,
-	// producing an infinite EXECUTE_MISSING_CODE/recompile loop that
-	// never progresses. A correct fix needs static_dispatch_key()/
-	// live_dispatch_key() updated in lockstep with this site, not just
-	// this site alone - reverted back to the original single-page check
-	// pending that.
-#ifdef MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG
-	// TEMPORARY diagnostic (2026-08-22, continued) - the validate_tlb
-	// mismatch mechanism found and fixed above only accounts for ~0.24%
-	// of this pc's total recompile volume (149 of 62018 in one boot).
-	// This checks whether the dominant driver
-	// is a lookup-vs-registration key mismatch: does a hash entry exist
-	// under the RAW incoming mode (what execute_run() passed in), vs.
-	// under the OVERRIDDEN/shared key (what this function actually
-	// registers under, a few lines below)? If raw lookups miss while the
-	// overridden key is already populated, something is dispatching
-	// EXECUTE_MISSING_CODE via a different key than registration uses.
-	if (pc == 0x0fac5ffc)
+	if (m_drc_asid_dispatch)
 	{
-		bool const raw_hash_exists = m_drcuml->hash_exists(mode, pc);
-		bool const writable_now_probe = dispatch_page_writable(pc);
-		uint32_t const overridden_mode_probe = writable_now_probe ? mode : m_core->mode;
-		bool const overridden_hash_exists = m_drcuml->hash_exists(overridden_mode_probe, pc);
-		static uint64_t s_entry_total = 0;
-		static uint64_t s_raw_hit = 0;
-		static uint64_t s_key_mismatch = 0;
-		static uint64_t s_both_miss = 0;
-		++s_entry_total;
-		if (raw_hash_exists)
-			++s_raw_hit;
-		else if (overridden_hash_exists)
-			++s_key_mismatch;
-		else
-			++s_both_miss;
-		if ((s_entry_total <= 20) || ((s_entry_total % 10000) == 0))
+		// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2: the caller (execute_run(),
+		// mips3.cpp) always passes m_core->dispatch_mode (the ASID-scoped
+		// composite) as `mode` regardless of variant - override it to the
+		// ASID-independent shared key (m_core->mode) whenever pc's own page is
+		// currently non-writable, since content on a read-only page can't
+		// differ per process.
+		//
+		// FIX 1 (2026-08-06) was tried here twice - first checking every
+		// instruction in the compiled desclist, then narrowed to just this
+		// pc's page plus its delay slot's page - both attempts caused a real
+		// early-boot livelock (console frozen, CPU pegged, zero forward
+		// progress). Root cause, found by reading static_dispatch_key()/
+		// live_dispatch_key() (mips3.h): those two functions - used by every
+		// OTHER compiled block's HASHJMP to decide what key to look a target
+		// pc up under - only ever call this same single-page
+		// dispatch_page_writable(pc) check, with no knowledge of any delay
+		// slot. Fix 1 changed the key code_compile_block() *registers* a
+		// block under (this site) without also changing the key every
+		// HASHJMP *looks it up* under (those two sites) - so on any
+		// delay-slot branch where the two checks disagree, the block is
+		// registered under one key and never found under the other,
+		// producing an infinite EXECUTE_MISSING_CODE/recompile loop that
+		// never progresses. A correct fix needs static_dispatch_key()/
+		// live_dispatch_key() updated in lockstep with this site, not just
+		// this site alone - reverted back to the original single-page check
+		// pending that.
+#ifdef MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG
+		// TEMPORARY diagnostic (2026-08-22, continued) - the validate_tlb
+		// mismatch mechanism found and fixed above only accounts for ~0.24%
+		// of this pc's total recompile volume (149 of 62018 in one boot).
+		// This checks whether the dominant driver
+		// is a lookup-vs-registration key mismatch: does a hash entry exist
+		// under the RAW incoming mode (what execute_run() passed in), vs.
+		// under the OVERRIDDEN/shared key (what this function actually
+		// registers under, a few lines below)? If raw lookups miss while the
+		// overridden key is already populated, something is dispatching
+		// EXECUTE_MISSING_CODE via a different key than registration uses.
+		if (pc == 0x0fac5ffc)
 		{
+			bool const raw_hash_exists = m_drcuml->hash_exists(mode, pc);
+			bool const writable_now_probe = dispatch_page_writable(pc);
+			uint32_t const overridden_mode_probe = writable_now_probe ? mode : m_core->mode;
+			bool const overridden_hash_exists = m_drcuml->hash_exists(overridden_mode_probe, pc);
+			static uint64_t s_entry_total = 0;
+			static uint64_t s_raw_hit = 0;
+			static uint64_t s_key_mismatch = 0;
+			static uint64_t s_both_miss = 0;
+			++s_entry_total;
+			if (raw_hash_exists)
+				++s_raw_hit;
+			else if (overridden_hash_exists)
+				++s_key_mismatch;
+			else
+				++s_both_miss;
+			if ((s_entry_total <= 20) || ((s_entry_total % 10000) == 0))
+			{
+				fprintf(stderr,
+					"[0FAC5FFC_ENTRY_DIAG] #%llu raw_mode=%u raw_hash_exists=%d overridden_mode=%u overridden_hash_exists=%d "
+					"writable_now=%d totals(raw_hit=%llu key_mismatch=%llu both_miss=%llu)\n",
+					(unsigned long long)s_entry_total, mode, raw_hash_exists, overridden_mode_probe, overridden_hash_exists,
+					writable_now_probe, (unsigned long long)s_raw_hit, (unsigned long long)s_key_mismatch,
+					(unsigned long long)s_both_miss);
+				fflush(stderr);
+			}
+		}
+#endif
+		bool const writable_now = dispatch_page_writable(pc);
+#ifdef MAME_SGI_RECOMPILE_TRACKING_TASK84
+		if (pc >= 0x1007de00 && pc <= 0x1007e100)
+		{
+			static std::unordered_map<uint32_t, uint32_t> s_recompile_counts;
+			uint32_t const count = ++s_recompile_counts[pc];
 			fprintf(stderr,
-				"[0FAC5FFC_ENTRY_DIAG] #%llu raw_mode=%u raw_hash_exists=%d overridden_mode=%u overridden_hash_exists=%d "
-				"writable_now=%d totals(raw_hit=%llu key_mismatch=%llu both_miss=%llu)\n",
-				(unsigned long long)s_entry_total, mode, raw_hash_exists, overridden_mode_probe, overridden_hash_exists,
-				writable_now_probe, (unsigned long long)s_raw_hit, (unsigned long long)s_key_mismatch,
-				(unsigned long long)s_both_miss);
+				"[RECOMPILE_TRACKING_TASK84] pc=%08x raw_mode=%u writable_now=%d final_mode=%u count=%u%s\n",
+				pc, mode, writable_now, writable_now ? mode : m_core->mode, count,
+				(count > 1) ? " DUPLICATE" : "");
 			fflush(stderr);
 		}
-	}
 #endif
-	bool const writable_now = dispatch_page_writable(pc);
-#ifdef MAME_SGI_RECOMPILE_TRACKING_TASK84
-	if (pc >= 0x1007de00 && pc <= 0x1007e100)
-	{
-		static std::unordered_map<uint32_t, uint32_t> s_recompile_counts;
-		uint32_t const count = ++s_recompile_counts[pc];
-		fprintf(stderr,
-			"[RECOMPILE_TRACKING_TASK84] pc=%08x raw_mode=%u writable_now=%d final_mode=%u count=%u%s\n",
-			pc, mode, writable_now, writable_now ? mode : m_core->mode, count,
-			(count > 1) ? " DUPLICATE" : "");
-		fflush(stderr);
-	}
-#endif
-	if (!writable_now)
-		mode = m_core->mode;
+		if (!writable_now)
+			mode = m_core->mode;
 
 #ifdef MAME_SGI_STALE_STUB_FIX
-	// See MAME_SGI_STALE_STUB_FIX: a stub in another block sent us here, and
-	// its page is mapped now - recompile that container from its own entry
-	// so it stops carrying the stale stub. Only when its hash key is the
-	// shared key or the current process's own, so it is compiled against the
-	// mappings it will run under.
-	if (m_core->stub_site_pc == pc)
-	{
-		uint32_t const container_pc = m_core->stub_container_pc;
-		uint32_t const container_mode = m_core->stub_container_mode;
-		m_core->stub_site_pc = 0xffffffff;
-		if (container_pc != pc && (container_mode == m_core->mode || container_mode == m_core->dispatch_mode) &&
-				(vtlb_table()[container_pc >> 12] & FETCH_ALLOWED))
+		// See MAME_SGI_STALE_STUB_FIX: a stub in another block sent us here, and
+		// its page is mapped now - recompile that container from its own entry
+		// so it stops carrying the stale stub. Only when its hash key is the
+		// shared key or the current process's own, so it is compiled against the
+		// mappings it will run under.
+		if (m_core->stub_site_pc == pc)
 		{
-			m_stale_stub_container_recompiles++;
-			code_compile_block(container_mode, container_pc);
+			uint32_t const container_pc = m_core->stub_container_pc;
+			uint32_t const container_mode = m_core->stub_container_mode;
+			m_core->stub_site_pc = 0xffffffff;
+			if (container_pc != pc && (container_mode == m_core->mode || container_mode == m_core->dispatch_mode) &&
+					(vtlb_table()[container_pc >> 12] & FETCH_ALLOWED))
+			{
+				m_stale_stub_container_recompiles++;
+				code_compile_block(container_mode, container_pc);
+			}
 		}
-	}
-	m_compile_entry_pc = pc;
-	m_compile_entry_mode = mode;
+		m_compile_entry_pc = pc;
+		m_compile_entry_mode = mode;
 #endif
 
-	// Cross-key aliasing - ATTEMPTED AND REVERTED (2026-08-22, same
-	// session as the entry-key diagnostic above). Reasoning at the time:
-	// execute_run()'s EXECUTE_MISSING_CODE handler (mips3.cpp) always
-	// calls this function with the RAW, ASID-scoped m_core->dispatch_mode,
-	// regardless of what key the dispatch that actually missed was using;
-	// since registration always collapses to the shared key above, the
-	// raw key is never registered, so any entry via a path that doesn't
-	// go through generate_select_dispatch_key()'s own collapsed-key
-	// HASHJMP forces a full, wasted recompile even though a valid compile
-	// already exists under the shared key (measured: one raw mode value
-	// alone reached 140,774 wasted recompiles of pc=0x0fac5ffc in one
-	// boot). The fix built here aliased the raw key to the shared key's
-	// existing code pointer (drcuml_state::set_codeptr(), added this
-	// session specifically for this - a hash-table pointer write only,
-	// no codegen) instead of recompiling, then returned - reasoned to be
-	// safer than the 2026-08-02 attempt below because it actually
-	// registers something under the key it was asked to compile for,
-	// rather than bailing with nothing registered.
-	//
-	// REGRESSED IMMEDIATELY, different failure signature than expected:
-	// not the classic frozen-console livelock, but a diag_alias_hits
-	// counter that reached 1.2+ BILLION in under 90 seconds (a tight,
-	// cheap, unbounded loop - each iteration just two hash lookups and a
-	// return, so it doesn't peg the same way a real recompile would, but
-	// is equally non-terminating), while console_live.log stalled
-	// immediately after "All Rights Reserved" - early kernel bring-up,
-	// before any user-mode process runs at all. Confirmed via the
-	// 0x0fac5ffc-specific entry diagnostic (still active above) that it
-	// logged ZERO hits during this entire run - this is a DIFFERENT
-	// address than the one investigated, encountered during kernel init,
-	// not the user-mode/shared-library case this fix was designed
-	// around. This falsifies the "aliasing avoids the 2026-08-02 failure
-	// mode because it registers something" reasoning above: the raw key
-	// clearly WAS getting re-registered (alias_hits climbing in lockstep
-	// with compile_total, both incrementing together every call) and
-	// execute() STILL immediately re-entered EXECUTE_MISSING_CODE for
-	// what must be the same (or a tiny rotating set of) raw key(s) again
-	// and again. The actual mechanism making *m_entry's dispatch fail to
-	// find a freshly-registered raw-key entry - whether that's a
-	// set_codeptr()-on-an-unpopulated-mode precondition problem
-	// (drc_hash_table::populate_mode(), drcbeut.h - never called here),
-	// some kernel-init-specific mode/ASID churn invalidating the alias
-	// before it's ever read, or something else entirely - is still
-	// unknown. A third attempt at this class of fix needs that mechanism
-	// actually understood first, not just a structurally-different
-	// reason to expect it might work this time. Left as dead code, not deleted, per this
-	// project's convention - the drcuml_state::set_codeptr() API added
-	// for this remains in place (harmless on its own, unused unless
-	// called) since it may still be useful groundwork for a future,
-	// better-understood fix.
+		// Cross-key aliasing - ATTEMPTED AND REVERTED (2026-08-22, same
+		// session as the entry-key diagnostic above). Reasoning at the time:
+		// execute_run()'s EXECUTE_MISSING_CODE handler (mips3.cpp) always
+		// calls this function with the RAW, ASID-scoped m_core->dispatch_mode,
+		// regardless of what key the dispatch that actually missed was using;
+		// since registration always collapses to the shared key above, the
+		// raw key is never registered, so any entry via a path that doesn't
+		// go through generate_select_dispatch_key()'s own collapsed-key
+		// HASHJMP forces a full, wasted recompile even though a valid compile
+		// already exists under the shared key (measured: one raw mode value
+		// alone reached 140,774 wasted recompiles of pc=0x0fac5ffc in one
+		// boot). The fix built here aliased the raw key to the shared key's
+		// existing code pointer (drcuml_state::set_codeptr(), added this
+		// session specifically for this - a hash-table pointer write only,
+		// no codegen) instead of recompiling, then returned - reasoned to be
+		// safer than the 2026-08-02 attempt below because it actually
+		// registers something under the key it was asked to compile for,
+		// rather than bailing with nothing registered.
+		//
+		// REGRESSED IMMEDIATELY, different failure signature than expected:
+		// not the classic frozen-console livelock, but a diag_alias_hits
+		// counter that reached 1.2+ BILLION in under 90 seconds (a tight,
+		// cheap, unbounded loop - each iteration just two hash lookups and a
+		// return, so it doesn't peg the same way a real recompile would, but
+		// is equally non-terminating), while console_live.log stalled
+		// immediately after "All Rights Reserved" - early kernel bring-up,
+		// before any user-mode process runs at all. Confirmed via the
+		// 0x0fac5ffc-specific entry diagnostic (still active above) that it
+		// logged ZERO hits during this entire run - this is a DIFFERENT
+		// address than the one investigated, encountered during kernel init,
+		// not the user-mode/shared-library case this fix was designed
+		// around. This falsifies the "aliasing avoids the 2026-08-02 failure
+		// mode because it registers something" reasoning above: the raw key
+		// clearly WAS getting re-registered (alias_hits climbing in lockstep
+		// with compile_total, both incrementing together every call) and
+		// execute() STILL immediately re-entered EXECUTE_MISSING_CODE for
+		// what must be the same (or a tiny rotating set of) raw key(s) again
+		// and again. The actual mechanism making *m_entry's dispatch fail to
+		// find a freshly-registered raw-key entry - whether that's a
+		// set_codeptr()-on-an-unpopulated-mode precondition problem
+		// (drc_hash_table::populate_mode(), drcbeut.h - never called here),
+		// some kernel-init-specific mode/ASID churn invalidating the alias
+		// before it's ever read, or something else entirely - is still
+		// unknown. A third attempt at this class of fix needs that mechanism
+		// actually understood first, not just a structurally-different
+		// reason to expect it might work this time. Left as dead code, not deleted, per this
+		// project's convention - the drcuml_state::set_codeptr() API added
+		// for this remains in place (harmless on its own, unused unless
+		// called) since it may still be useful groundwork for a future,
+		// better-understood fix.
 #if 0
-	if (mode != raw_mode && m_drcuml->hash_exists(mode, pc))
-	{
-		drccodeptr const existing = m_drcuml->get_codeptr(mode, pc);
-		if (existing != nullptr && m_drcuml->set_codeptr(raw_mode, pc, existing))
-			return;
-	}
+		if (mode != raw_mode && m_drcuml->hash_exists(mode, pc))
+		{
+			drccodeptr const existing = m_drcuml->get_codeptr(mode, pc);
+			if (existing != nullptr && m_drcuml->set_codeptr(raw_mode, pc, existing))
+				return;
+		}
 #endif
 #ifdef MAME_SGI_JMPDEST_SAMEPAGE_DIAG
-	// Report diag_jmpdest_dispatch_total's same-page hit rate periodically -
-	// see the macro's own comment above. code_compile_block() runs far less
-	// often than the JIT'd dispatch code being measured, so checking here
-	// (host C++, once per compile) is cheap - the counters themselves are
-	// incremented directly by JIT'd code at the jmpdest call site, not here.
-	{
-		static uint32_t s_last_reported = 0;
-		uint32_t const total = m_core->diag_jmpdest_dispatch_total;
-		if (total > 0 && (s_last_reported == 0 || total >= s_last_reported + 50000))
+		// Report diag_jmpdest_dispatch_total's same-page hit rate periodically -
+		// see the macro's own comment above. code_compile_block() runs far less
+		// often than the JIT'd dispatch code being measured, so checking here
+		// (host C++, once per compile) is cheap - the counters themselves are
+		// incremented directly by JIT'd code at the jmpdest call site, not here.
 		{
-			uint32_t const crosspage = m_core->diag_jmpdest_dispatch_crosspage;
-			fprintf(stderr, "[JMPDEST_SAMEPAGE] total=%u cross_page=%u (%.4f%%)\n",
-				total, crosspage, 100.0 * double(crosspage) / double(total));
-			fflush(stderr);
-			s_last_reported = total;
+			static uint32_t s_last_reported = 0;
+			uint32_t const total = m_core->diag_jmpdest_dispatch_total;
+			if (total > 0 && (s_last_reported == 0 || total >= s_last_reported + 50000))
+			{
+				uint32_t const crosspage = m_core->diag_jmpdest_dispatch_crosspage;
+				fprintf(stderr, "[JMPDEST_SAMEPAGE] total=%u cross_page=%u (%.4f%%)\n",
+					total, crosspage, 100.0 * double(crosspage) / double(total));
+				fflush(stderr);
+				s_last_reported = total;
+			}
 		}
-	}
 #endif
 #ifdef MAME_SGI_VALIDATE_TLB_FREQ_DIAG
-	// Same pattern as the jmpdest report above, see diag_validate_tlb_total's
-	// comment in mips3.h.
-	{
-		static uint32_t s_last_reported_tlb = 0;
-		uint32_t const total = m_core->diag_validate_tlb_total;
-		if (total > 0 && (s_last_reported_tlb == 0 || total >= s_last_reported_tlb + 50000))
+		// Same pattern as the jmpdest report above, see diag_validate_tlb_total's
+		// comment in mips3.h.
 		{
-			fprintf(stderr, "[VALIDATE_TLB_FREQ] total=%u\n", total);
-			fflush(stderr);
-			s_last_reported_tlb = total;
+			static uint32_t s_last_reported_tlb = 0;
+			uint32_t const total = m_core->diag_validate_tlb_total;
+			if (total > 0 && (s_last_reported_tlb == 0 || total >= s_last_reported_tlb + 50000))
+			{
+				fprintf(stderr, "[VALIDATE_TLB_FREQ] total=%u\n", total);
+				fflush(stderr);
+				s_last_reported_tlb = total;
+			}
 		}
+#endif
 	}
-#endif
-#endif
 
 	// REVERTED (2026-08-02, same evening): first attempt at this fix
 	// unconditionally skipped recompilation whenever hash_exists(mode,pc)
@@ -2282,11 +2283,14 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				else
 				{
 					UML_LABEL(block, seqhead->pc | 0x80000000);                             // label   seqhead->pc | 0x80000000
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-					UML_HASHJMP(block, static_dispatch_key(seqhead->pc), seqhead->pc, *m_nocode);   // hashjmp <mode>,seqhead->pc,nocode
-#else
-					UML_HASHJMP(block, m_core->dispatch_mode, seqhead->pc, *m_nocode);               // hashjmp <mode>,seqhead->pc,nocode
-#endif
+					if (m_drc_asid_dispatch)
+					{
+						UML_HASHJMP(block, static_dispatch_key(seqhead->pc), seqhead->pc, *m_nocode);   // hashjmp <mode>,seqhead->pc,nocode
+					}
+					else
+					{
+						UML_HASHJMP(block, m_core->dispatch_mode, seqhead->pc, *m_nocode);               // hashjmp <mode>,seqhead->pc,nocode
+					}
 					continue;
 				}
 
@@ -2324,11 +2328,14 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #ifdef MAME_SGI_SEQUENCE_LENGTH_DIAG
 					++m_core->diag_seqexit_mode_change_hashjmp;
 #endif
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-					UML_HASHJMP(block, live_dispatch_key(nextpc), nextpc, *m_nocode);              // hashjmp <mode>,nextpc,nocode
-#else
-					UML_HASHJMP(block, mem(&m_core->dispatch_mode), nextpc, *m_nocode);              // hashjmp <mode>,nextpc,nocode
-#endif
+					if (m_drc_asid_dispatch)
+					{
+						UML_HASHJMP(block, live_dispatch_key(nextpc), nextpc, *m_nocode);              // hashjmp <mode>,nextpc,nocode
+					}
+					else
+					{
+						UML_HASHJMP(block, mem(&m_core->dispatch_mode), nextpc, *m_nocode);              // hashjmp <mode>,nextpc,nocode
+					}
 				}
 				else if (seqlast->next() == nullptr || seqlast->next()->pc != nextpc)
 				{
@@ -2355,11 +2362,14 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 							++m_core->diag_seqexit_hashjmp_target_outside_batch;
 					}
 #endif
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-					UML_HASHJMP(block, static_dispatch_key(nextpc), nextpc, *m_nocode);                    // hashjmp <mode>,nextpc,nocode
-#else
-					UML_HASHJMP(block, m_core->dispatch_mode, nextpc, *m_nocode);                    // hashjmp <mode>,nextpc,nocode
-#endif
+					if (m_drc_asid_dispatch)
+					{
+						UML_HASHJMP(block, static_dispatch_key(nextpc), nextpc, *m_nocode);                    // hashjmp <mode>,nextpc,nocode
+					}
+					else
+					{
+						UML_HASHJMP(block, m_core->dispatch_mode, nextpc, *m_nocode);                    // hashjmp <mode>,nextpc,nocode
+					}
 				}
 #ifdef MAME_SGI_SEQUENCE_LENGTH_DIAG
 				else
@@ -4918,12 +4928,15 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 	UML_LABEL(block, skip);                                                     // skip:
 
 	/* generate a hash jump via the current mode and PC */
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-	generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
-	UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);        // hashjmp <mode>,<pc>,nocode
-#else
-	UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode);        // hashjmp <mode>,<pc>,nocode
-#endif
+	if (m_drc_asid_dispatch)
+	{
+		generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
+		UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);        // hashjmp <mode>,<pc>,nocode
+	}
+	else
+	{
+		UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode);        // hashjmp <mode>,<pc>,nocode
+	}
 }
 
 
@@ -4998,12 +5011,15 @@ void mips3_device::static_generate_nocode_handler(drcuml_block &block, int &labe
 	UML_ADD(block, mem(&m_core->diag_nocode_refresh_hits), mem(&m_core->diag_nocode_refresh_hits), 1);
 	UML_SUB(block, mem(&m_core->icount), mem(&m_core->icount), 1);              // sub     [icount],[icount],1
 	UML_EXHc(block, COND_S, *m_out_of_cycles, I0);                              // exh     out_of_cycles,i0,s
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-	generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
-	UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);                        // hashjmp <mode>,[pc],nocode
-#else
-	UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode); // hashjmp <mode>,[pc],nocode
-#endif
+	if (m_drc_asid_dispatch)
+	{
+		generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
+		UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);                        // hashjmp <mode>,[pc],nocode
+	}
+	else
+	{
+		UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode); // hashjmp <mode>,[pc],nocode
+	}
 
 	UML_LABEL(block, no_retry);                                                 // no_retry:
 	// Disarm, so a later, genuinely unrelated miss at this same PC gets its
@@ -5149,12 +5165,15 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	// runtime invocation, which is not useful for a runtime counter.
 	UML_SUB(block, mem(&m_core->icount), mem(&m_core->icount), 1);              // sub     [icount],[icount],1
 	UML_EXHc(block, COND_S, *m_out_of_cycles, I0);                              // exh     out_of_cycles,i0,s
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-	generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
-	UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);                        // hashjmp <mode>,[pc],nocode
-#else
-	UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode); // hashjmp <mode>,[pc],nocode
-#endif
+	if (m_drc_asid_dispatch)
+	{
+		generate_select_dispatch_key(block, uml::mem(&m_core->pc), uml::I3, label);
+		UML_HASHJMP(block, I3, mem(&m_core->pc), *m_nocode);                        // hashjmp <mode>,[pc],nocode
+	}
+	else
+	{
+		UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->pc), *m_nocode); // hashjmp <mode>,[pc],nocode
+	}
 
 	UML_LABEL(block, no_retry);                                                 // no_retry:
 	// Disarm, so a later, genuinely unrelated mismatch at this same PC
@@ -5330,11 +5349,14 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	// values instead of what the interrupted code actually had live.
 	save_fast_iregs(block);
 
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-	generate_select_dispatch_key(block, uml::I0, uml::I3, label);	UML_HASHJMP(block, I3, I0, *m_nocode);                      // hashjmp <mode>,i0,nocode
-#else
-	UML_HASHJMP(block, mem(&m_core->dispatch_mode), I0, *m_nocode);                      // hashjmp <mode>,i0,nocode
-#endif
+	if (m_drc_asid_dispatch)
+	{
+		generate_select_dispatch_key(block, uml::I0, uml::I3, label);	UML_HASHJMP(block, I3, I0, *m_nocode);                      // hashjmp <mode>,i0,nocode
+	}
+	else
+	{
+		UML_HASHJMP(block, mem(&m_core->dispatch_mode), I0, *m_nocode);                      // hashjmp <mode>,i0,nocode
+	}
 }
 
 
@@ -5790,39 +5812,42 @@ void mips3_device::generate_update_mode(drcuml_block &block)
 	UML_ROLINS(block, I2, I0, 32-26, 0x01);                     // rolins  i2,i0,32-26,0x01
 	UML_MOV(block, mem(&m_core->mode), I2);                            // mov     [mode],i2
 
-#ifdef MAME_SGI_DISPATCH_MODE_ASID_FIX
-	// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01, refined 2026-08-02):
-	// compute the ASID-scoped composite from the mode just derived above
-	// (still in i2) plus a live read of the current ASID (EntryHi's low
-	// byte). Kernel gets a fixed sentinel (asid component forced to 0
-	// below, regardless of the live ASID value) - that constancy is what
-	// keeps kernel code's existing immunity to cross-process collision
-	// intact; SUPER/USER get ((real_asid+1)<<2) | (is_user<<1) | FR_bit.
-	// See the toggle comment at the top of this file for what value 1
-	// vs 2 actually does with this value - this computation itself is
-	// identical either way, it's only *used* differently: value 1 uses
-	// it unconditionally for every non-kernel dispatch (the confirmed-
-	// regressive first pass); value 2 uses it only for pages confirmed
-	// writable via a live VTLB check, chosen per-PC at code_compile_block
-	// (registration) and at each dispatch site (this function only
-	// produces the value, doesn't decide when to use it - see
-	// code_compile_block() and the UML_HASHJMP call sites).
-	UML_AND(block, I1, CPR032(COP0_EntryHi), 0xff);             // i1 = live ASID
-	UML_ADD(block, I1, I1, 1);                                  // i1 = asid+1
-	UML_SHL(block, I1, I1, 2);                                  // i1 = (asid+1)<<2
-	UML_ROLINS(block, I1, I2, 31, 0x02);                        // i1 bit1 = is_user (mode bit2)
-	UML_TEST(block, I2, 0x06);                                  // Z iff mode's privilege bits are 0 (kernel)
-	UML_MOVc(block, COND_Z, I1, 0);                             // kernel: zero the asid/is_user portion
-	UML_ROLINS(block, I1, I2, 0, 0x01);                         // i1 bit0 = FR (mode bit0), always
-	UML_MOV(block, mem(&m_core->dispatch_mode), I1);            // mov     [dispatch_mode],i1
-#else
-	// Fix disabled (see above) - dispatch_mode just mirrors mode, which
-	// restores the exact pre-fix behavior everywhere dispatch_mode is
-	// used (the 14 UML_HASH/UML_HASHJMP/hash_exists sites, and
-	// execute_run()'s code_compile_block() call) without needing to
-	// touch any of those sites individually.
-	UML_MOV(block, mem(&m_core->dispatch_mode), I2);            // mov     [dispatch_mode],i2
-#endif
+	if (m_drc_asid_dispatch)
+	{
+		// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01, refined 2026-08-02):
+		// compute the ASID-scoped composite from the mode just derived above
+		// (still in i2) plus a live read of the current ASID (EntryHi's low
+		// byte). Kernel gets a fixed sentinel (asid component forced to 0
+		// below, regardless of the live ASID value) - that constancy is what
+		// keeps kernel code's existing immunity to cross-process collision
+		// intact; SUPER/USER get ((real_asid+1)<<2) | (is_user<<1) | FR_bit.
+		// See the toggle comment at the top of this file for what value 1
+		// vs 2 actually does with this value - this computation itself is
+		// identical either way, it's only *used* differently: value 1 uses
+		// it unconditionally for every non-kernel dispatch (the confirmed-
+		// regressive first pass); value 2 uses it only for pages confirmed
+		// writable via a live VTLB check, chosen per-PC at code_compile_block
+		// (registration) and at each dispatch site (this function only
+		// produces the value, doesn't decide when to use it - see
+		// code_compile_block() and the UML_HASHJMP call sites).
+		UML_AND(block, I1, CPR032(COP0_EntryHi), 0xff);             // i1 = live ASID
+		UML_ADD(block, I1, I1, 1);                                  // i1 = asid+1
+		UML_SHL(block, I1, I1, 2);                                  // i1 = (asid+1)<<2
+		UML_ROLINS(block, I1, I2, 31, 0x02);                        // i1 bit1 = is_user (mode bit2)
+		UML_TEST(block, I2, 0x06);                                  // Z iff mode's privilege bits are 0 (kernel)
+		UML_MOVc(block, COND_Z, I1, 0);                             // kernel: zero the asid/is_user portion
+		UML_ROLINS(block, I1, I2, 0, 0x01);                         // i1 bit0 = FR (mode bit0), always
+		UML_MOV(block, mem(&m_core->dispatch_mode), I1);            // mov     [dispatch_mode],i1
+	}
+	else
+	{
+		// Fix disabled (see above) - dispatch_mode just mirrors mode, which
+		// restores the exact pre-fix behavior everywhere dispatch_mode is
+		// used (the 14 UML_HASH/UML_HASHJMP/hash_exists sites, and
+		// execute_run()'s code_compile_block() call) without needing to
+		// touch any of those sites individually.
+		UML_MOV(block, mem(&m_core->dispatch_mode), I2);            // mov     [dispatch_mode],i2
+	}
 }
 
 
@@ -6558,11 +6583,14 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 			// compile it triggers - always matches the mode this call is
 			// actually happening under, not a stale snapshot from whenever
 			// this call site was first compiled.
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-			UML_HASHJMP(block, live_dispatch_key(desc->targetpc), desc->targetpc, *m_nocode);       // hashjmp <mode>,desc->targetpc,nocode
-#else
-			UML_HASHJMP(block, mem(&m_core->dispatch_mode), desc->targetpc, *m_nocode);       // hashjmp <mode>,desc->targetpc,nocode
-#endif
+			if (m_drc_asid_dispatch)
+			{
+				UML_HASHJMP(block, live_dispatch_key(desc->targetpc), desc->targetpc, *m_nocode);       // hashjmp <mode>,desc->targetpc,nocode
+			}
+			else
+			{
+				UML_HASHJMP(block, mem(&m_core->dispatch_mode), desc->targetpc, *m_nocode);       // hashjmp <mode>,desc->targetpc,nocode
+			}
 #else
 			UML_HASHJMP(block, m_core->dispatch_mode, desc->targetpc, *m_nocode);            // hashjmp <mode>,desc->targetpc,nocode
 #endif
@@ -6580,55 +6608,58 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 		// matters most, since a target unknown until runtime needs a
 		// genuine live writability check (generate_select_dispatch_key),
 		// not something bakeable at compile time.
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
+		if (m_drc_asid_dispatch)
 		{
-			// bridge: two things to get right here, both found the hard way
-			// (first attempt crashed with asmjit "LabelAlreadyBound" on the
-			// very first jmpdest dispatch). (1) uml::code_label is u32-based,
-			// but generate_select_dispatch_key takes a plain int& to also
-			// serve its two static-generator call sites (static_generate_
-			// entry_point/static_generate_exception), which thread a raw int
-			// label counter, not a code_label - no single reference type
-			// binds to both. (2) THIS specific call site is inside the
-			// `compiler_temp` branch (compiler_temp is a *separate*
-			// compiler_state, copy-constructed from `compiler` at this
-			// function's entry and only merged back into `compiler.labelnum`
-			// at its very end, line ~5013) - generate_update_cycles() just
-			// above already advanced compiler_temp's own label counter, not
-			// compiler's. Bridging from `compiler.labelnum` (stale here,
-			// unrelated to what's actually been allocated in this branch)
-			// handed out label numbers compiler_temp had already used
-			// internally - a real collision, not a hypothetical one. Must
-			// bridge from compiler_temp.labelnum instead, matching what
-			// generate_update_cycles(block, compiler_temp, ...) above
-			// already does.
-			int labelnum_tmp = compiler_temp.labelnum;
-			generate_select_dispatch_key(block, uml::mem(&m_core->jmpdest), uml::I3, labelnum_tmp);
-			compiler_temp.labelnum = labelnum_tmp;
-		}
+			{
+				// bridge: two things to get right here, both found the hard way
+				// (first attempt crashed with asmjit "LabelAlreadyBound" on the
+				// very first jmpdest dispatch). (1) uml::code_label is u32-based,
+				// but generate_select_dispatch_key takes a plain int& to also
+				// serve its two static-generator call sites (static_generate_
+				// entry_point/static_generate_exception), which thread a raw int
+				// label counter, not a code_label - no single reference type
+				// binds to both. (2) THIS specific call site is inside the
+				// `compiler_temp` branch (compiler_temp is a *separate*
+				// compiler_state, copy-constructed from `compiler` at this
+				// function's entry and only merged back into `compiler.labelnum`
+				// at its very end, line ~5013) - generate_update_cycles() just
+				// above already advanced compiler_temp's own label counter, not
+				// compiler's. Bridging from `compiler.labelnum` (stale here,
+				// unrelated to what's actually been allocated in this branch)
+				// handed out label numbers compiler_temp had already used
+				// internally - a real collision, not a hypothetical one. Must
+				// bridge from compiler_temp.labelnum instead, matching what
+				// generate_update_cycles(block, compiler_temp, ...) above
+				// already does.
+				int labelnum_tmp = compiler_temp.labelnum;
+				generate_select_dispatch_key(block, uml::mem(&m_core->jmpdest), uml::I3, labelnum_tmp);
+				compiler_temp.labelnum = labelnum_tmp;
+			}
 #ifdef MAME_SGI_JMPDEST_SAMEPAGE_DIAG
-		// TEMPORARY diagnostic (2026-08-06, disabled by default 2026-08-06) -
-		// see diag_jmpdest_dispatch_total's comment in mips3.h. Duplicates
-		// generate_select_dispatch_key()'s own cheap same-page test (2 ops,
-		// no memory access) purely to count, rather than touching that
-		// function's signature/logic for a measurement that only applies to
-		// this one call site. Already used once to get a real number
-		// (65,141,818 dispatches, 0.0158% cross-page, 2026-08-06)
-		// - off by default since it's still per-dispatch cost on the
-		// hottest path in the system; re-enable if that number needs
-		// re-checking after a future change (e.g. the epoch/host-fault
-		// redesign).
-		UML_AND(block, I2, mem(&m_core->jmpdest), MIPS3_MIN_PAGE_MASK);         // and     i2,[jmpdest],0xfff
-		UML_CMP(block, I2, MIPS3_MIN_PAGE_MASK - 3);                            // cmp     i2,0xffc
-		UML_MOV(block, I2, 0);                                                  // mov     i2,0
-		UML_MOVc(block, COND_E, I2, 1);                                         // mov     i2,1,E
-		UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_crosspage), mem(&m_core->diag_jmpdest_dispatch_crosspage), I2);
-		UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_total), mem(&m_core->diag_jmpdest_dispatch_total), 1);
+			// TEMPORARY diagnostic (2026-08-06, disabled by default 2026-08-06) -
+			// see diag_jmpdest_dispatch_total's comment in mips3.h. Duplicates
+			// generate_select_dispatch_key()'s own cheap same-page test (2 ops,
+			// no memory access) purely to count, rather than touching that
+			// function's signature/logic for a measurement that only applies to
+			// this one call site. Already used once to get a real number
+			// (65,141,818 dispatches, 0.0158% cross-page, 2026-08-06)
+			// - off by default since it's still per-dispatch cost on the
+			// hottest path in the system; re-enable if that number needs
+			// re-checking after a future change (e.g. the epoch/host-fault
+			// redesign).
+			UML_AND(block, I2, mem(&m_core->jmpdest), MIPS3_MIN_PAGE_MASK);         // and     i2,[jmpdest],0xfff
+			UML_CMP(block, I2, MIPS3_MIN_PAGE_MASK - 3);                            // cmp     i2,0xffc
+			UML_MOV(block, I2, 0);                                                  // mov     i2,0
+			UML_MOVc(block, COND_E, I2, 1);                                         // mov     i2,1,E
+			UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_crosspage), mem(&m_core->diag_jmpdest_dispatch_crosspage), I2);
+			UML_ADD(block, mem(&m_core->diag_jmpdest_dispatch_total), mem(&m_core->diag_jmpdest_dispatch_total), 1);
 #endif
-		UML_HASHJMP(block, I3, mem(&m_core->jmpdest), *m_nocode);   // hashjmp <mode>,<rsreg>,nocode
-#else
-		UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->jmpdest), *m_nocode);   // hashjmp <mode>,<rsreg>,nocode
-#endif
+			UML_HASHJMP(block, I3, mem(&m_core->jmpdest), *m_nocode);   // hashjmp <mode>,<rsreg>,nocode
+		}
+		else
+		{
+			UML_HASHJMP(block, mem(&m_core->dispatch_mode), mem(&m_core->jmpdest), *m_nocode);   // hashjmp <mode>,<rsreg>,nocode
+		}
 #else
 		UML_HASHJMP(block, m_core->dispatch_mode, mem(&m_core->jmpdest), *m_nocode);         // hashjmp <mode>,<rsreg>,nocode
 #endif
@@ -6705,11 +6736,14 @@ void mips3_device::generate_likely_branch_skip_fixup(drcuml_block &block, compil
 	{
 
 		generate_update_cycles(block, compiler, desc->pc + 8, true);
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
-		UML_HASHJMP(block, static_dispatch_key(desc->pc + 8), desc->pc + 8, *m_nocode);   // hashjmp <mode>,desc->pc+8,nocode
-#else
-		UML_HASHJMP(block, m_core->dispatch_mode, desc->pc + 8, *m_nocode);               // hashjmp <mode>,desc->pc+8,nocode
-#endif
+		if (m_drc_asid_dispatch)
+		{
+			UML_HASHJMP(block, static_dispatch_key(desc->pc + 8), desc->pc + 8, *m_nocode);   // hashjmp <mode>,desc->pc+8,nocode
+		}
+		else
+		{
+			UML_HASHJMP(block, m_core->dispatch_mode, desc->pc + 8, *m_nocode);               // hashjmp <mode>,desc->pc+8,nocode
+		}
 	}
 }
 
@@ -8526,40 +8560,46 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 					generate_update_mode(block);
 					compiler.checkints = true;
 					generate_update_cycles(block, compiler, CPR032(COP0_EPC), true);// <subtract cycles>
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
+					if (m_drc_asid_dispatch)
 					{
-						// bridge: see the matching comment at the jmpdest
-						// call site (generate_delay_slot_and_branch) - same
-						// code_label-vs-int mismatch, same reason.
-						int labelnum_tmp = compiler.labelnum;
-						generate_select_dispatch_key(block, CPR032(COP0_EPC), uml::I3, labelnum_tmp);
-						compiler.labelnum = labelnum_tmp;
+						{
+							// bridge: see the matching comment at the jmpdest
+							// call site (generate_delay_slot_and_branch) - same
+							// code_label-vs-int mismatch, same reason.
+							int labelnum_tmp = compiler.labelnum;
+							generate_select_dispatch_key(block, CPR032(COP0_EPC), uml::I3, labelnum_tmp);
+							compiler.labelnum = labelnum_tmp;
+						}
+						UML_HASHJMP(block, I3, CPR032(COP0_EPC), *m_nocode);
+																					// hashjmp <mode>,[EPC],nocode
 					}
-					UML_HASHJMP(block, I3, CPR032(COP0_EPC), *m_nocode);
-																				// hashjmp <mode>,[EPC],nocode
-#else
-					UML_HASHJMP(block, mem(&m_core->dispatch_mode), CPR032(COP0_EPC), *m_nocode);
-																				// hashjmp <mode>,[EPC],nocode
-#endif
+					else
+					{
+						UML_HASHJMP(block, mem(&m_core->dispatch_mode), CPR032(COP0_EPC), *m_nocode);
+																					// hashjmp <mode>,[EPC],nocode
+					}
 					UML_LABEL(block, skip);                                     // skip:
 					UML_AND(block, I0, I0, ~SR_ERL);                            // and     i0,i0,~SR_ERL
 					UML_MOV(block, CPR032(COP0_Status), I0);                    // mov     [Status],i0
 					generate_update_mode(block);
 					compiler.checkints = true;
 					generate_update_cycles(block, compiler, CPR032(COP0_ErrorPC), true); // <subtract cycles>
-#if defined(MAME_SGI_DISPATCH_MODE_ASID_FIX) && (MAME_SGI_DISPATCH_MODE_ASID_FIX == 2)
+					if (m_drc_asid_dispatch)
 					{
-						// bridge: see the matching comment at the jmpdest
-						// call site (generate_delay_slot_and_branch) - same
-						// code_label-vs-int mismatch, same reason.
-						int labelnum_tmp = compiler.labelnum;
-						generate_select_dispatch_key(block, CPR032(COP0_ErrorPC), uml::I3, labelnum_tmp);
-						compiler.labelnum = labelnum_tmp;
+						{
+							// bridge: see the matching comment at the jmpdest
+							// call site (generate_delay_slot_and_branch) - same
+							// code_label-vs-int mismatch, same reason.
+							int labelnum_tmp = compiler.labelnum;
+							generate_select_dispatch_key(block, CPR032(COP0_ErrorPC), uml::I3, labelnum_tmp);
+							compiler.labelnum = labelnum_tmp;
+						}
+						UML_HASHJMP(block, I3, CPR032(COP0_ErrorPC), *m_nocode); // hashjmp <mode>,[EPC],nocode
 					}
-					UML_HASHJMP(block, I3, CPR032(COP0_ErrorPC), *m_nocode); // hashjmp <mode>,[EPC],nocode
-#else
-					UML_HASHJMP(block, mem(&m_core->dispatch_mode), CPR032(COP0_ErrorPC), *m_nocode); // hashjmp <mode>,[EPC],nocode
-#endif
+					else
+					{
+						UML_HASHJMP(block, mem(&m_core->dispatch_mode), CPR032(COP0_ErrorPC), *m_nocode); // hashjmp <mode>,[EPC],nocode
+					}
 					return true;
 
 				case 0x20:  /* WAIT */
