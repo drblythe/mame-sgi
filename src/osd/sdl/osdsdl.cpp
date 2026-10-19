@@ -496,7 +496,8 @@ bool sdl_osd_interface::should_hide_mouse()
 	// the whole session, regardless of where the cursor sits within (or
 	// outside) the window bounds - far fewer real grab/ungrab
 	// transitions, so far fewer chances for the race.
-	if (!has_focus())
+	// -nomouse_capture_focus restores hover-based capture.
+	if (options().mouse_capture_focus() ? !has_focus() : !mouse_over_window())
 		return false;
 
 	// otherwise, yes

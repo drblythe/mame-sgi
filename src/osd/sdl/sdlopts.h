@@ -29,6 +29,8 @@
 #define SDLOPTION_ENABLE_TOUCH          "enable_touch"
 #define SDLOPTION_SIXAXIS               "sixaxis"
 #define SDLOPTION_DUAL_LIGHTGUN         "dual_lightgun"
+#define SDLOPTION_INPUT_BUFFER          "sdl_input_buffer"
+#define SDLOPTION_MOUSE_CAPTURE_FOCUS   "mouse_capture_focus"
 #if defined(USE_XINPUT) && USE_XINPUT
 #define SDLOPTION_LIGHTGUNINDEX         "lightgun_index"
 #endif
@@ -88,6 +90,8 @@ public:
 	bool enable_touch() const { return bool_value(SDLOPTION_ENABLE_TOUCH); }
 	bool sixaxis() const { return bool_value(SDLOPTION_SIXAXIS); }
 	bool dual_lightgun() const { return bool_value(SDLOPTION_DUAL_LIGHTGUN); }
+	bool input_buffer() const { return bool_value(SDLOPTION_INPUT_BUFFER); }
+	bool mouse_capture_focus() const { return bool_value(SDLOPTION_MOUSE_CAPTURE_FOCUS); }
 
 	const char *video_driver() const { return value(SDLOPTION_VIDEODRIVER); }
 	const char *render_driver() const { return value(SDLOPTION_RENDERDRIVER); }

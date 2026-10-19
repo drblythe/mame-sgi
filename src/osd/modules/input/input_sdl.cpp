@@ -644,6 +644,10 @@ public:
 	{
 	}
 
+	// -sdl_input_buffer: the sticky-press handling below (off: key state
+	// follows the events directly)
+	void set_input_buffer(bool enable) { m_input_buffer = enable; }
+
 #ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
 	void trace_kbd_state(char const *where)
 	{
@@ -694,7 +698,7 @@ public:
 		if (sticky_count > MAME_SGI_KBD_STICKY_LOG_THRESHOLD)
 			osd_printf_info("MAME_SGI_KBD_STICKY_DIAG: %d keys simultaneously saved from being dropped this poll cycle\n", sticky_count);
 #endif
-		for (size_t sc = 0; sc < std::size(m_keyboard.release_deferred); sc++)
+		for (size_t sc = 0; m_input_buffer && (sc < std::size(m_keyboard.release_deferred)); sc++)
 		{
 			// Snapshot before this call's own changes - the "survived a
 			// full poll boundary" clear at the bottom must only apply to
@@ -775,6 +779,11 @@ public:
 				m_capslock_pressed = std::chrono::steady_clock::now();
 
 			auto const sc = event.key.keysym.scancode;
+			if (!m_input_buffer)
+			{
+				m_keyboard.state[sc] = 0x80;
+				break;
+			}
 			// A held key still shows state[sc]!=0x00 (or has a queued
 			// cycle already waiting to be armed) - a real second press
 			// arriving on top of that, not SDL's own OS-level autorepeat
@@ -807,6 +816,11 @@ public:
 #endif
 
 			auto const sc = event.key.keysym.scancode;
+			if (!m_input_buffer)
+			{
+				m_keyboard.state[sc] = 0x00;
+				break;
+			}
 			// A release landing while a queued cycle is waiting belongs
 			// to that queued press, not the currently-visible pulse -
 			// queued_repress already fully represents "one more complete
@@ -904,6 +918,7 @@ private:
 	keyboard_trans_table const &m_trans_table;
 	keyboard_state m_keyboard;
 	std::chrono::steady_clock::time_point m_capslock_pressed;
+	bool m_input_buffer = true;
 };
 
 
@@ -914,6 +929,10 @@ private:
 class sdl_mouse_device_base : public sdl_device
 {
 public:
+	// -sdl_input_buffer: the sticky-press handling for buttons (off: button
+	// state follows the events directly)
+	void set_input_buffer(bool enable) { m_input_buffer = enable; }
+
 	virtual void poll(bool relative_reset) override
 	{
 		sdl_device::poll(relative_reset);
@@ -936,7 +955,7 @@ public:
 		if (sticky_count > 0)
 			osd_printf_info("MAME_SGI_MOUSE_BTN_STICKY_DIAG: %d buttons simultaneously saved from being dropped this poll cycle\n", sticky_count);
 #endif
-		for (size_t b = 0; b < std::size(m_button_release_deferred); b++)
+		for (size_t b = 0; m_input_buffer && (b < std::size(m_button_release_deferred)); b++)
 		{
 			if (m_button_release_deferred[b] && !m_button_pending_first_sample[b])
 			{
@@ -981,7 +1000,9 @@ protected:
 	// back-to-back inside the same poll_if_necessary() cycle.
 	void set_button_state_sticky(unsigned index, bool down)
 	{
-		if (down)
+		if (!m_input_buffer)
+			m_mouse.buttons[index] = down ? 0x80 : 0x00;
+		else if (down)
 		{
 			m_mouse.buttons[index] = 0x80;
 			m_button_pending_first_sample[index] = 1;
@@ -1031,6 +1052,7 @@ protected:
 	s32 m_v, m_h;
 	s8 m_button_pending_first_sample[MAX_BUTTONS] = { 0 };
 	s8 m_button_release_deferred[MAX_BUTTONS] = { 0 };
+	bool m_input_buffer = true;
 };
 
 
@@ -2244,6 +2266,7 @@ public:
 				"System keyboard",
 				"System keyboard",
 				*m_key_trans_table);
+		devinfo.set_input_buffer(dynamic_cast<sdl_options const &>(*options()).input_buffer());
 
 		osd_printf_verbose("Keyboard: Registered %s\n", devinfo.name());
 		osd_printf_verbose("Keyboard: End initialization\n");
@@ -2366,6 +2389,7 @@ public:
 				DEVICE_CLASS_MOUSE,
 				"System mouse",
 				"System mouse");
+		devinfo.set_input_buffer(dynamic_cast<sdl_options const &>(*options()).input_buffer());
 
 		osd_printf_verbose("Mouse: Registered %s\n", devinfo.name());
 		osd_printf_verbose("Mouse: End initialization\n");
@@ -2416,6 +2440,7 @@ public:
 					DEVICE_CLASS_LIGHTGUN,
 					"System pointer gun 1",
 					"System pointer gun 1");
+			devinfo.set_input_buffer(dynamic_cast<sdl_options const &>(*options()).input_buffer());
 			osd_printf_verbose("Lightgun: Registered %s\n", devinfo.name());
 		}
 		else
@@ -2425,6 +2450,7 @@ public:
 					"System pointer gun 1",
 					"System pointer gun 1",
 					0);
+			dev1info.set_input_buffer(dynamic_cast<sdl_options const &>(*options()).input_buffer());
 			osd_printf_verbose("Lightgun: Registered %s\n", dev1info.name());
 
 			auto &dev2info = create_device<sdl_dual_lightgun_device>(
@@ -2432,6 +2458,7 @@ public:
 					"System pointer gun 2",
 					"System pointer gun 2",
 					1);
+			dev2info.set_input_buffer(dynamic_cast<sdl_options const &>(*options()).input_buffer());
 			osd_printf_verbose("Lightgun: Registered %s\n", dev2info.name());
 		}
 

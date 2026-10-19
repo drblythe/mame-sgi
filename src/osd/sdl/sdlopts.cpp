@@ -70,6 +70,8 @@ const options_entry f_sdl_option_entries[] =
 	{ SDLOPTION_ENABLE_TOUCH,                "0",            core_options::option_type::BOOLEAN,    "enable touch input support" },
 	{ SDLOPTION_SIXAXIS,                     "0",            core_options::option_type::BOOLEAN,    "use special handling for PS3 Sixaxis controllers" },
 	{ SDLOPTION_DUAL_LIGHTGUN ";dual",       "0",            core_options::option_type::BOOLEAN,    "enable dual lightgun input" },
+	{ SDLOPTION_INPUT_BUFFER,                "1",            core_options::option_type::BOOLEAN,    "keep each key and mouse button press visible for at least one input poll, and replay repeated presses, so input isn't lost while emulation stalls" },
+	{ SDLOPTION_MOUSE_CAPTURE_FOCUS,         "1",            core_options::option_type::BOOLEAN,    "with -mouse or -lightgun, capture the pointer while the window has focus rather than while the pointer is over it" },
 
 #if (USE_XINPUT)
 	// lightgun mapping
