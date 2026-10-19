@@ -41,6 +41,17 @@ public:
 	void kbd_clk_w(int state);
 	void kbd_data_w(int state);
 
+	// Keep the MCU close behind the host CPU across host accesses: a host
+	// read that finds the MCU behind ends the host's timeslice, a host write
+	// interleaves both for 1 ms. For hosts much faster than the firmware's
+	// polling assumes; needs the MCU to run after the host CPU in each
+	// timeslice. Off by default.
+	void set_mcu_catch_up(bool enable) { m_mcu_catch_up = enable; }
+	// Let the MCU skip firmware polling loops whose inputs can't change until
+	// the next synchronize (MCS48 poll-loop skip; PS/2 controller only). Off
+	// by default.
+	void set_mcu_poll_loop_skip(bool enable) { m_mcu_poll_loop_skip = enable; }
+
 protected:
 	// trampoline constructor
 	at_kbc_device_base(machine_config const &mconfig, device_type type, char const *tag, device_t *owner, u32 clock);
@@ -60,6 +71,8 @@ protected:
 	u8 kbd_data_r() const;
 
 	required_device<upi41_cpu_device> m_mcu;
+	bool m_mcu_catch_up = false;
+	bool m_mcu_poll_loop_skip = false;
 
 private:
 	// internal sync helpers

@@ -98,15 +98,18 @@
 // reply sees the firmware's progress rather than one stale value for a whole
 // timeslice). Without this a fast host CPU can run out its polling timeout
 // before the MCU has run at all. This assumes the MCU executes after the host
-// CPU in each timeslice, so that it trails rather than leads.
+// CPU in each timeslice, so that it trails rather than leads. Only for
+// controllers whose driver enables it (set_mcu_catch_up); others keep
+// MAME's ordinary interleave.
 #ifndef MAME_SGI_KBDC_CATCH_UP
 #define MAME_SGI_KBDC_CATCH_UP 1
 #endif
 
 #if MAME_SGI_KBDC_CATCH_UP
 #define KBDC_CATCH_UP() \
-	do { if (m_mcu->local_time() < machine().time()) machine().scheduler().abort_timeslice(); } while (0)
-#define KBDC_WRITE_INTERLEAVE() machine().scheduler().perfect_quantum(attotime::from_msec(1))
+	do { if (m_mcu_catch_up && m_mcu->local_time() < machine().time()) machine().scheduler().abort_timeslice(); } while (0)
+#define KBDC_WRITE_INTERLEAVE() \
+	do { if (m_mcu_catch_up) machine().scheduler().perfect_quantum(attotime::from_msec(1)); } while (0)
 #else
 #define KBDC_CATCH_UP() do { } while (0)
 #define KBDC_WRITE_INTERLEAVE() do { } while (0)
@@ -542,14 +545,14 @@ void ps2_keyboard_controller_device::device_add_mconfig(machine_config &config)
 	m_mcu->p2_out_cb().set(FUNC(ps2_keyboard_controller_device::p2_w));
 	m_mcu->t0_in_cb().set([this] () { return kbd_clk_r(); });
 	m_mcu->t1_in_cb().set([this] () { return aux_clk_r(); });
-
-	// the clock inputs are plain reads and only change through synchronize()
-	m_mcu->set_poll_loop_skip(true);
 }
 
 void ps2_keyboard_controller_device::device_start()
 {
 	at_kbc_device_base::device_start();
+
+	// the clock inputs are plain reads and only change through synchronize()
+	m_mcu->set_poll_loop_skip(m_mcu_poll_loop_skip);
 
 	m_aux_irq_timer = timer_alloc(FUNC(ps2_keyboard_controller_device::set_aux_irq_timer_callback), this);
 

@@ -126,6 +126,10 @@ void ioc2_device::device_add_mconfig(machine_config &config)
 
 	// keyboard controller
 	PS2_KEYBOARD_CONTROLLER(config, m_kbdc, 12_MHz_XTAL);
+	// the R4x00/R5000 polls the controller far faster than the firmware
+	// expects (PROM keyboard/mouse diagnostic); see at_keybc.h
+	m_kbdc->set_mcu_catch_up(true);
+	m_kbdc->set_mcu_poll_loop_skip(true);
 	m_kbdc->kbd_clk().set(kbd_con, FUNC(pc_kbdc_device::clock_write_from_mb));
 	m_kbdc->kbd_data().set(kbd_con, FUNC(pc_kbdc_device::data_write_from_mb));
 	m_kbdc->aux_clk().set(aux_con, FUNC(pc_kbdc_device::clock_write_from_mb));
