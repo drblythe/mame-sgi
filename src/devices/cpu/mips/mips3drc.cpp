@@ -3132,7 +3132,7 @@ void mips3_device::func_xlog_tlb_recheck_probe()
 			slot_phys, upper_half, lower_half);
 		fflush(stderr);
 		m_program->install_write_tap(slot_phys, slot_phys + 7, "xlog_correct_stack_slot",
-			[this, slot_phys](offs_t offset, u64 &data, u64 mem_mask)
+			[this](offs_t offset, u64 &data, u64 mem_mask)
 			{
 				fprintf(stderr, "[MAME_DRC_DIAG] XLOG_CORRECT_SLOT_WRITE phys=0x%08x data=0x%016llx mask=0x%016llx pc=0x%08x\n",
 					(uint32_t)offset, (unsigned long long)data, (unsigned long long)mem_mask, m_core->pc);
