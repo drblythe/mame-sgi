@@ -13,7 +13,10 @@
 // investigation - see hpc3_device::func_pbus_dma_postload_diag's own comment.
 // Must be defined before "hpc3.h" is included, since it also gates that
 // function's declaration there.
-#define MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
+// DISABLED (2026-10-19): a -state resume at the desktop with real
+// mouse/keyboard use showed every channel idle after postload and input
+// working; nothing left to investigate.
+// #define MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
 
 #include "hpc3.h"
 

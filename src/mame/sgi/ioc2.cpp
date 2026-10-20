@@ -44,7 +44,10 @@
 // RE-ENABLED (2026-08-15): live repro - checking whether the
 // SDL-side mouse/keyboard freeze coincides with a similar stuck-latched
 // interrupt pattern on the guest side.
-#define MAME_SGI_IOC2_STORM_DIAG
+// DISABLED (2026-10-19): a -state resume at the desktop with real
+// mouse/keyboard use showed Local0 raising and lowering in step (no stuck
+// assertion) and input working.
+// #define MAME_SGI_IOC2_STORM_DIAG
 
 /*static*/ char const *const ioc2_device::SCC_TAG = "scc";
 /*static*/ char const *const ioc2_device::PI1_TAG = "pi1";
