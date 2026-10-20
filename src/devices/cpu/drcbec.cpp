@@ -20,6 +20,7 @@
 #include <bit>
 #include <cfenv>
 #include <cmath>
+#include <limits>
 
 #if defined(__clang_major__) && (__clang_major__ < 12)
 // can't guarantee floating point environment control works
@@ -31,6 +32,22 @@
 namespace drc {
 
 namespace {
+
+// MAME_SGI_DRCBEC_ROUND_EVEN_FIX: FTOI with ROUND_ROUND used lround/llround,
+// which round halfway cases away from zero (UML rounds to even, as the x64
+// back end's cvtsd2si does) and, for the 32-bit forms, wrap out-of-range
+// results through a 64-bit long. Round to even regardless of the host's
+// rounding mode (x minus its IEEE remainder by 1), and give NaN, infinities
+// and out-of-range values the integer minimum, the "indefinite" result x64
+// produces.
+template <typename I, typename F>
+I round_to_even(F x)
+{
+	F const r = x - std::remainder(x, F(1));
+	if (!(r >= F(std::numeric_limits<I>::min())) || !(r < -F(std::numeric_limits<I>::min())))
+		return std::numeric_limits<I>::min();
+	return I(r);
+}
 
 using namespace uml;
 
@@ -2249,7 +2266,7 @@ int drcbe_c::execute(code_handle &entry)
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI4R, 4, 0):    // FSTOI4R dst,src1
-				*inst[0].pint32 = lroundf(FSPARAM1); // FIXME: rounds midpoint away from zero, should round to even
+				*inst[0].pint32 = round_to_even<int32_t>(FSPARAM1);
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI4F, 4, 0):    // FSTOI4F dst,src1
@@ -2269,7 +2286,7 @@ int drcbe_c::execute(code_handle &entry)
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI8R, 4, 0):    // FSTOI8R dst,src1
-				*inst[0].pint64 = llroundf(FSPARAM1); // FIXME: rounds midpoint away from zero, should round to even
+				*inst[0].pint64 = round_to_even<int64_t>(FSPARAM1);
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI8F, 4, 0):    // FSTOI8F dst,src1
@@ -2384,7 +2401,7 @@ int drcbe_c::execute(code_handle &entry)
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI4R, 8, 0):    // FDTOI4R dst,src1
-				*inst[0].pint32 = lround(FDPARAM1); // FIXME: rounds midpoint away from zero, should round to even
+				*inst[0].pint32 = round_to_even<int32_t>(FDPARAM1);
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI4F, 8, 0):    // FDTOI4F dst,src1
@@ -2404,7 +2421,7 @@ int drcbe_c::execute(code_handle &entry)
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI8R, 8, 0):    // FDTOI8R  dst,src1
-				*inst[0].pint64 = llround(FDPARAM1); // FIXME: rounds midpoint away from zero, should round to even
+				*inst[0].pint64 = round_to_even<int64_t>(FDPARAM1);
 				break;
 
 			case MAKE_OPCODE_SHORT(OP_FTOI8F, 8, 0):    // FDTOI8F dst,src1
