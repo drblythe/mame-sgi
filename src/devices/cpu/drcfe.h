@@ -65,6 +65,7 @@ public:
 	void set_is_branch_target()          { m_flags.set(IS_BRANCH_TARGET); }
 	void set_in_delay_slot()             { m_flags.set(IN_DELAY_SLOT); }
 	void set_intrablock_branch()         { m_flags.set(INTRABLOCK_BRANCH); }
+	void clear_intrablock_branch()       { m_flags.reset(INTRABLOCK_BRANCH); }
 	void set_can_cause_exception()       { m_flags.set(CAN_CAUSE_EXCEPTION); }
 	void set_will_cause_exception()      { m_flags.set(WILL_CAUSE_EXCEPTION); }
 	void set_validate_tlb()              { m_flags.set(VALIDATE_TLB); }
@@ -213,6 +214,8 @@ private:
 
 	// opcode descriptor arrays
 	simple_list<Desc>   m_desc_live_list;           // list of live descriptions
+	std::vector<offs_t> m_sequence_starts;          // scratch: first pc of each sequence
+	bool                m_zero_length_desc = false; // this window has a zero-length description
 	fixed_allocator<Desc> m_desc_allocator;         // fixed allocator for descriptions
 	std::vector<Desc *> m_desc_array;               // array of descriptions in PC order
 };

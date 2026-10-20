@@ -24,6 +24,19 @@
 #include <algorithm>
 #include <cstdio>
 
+// A branch can only jump within its block to an instruction that starts a
+// sequence: that is where code generators place the label (back ends jump
+// to it directly). A branch target can end up inside another sequence:
+// when the target's page faulted while describing it, its description has
+// length 0, and the sequence before it doesn't see a gap and runs on into
+// it. The branch would then jump to a label that is never defined (the C
+// back end stops with "Label ... never defined"; the x64 assembler leaves
+// the jump unresolved). So after building the sequences of a window that
+// has a zero-length description, branches whose target doesn't start a
+// sequence lose the intrablock flag and dispatch through the hash table
+// like any other branch.
+#define MAME_SGI_INTRABLOCK_TARGET_FIX
+
 
 // TEMPORARY diagnostic (2026-08-08, mame-sgi investigation) - categorizes
 // which of build_sequence()'s four independent set_end_sequence() call
@@ -120,6 +133,7 @@ const Desc *drc_frontend_base<Desc>::do_describe_code(T &&describe, offs_t start
 
 	// release any descriptions we've accumulated
 	release_descriptions();
+	m_zero_length_desc = false;
 
 	// add the initial PC to the stack
 	pc_stack_entry pcstack[MAX_STACK_DEPTH];
@@ -191,6 +205,27 @@ const Desc *drc_frontend_base<Desc>::do_describe_code(T &&describe, offs_t start
 	// first from startpc -> maxpc, then from minpc -> startpc
 	build_sequence(startpc - minpc, maxpc - minpc, true);
 	build_sequence(minpc - minpc, startpc - minpc, false);
+
+#ifdef MAME_SGI_INTRABLOCK_TARGET_FIX
+	// only a zero-length description can leave a branch target inside a
+	// sequence, so the usual window without one skips the check
+	if (m_zero_length_desc)
+	{
+		m_sequence_starts.clear();
+		bool sequence_start = true;
+		for (Desc *desc = m_desc_live_list.first(); desc != nullptr; desc = desc->next())
+		{
+			if (sequence_start)
+				m_sequence_starts.push_back(desc->pc);
+			sequence_start = desc->end_sequence();
+		}
+		for (Desc *desc = m_desc_live_list.first(); desc != nullptr; desc = desc->next())
+		{
+			if (desc->intrablock_branch() && (std::find(m_sequence_starts.begin(), m_sequence_starts.end(), desc->targetpc) == m_sequence_starts.end()))
+				desc->clear_intrablock_branch();
+		}
+	}
+#endif
 	return m_desc_live_list.first();
 }
 
@@ -210,7 +245,10 @@ Desc *drc_frontend_base<Desc>::describe_one(T &&describe, offs_t curpc, Desc con
 	desc->reset(curpc, in_delay_slot);
 
 	// call the callback to describe an instruction
-	if (!describe(*desc, prevdesc))
+	bool const described = describe(*desc, prevdesc);
+	if (desc->length == 0)
+		m_zero_length_desc = true;
+	if (!described)
 	{
 		desc->set_will_cause_exception();
 		desc->set_invalid_opcode();
