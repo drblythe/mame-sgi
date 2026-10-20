@@ -264,6 +264,12 @@
 // made it a large share of the time spent compiling a block.
 #define MAME_SGI_DRC_LINESIZE_ONCE
 
+// Stop on a block with a JMP to a UML code label the block never defines,
+// as the C back end does ("Label ... never defined"): the assembler doesn't
+// treat such a jump as an error and leaves its displacement as zero, so if
+// taken it would fall through to the next instruction instead.
+#define MAME_SGI_DRC_UNRESOLVED_LABEL_CHECK
+
 // Map UML code labels to asmjit labels with a per-block table instead of
 // formatting a "PC$<n>" name and looking it up by name for every LABEL
 // and JMP. Same labels, bound the same way; only the lookup changes.
@@ -587,6 +593,10 @@ private:
 		u32 mapvals[uml::MAPVAR_END - uml::MAPVAR_M0]; // map variables at the jcc
 	};
 	std::vector<cold_exh> m_cold_exh;
+#ifdef MAME_SGI_DRC_UNRESOLVED_LABEL_CHECK
+	std::vector<uint32_t> m_label_check_defined;   // per-block scratch for the label check
+	std::vector<uint32_t> m_label_check_jumped;
+#endif
 #endif
 	void emit_memaccess_setup(Assembler &a, const memory_accessors &accessors, const address_space::specific_access_info::side &side) const;
 
@@ -1529,6 +1539,33 @@ int drcbe_x64::execute(code_handle &entry)
 
 void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 numinst)
 {
+#ifdef MAME_SGI_DRC_UNRESOLVED_LABEL_CHECK
+	{
+		std::vector<uint32_t> &defined = m_label_check_defined, &jumped = m_label_check_jumped;
+		defined.clear();
+		jumped.clear();
+		uint32_t hash_mode = ~0U, hash_pc = ~0U;
+		for (u32 i = 0; i < numinst; i++)
+		{
+			instruction const &inst = instlist[i];
+			if (inst.opcode() == uml::OP_LABEL)
+				defined.push_back(inst.param(0).label());
+			else if (inst.opcode() == uml::OP_JMP && inst.param(0).is_code_label())
+				jumped.push_back(inst.param(0).label());
+			else if (inst.opcode() == uml::OP_HASH && hash_pc == ~0U)
+			{
+				hash_mode = uint32_t(inst.param(0).immediate());
+				hash_pc = uint32_t(inst.param(1).immediate());
+			}
+		}
+		std::sort(defined.begin(), defined.end());
+		for (uint32_t l : jumped)
+		{
+			if (!std::binary_search(defined.begin(), defined.end(), l))
+				throw emu_fatalerror("drcbe_x64: block (hash mode %u pc %08X) jumps to label %08X, never defined\n", hash_mode, hash_pc, l);
+		}
+	}
+#endif
 #if MAME_SGI_DRC_EXH_COLD
 	m_cold_exh.clear();
 #endif
