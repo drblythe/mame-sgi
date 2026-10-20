@@ -2570,6 +2570,7 @@ static void cfunc_get_cycles(void *param)
 }
 
 
+#ifdef MAME_DRC_DIAG   // diagnostic probes below are only called under this macro
 /*-------------------------------------------------
     cfunc_lockstate_probe - TEMPORARY diagnostic
     (2026-07-24): logs interrupt-masking state at a
@@ -3667,7 +3668,9 @@ void mips3_device::func_tlbmiss_entry_probe()
 #ifdef MAME_DRC_DIAG
 static void cfunc_tlbmiss_entry_probe(void *param) { ((mips3_device *)param)->func_tlbmiss_entry_probe(); }
 #endif
+#endif // MAME_DRC_DIAG
 
+#ifdef MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES   // diagnostic probes below are only called under this macro
 /*-------------------------------------------------
     cfunc_fault_store_mode_probe - TEMPORARY
     (2026-07-26): hooked directly at the SD
@@ -4036,7 +4039,9 @@ static void cfunc_pckm_mutex_snapshot_probe(void *param) { ((mips3_device *)para
 #ifdef MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES
 static void cfunc_premature_interrupt_probe(void *param) { ((mips3_device *)param)->func_premature_interrupt_probe(); }
 #endif
+#endif // MAME_SGI_ANDI_ORI_MTCZ_FAULT_PROBES
 
+#ifdef MAME_SGI_RMAP_DEL_PANIC_DIAG   // diagnostic probes below are only called under this macro
 /*-------------------------------------------------
     cfunc_rmap_del_panic_probe - TEMPORARY (2026-07-26):
     both fixes (spinlock_init workaround, interrupt-check
@@ -4072,7 +4077,9 @@ void mips3_device::func_rmap_del_panic_probe(int site)
 static void cfunc_rmap_del_panic_probe_1(void *param) { ((mips3_device *)param)->func_rmap_del_panic_probe(1); }
 static void cfunc_rmap_del_panic_probe_2(void *param) { ((mips3_device *)param)->func_rmap_del_panic_probe(2); }
 #endif
+#endif // MAME_SGI_RMAP_DEL_PANIC_DIAG
 
+#ifdef MAME_DRC_DIAG   // diagnostic probes below are only called under this macro
 /*-------------------------------------------------
     cfunc_iclogspace_splhi_probe / cfunc_iclogspace_splx_probe
     / cfunc_interrupt_taken_probe - TEMPORARY (2026-07-25):
@@ -4248,6 +4255,7 @@ static void cfunc_lockstate_probe_7(void *param) { ((mips3_device *)param)->func
 #ifdef MAME_DRC_DIAG
 static void cfunc_lockstate_probe_6(void *param) { ((mips3_device *)param)->func_lockstate_probe(6); }
 #endif
+#endif // MAME_DRC_DIAG
 
 /*-------------------------------------------------
     cfunc_printf_exception - log any exceptions that
