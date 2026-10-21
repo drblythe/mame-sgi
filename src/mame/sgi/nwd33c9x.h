@@ -113,26 +113,8 @@
 // throughput ~3.1x. Boot-to-login wall-clock itself is flat, consistent
 // with every other SCSI-path optimization this project has measured -
 // boot is dominated by non-disk cost, not disk bandwidth.
-//
-// MAME_SGI_SCSI_BURST_FASTPATH_COMPARE_DIAG below was planned as a
-// standing byte-level validation companion but was never actually
-// implemented - see its own comment for why and what was used instead.
 #define MAME_SGI_SCSI_BURST_FASTPATH
 
-// Planned companion to MAME_SGI_SCSI_BURST_FASTPATH, matching mips3.h's
-// MAME_SGI_FASTRAM_COMPARE_DIAG in spirit (cross-check every fast-pathed
-// byte against what the real per-byte dance would have produced,
-// fatalerror() on the first mismatch) - declared here when the fast path
-// was first designed, but never actually implemented: all three real
-// bugs this task found were instead caught with ad hoc, targeted
-// osd_printf_info() instrumentation added and removed per-bug (cheaper
-// to write for a one-shot question than a standing comparison harness,
-// and in bug #3's case the mismatch was a live oscillation a byte-value
-// comparison wouldn't have characterized anyway). Left declared, still unimplemented, in case a future change
-// to this fast path specifically needs the byte-level comparison this
-// was meant to provide. Meaningless without the macro above also
-// defined. Disabled by default.
-// #define MAME_SGI_SCSI_BURST_FASTPATH_COMPARE_DIAG
 
 // With MAME_SGI_SCSI_BURST_FASTPATH, a disk read in BURST mode hands runs of
 // bytes (up to the end of the current sector) to the host's DMA engine in

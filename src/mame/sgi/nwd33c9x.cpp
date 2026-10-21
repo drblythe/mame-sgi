@@ -73,30 +73,6 @@ static constexpr uint32_t MAME_SGI_SCSI_COARSE_MAX_ITERATIONS = 65536;
 // "off" configuration for this constant.
 static constexpr uint32_t MAME_SGI_SCSI_DELAY_SCALE = 500;
 
-// TEMPORARY diagnostic (added 2026-09-27): answers an open prerequisite
-// of this device's fast path for the CD-ROM path specifically - does IRIX's real
-// driver ever put the CD-ROM target into POLLED mode, or read AUXILIARY_
-// STATUS mid-transfer, the way it might need to if it ever observes
-// intermediate per-byte state there? The disk-only answer (BURST-only,
-// AUXILIARY_STATUS never read mid-transfer) was already confirmed in
-// machine/wd33c9x.cpp's own now-superseded diagnostic, but that file isn't
-// even compiled into the active code path once MAME_SGI_USE_NWD33C9X is
-// defined (see indy_indigo2.cpp) - this device has its own copy of the
-// same register-level interface and needed its own answer. m_t_active_disk
-// (>= 0 for the embedded fast disk path, -1 meaning routed to the real aux
-// bus/CD-ROM bridge - see nwd33c9x.h's bus-glue comment) lets this
-// attribute each CONTROL write / AUXILIARY_STATUS read to whichever target
-// is actually selected at that moment, so disk and CD-ROM traffic can be
-// told apart even without a perfectly quiescent test window. Revert once
-// the answer is recorded.
-// #define MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
-#ifdef MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
-namespace {
-	uint64_t s_mame_sgi_nwd_auxstat_disk_reads = 0;
-	uint64_t s_mame_sgi_nwd_auxstat_cdrom_reads = 0;
-	osd_ticks_t s_mame_sgi_nwd_auxstat_next_dump = 0;
-}
-#endif
 
 //**************************************************************************
 //  Initiator (WD33C93B) register/chip-level constants - copied verbatim
@@ -827,23 +803,6 @@ uint8_t nwd33c9x_device::indir_reg_r()
 			ret = m_regs[m_addr];
 		}
 
-#ifdef MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
-		if (m_addr == AUXILIARY_STATUS) {
-			if (m_t_active_disk >= 0)
-				s_mame_sgi_nwd_auxstat_disk_reads++;
-			else
-				s_mame_sgi_nwd_auxstat_cdrom_reads++;
-			osd_ticks_t now = osd_ticks();
-			if (now >= s_mame_sgi_nwd_auxstat_next_dump) {
-				printf("MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG: AUXILIARY_STATUS reads in last ~5s: disk=%llu cdrom=%llu\n",
-					(unsigned long long)s_mame_sgi_nwd_auxstat_disk_reads,
-					(unsigned long long)s_mame_sgi_nwd_auxstat_cdrom_reads);
-				s_mame_sgi_nwd_auxstat_disk_reads = 0;
-				s_mame_sgi_nwd_auxstat_cdrom_reads = 0;
-				s_mame_sgi_nwd_auxstat_next_dump = now + osd_ticks_per_second() * 5;
-			}
-		}
-#endif
 
 		if (m_addr == SCSI_STATUS) {
 			update_irq();
@@ -907,16 +866,6 @@ void nwd33c9x_device::indir_reg_w(uint8_t data)
 		else {
 			m_regs[m_addr] = data;
 		}
-#ifdef MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG
-		if (m_addr == CONTROL) {
-			printf("MAME_SGI_SCSI_NWD_PERBYTE_VISIBILITY_DIAG: CONTROL write data=%02x DM=%s target=%s\n",
-				data,
-				(data & CONTROL_DM) == CONTROL_DM_POLLED ? "POLLED" :
-				(data & CONTROL_DM) == CONTROL_DM_BURST ? "BURST" :
-				(data & CONTROL_DM) == CONTROL_DM_BUS ? "BUS" : "DMA",
-				(m_t_active_disk >= 0) ? "disk" : "cdrom");
-		}
-#endif
 		m_addr = (m_addr + 1) & REGS_MASK;
 		break;
 	}
