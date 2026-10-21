@@ -32,14 +32,6 @@
 #include <cstdio>
 #include <cstring>
 
-// Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
-// prints below - see window.cpp's own copy of this
-// macro/comment for the full rationale (self-defined per-file, per
-// this project's src/devices/ scoping convention, since a macro
-// defined in one .cpp isn't visible in another). Off by default;
-// the SDL mouse/keyboard focus issue after -state reload is still open,
-// re-enable if it needs revisiting.
-// #define MAME_SGI_MOUSEFOCUS_DIAG
 
 namespace {
 
@@ -170,7 +162,6 @@ sdl_window_info *window_from_id(Uint32 id)
 }
 
 } // anonymous namespace
-
 
 
 //============================================================
@@ -329,7 +320,6 @@ void sdl_osd_interface::init(running_machine &machine)
 		using namespace std::placeholders;
 		machine.add_logerror_callback(std::bind(&sdl_osd_interface::output_oslog, this, _1));
 	}
-
 
 
 #ifdef SDLMAME_EMSCRIPTEN
@@ -761,9 +751,6 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 
 	case SDL_WINDOWEVENT_ENTER:
 		{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-			osd_printf_verbose("MOUSEFOCUS_DIAG: ENTER window=%p\n", (void *)window);
-#endif
 			m_mouse_over_window = 1;
 			unsigned device;
 			try
@@ -781,9 +768,6 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 
 	case SDL_WINDOWEVENT_LEAVE:
 		{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-			osd_printf_verbose("MOUSEFOCUS_DIAG: LEAVE window=%p\n", (void *)window);
-#endif
 			m_mouse_over_window = 0;
 			unsigned device;
 			try
@@ -800,17 +784,11 @@ void sdl_osd_interface::process_window_event(SDL_Event const &event)
 		break;
 
 	case SDL_WINDOWEVENT_FOCUS_GAINED:
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: FOCUS_GAINED window=%p\n", (void *)window);
-#endif
 		m_focus_window = window;
 		window->target()->push_window_focus_event();
 		break;
 
 	case SDL_WINDOWEVENT_FOCUS_LOST:
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: FOCUS_LOST window=%p (was_focus=%d)\n", (void *)window, window == m_focus_window);
-#endif
 		if (window == m_focus_window)
 			m_focus_window = nullptr;
 		window->target()->push_window_defocus_event();

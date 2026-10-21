@@ -72,25 +72,6 @@
 // suspected of causing was unrelated. Ungating this to match Finding 2's
 // pattern would be a reasonable small follow-up cleanup.
 #define MAME_SGI_PIT_MODE45_PHASE0_FIX
-// DISABLED again (2026-08-21) - was RE-ENABLED earlier the same day to
-// validate both the cause and the fix for the clean-shutdown
-// near-permanent-stall bug:
-// confirmed the "counter gets parked, backlog accumulates silently"
-// hypothesis live (a period logged going to 0 Hz/CYCLES_NEVER), and
-// confirmed MAME_SGI_PIT_BULK_CATCHUP_FIX's fastpath actually engages
-// at real scale (1,717,984 fastpath calls, 0 slowpath, on a real
-// ~4.3 billion cycle backlog). Both now fully validated - re-enable if
-// the PIT rate itself needs inspecting again.
-// #define MAME_SGI_PIT_RATE_DIAG
-#ifdef MAME_SGI_PIT_RATE_DIAG
-namespace {
-	std::map<std::string, attoseconds_t> s_mame_sgi_pit_last_period;
-	std::map<std::string, uint64_t> s_mame_sgi_pit_update_tick_calls;
-	osd_ticks_t s_mame_sgi_pit_next_dump = 0;
-	uint64_t s_mame_sgi_pit_fastpath_calls = 0;
-	uint64_t s_mame_sgi_pit_slowpath_calls = 0;
-}
-#endif
 
 // FIX (2026-08-21, gated): catch-up loops (e.g. Mode 2's
 // do-while in simulate()) can call set_output() -> devcb -> a
@@ -126,22 +107,12 @@ namespace {
 	{
 		bool active;
 		bool outermost;
-#ifdef MAME_SGI_PIT_RATE_DIAG
-		uint64_t fastpath_at_entry = 0;
-		uint64_t slowpath_at_entry = 0;
-#endif
 		explicit bulk_catchup_guard(int64_t elapsed_cycles) : active(elapsed_cycles > MAME_SGI_PIT_BULK_CATCHUP_THRESHOLD),
 			outermost(active && s_mame_sgi_pit_bulk_catchup_depth == 0)
 		{
 			if (active)
 			{
 				s_mame_sgi_pit_bulk_catchup_depth++;
-#ifdef MAME_SGI_PIT_RATE_DIAG
-				fastpath_at_entry = s_mame_sgi_pit_fastpath_calls;
-				slowpath_at_entry = s_mame_sgi_pit_slowpath_calls;
-				if (outermost)
-					osd_printf_info("MAME_SGI_PIT_RATE_DIAG: bulk catchup started, elapsed_cycles=%lld\n", (long long)elapsed_cycles);
-#endif
 			}
 		}
 		~bulk_catchup_guard()
@@ -149,27 +120,12 @@ namespace {
 			if (active)
 			{
 				s_mame_sgi_pit_bulk_catchup_depth--;
-#ifdef MAME_SGI_PIT_RATE_DIAG
-				if (outermost)
-					osd_printf_info("MAME_SGI_PIT_RATE_DIAG: bulk catchup finished, fastpath_calls=%llu slowpath_calls=%llu\n",
-						(unsigned long long)(s_mame_sgi_pit_fastpath_calls - fastpath_at_entry),
-						(unsigned long long)(s_mame_sgi_pit_slowpath_calls - slowpath_at_entry));
-#endif
 			}
 		}
 	};
 }
 #endif
 
-// Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s print,
-// concluded weeks ago alongside the investigation into what gates the
-// wait loop before 0xbfc1174c - was unconditionally wired via
-// register_postload() AND fired periodically during ordinary
-// operation (every 20000 update_tick() calls, not just on real
-// -state save/load), and its print was also mislabeled
-// "MOUSEFOCUS_DIAG:" (an unrelated copy-paste leftover, now fixed).
-// Off by default; re-enable if that wait loop needs revisiting.
-// #define MAME_SGI_PIT_POSTLOAD_DIAG
 
 #define LOG1(...) LOGMASKED(LOG_1, __VA_ARGS__)
 #define LOG2(...) LOGMASKED(LOG_2, __VA_ARGS__)
@@ -240,11 +196,6 @@ void pit8253_device::device_resolve_objects()
 
 void pit_counter_device::mame_sgi_postload_diag()
 {
-#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
-	osd_printf_verbose("MAME_SGI_PIT_POSTLOAD_DIAG: pit_counter_device[%d] postload: m_phase=%d m_output=%d m_output_pin=%d m_value=%04X m_control=%02X m_gate=%d m_gate_input=%d timer_enabled=%d timer_remaining=%s\n",
-		m_index, m_phase, m_output, m_output_pin, m_value, m_control, m_gate, m_gate_input,
-		(int)m_update_timer->enabled(), m_update_timer->remaining().as_string());
-#endif
 }
 
 //-------------------------------------------------
@@ -280,9 +231,6 @@ void pit_counter_device::device_start()
 	save_item(NAME(m_last_updated));
 	save_item(NAME(m_clock_signal));
 
-#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
-	machine().save().register_postload(save_prepost_delegate(FUNC(pit_counter_device::mame_sgi_postload_diag), this));
-#endif
 
 	/* zerofill */
 	m_gate = 1;
@@ -865,21 +813,6 @@ void pit_counter_device::simulate(int64_t elapsed_cycles)
 		break;
 	}
 
-#ifdef MAME_SGI_PIT_RATE_DIAG
-	{
-		attoseconds_t period = (cycles_to_output == CYCLES_NEVER || m_clockin == 0)
-			? 0 : (cycles_to_output * m_clock_period).as_attoseconds();
-		std::string key = tag();
-		auto it = s_mame_sgi_pit_last_period.find(key);
-		if (it == s_mame_sgi_pit_last_period.end() || it->second != period)
-		{
-			s_mame_sgi_pit_last_period[key] = period;
-			double hz = period ? (double)ATTOSECONDS_PER_SECOND / (double)period : 0.0;
-			osd_printf_info("MAME_SGI_PIT_RATE_DIAG: %s mode=%d clockin=%d cycles_to_output=%u period_attosec=%lld (%.2f Hz)\n",
-				key.c_str(), mode, m_clockin, cycles_to_output, (long long)period, hz);
-		}
-	}
-#endif
 	if (cycles_to_output == CYCLES_NEVER || m_clockin == 0)
 		adjust_timer(attotime::never);
 	else
@@ -1160,26 +1093,6 @@ void pit8254_device::readback_command(uint8_t data)
 
 TIMER_CALLBACK_MEMBER(pit_counter_device::update_tick)
 {
-#ifdef MAME_SGI_PIT_POSTLOAD_DIAG
-	{
-		static std::map<int, uint64_t> s_mame_sgi_diag_calls;
-		if ((++s_mame_sgi_diag_calls[m_index] % 20000) == 1)
-			mame_sgi_postload_diag();
-	}
-#endif
-#ifdef MAME_SGI_PIT_RATE_DIAG
-	s_mame_sgi_pit_update_tick_calls[tag()]++;
-	osd_ticks_t mame_sgi_pit_now = osd_ticks();
-	if (mame_sgi_pit_now >= s_mame_sgi_pit_next_dump)
-	{
-		std::string line = "MAME_SGI_PIT_RATE_DIAG: update_tick calls in last window:";
-		for (auto &entry : s_mame_sgi_pit_update_tick_calls)
-			line += " " + entry.first + "=" + std::to_string(entry.second);
-		osd_printf_info("%s\n", line.c_str());
-		s_mame_sgi_pit_update_tick_calls.clear();
-		s_mame_sgi_pit_next_dump = mame_sgi_pit_now + osd_ticks_per_second() * 5;
-	}
-#endif
 	update();
 }
 
@@ -1352,15 +1265,9 @@ void pit_counter_device::set_clock_signal(int state)
 #ifdef MAME_SGI_PIT_BULK_CATCHUP_FIX
 	if (s_mame_sgi_pit_bulk_catchup_depth > 0)
 	{
-#ifdef MAME_SGI_PIT_RATE_DIAG
-		s_mame_sgi_pit_fastpath_calls++;
-#endif
 		set_clock_signal_immediate(state);
 		return;
 	}
-#endif
-#ifdef MAME_SGI_PIT_RATE_DIAG
-	s_mame_sgi_pit_slowpath_calls++;
 #endif
 	machine().scheduler().synchronize(timer_expired_delegate(FUNC(pit_counter_device::set_clock_signal_deferred), this), state);
 }

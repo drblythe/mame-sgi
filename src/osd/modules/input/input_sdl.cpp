@@ -54,13 +54,6 @@
 #undef DELETE
 #endif
 
-// Logs when a burst of keydown+keyup pairs gets deferred simultaneously
-// by the sticky-press fix below (see sdl_keyboard_device) - a direct
-// signal of how many keystrokes a given DRC/scheduler stall would have
-// dropped without it. Off by default.
-// DISABLED (2026-08-23) - reopened investigation paused;
-// re-enable if another live session is needed.
-// #define MAME_SGI_KBD_STICKY_DIAG
 
 // TEMPORARY diagnostic (2026-08-23) - wall-clock-timestamped log of
 // every raw SDL_KEYDOWN/SDL_KEYUP process_event() actually receives,
@@ -72,37 +65,10 @@
 // shows the event, but it still never reaches the guest). Timestamp
 // format matches console_live.log's own (HH:MM:SS.mmm) for direct
 // cross-reference against what the guest console shows at the same
-// moment. DISABLED (2026-08-23) - see MAME_SGI_KBD_STICKY_DIAG's own
-// disable note just above; both were used together to pin down the
-// dropped-keystroke bugs.
+// moment. DISABLED (2026-08-23) - used to pin down the dropped-keystroke
+// bugs.
 // #define MAME_SGI_KBD_RAW_EVENT_DIAG
 
-// Same fix, same diagnostic shape, for mouse buttons (see
-// sdl_mouse_device_base) - m_mouse.buttons[] had the identical
-// unprotected level-state pattern m_keyboard.state[] did, flagged as a
-// known lurking bug during the keyboard fix's own review and
-// picked up here once the keyboard case was confirmed real via live
-// diagnostic data. Off by default.
-// #define MAME_SGI_MOUSE_BTN_STICKY_DIAG
-
-// TEMPORARY diagnostic (2026-08-23) - the queued_repress same-key-
-// collision fix (see keyboard_state's own comment) still failed to
-// reproduce a second, distinguishable "down" pulse for one specific
-// scancode in live testing despite tracing correctly on paper - logs
-// every actual change to that scancode's full sticky-press state
-// (state/pending_first_sample/release_deferred/queued_repress/
-// pending_repress_armed) from both process_event() and poll(), to see
-// exactly what the real call sequence did instead of re-deriving it
-// from source alone. Scancode is hardcoded (18 = SDL_SCANCODE_O, the
-// one directly implicated by MAME_SGI_KBD_MATRIX_SCAN_DIAG's evidence)
-// rather than made configurable - this is a one-shot investigation
-// tool, not a standing feature. DISABLED (2026-08-23) - confirmed the
-// queued_repress fix behaves exactly as designed once actually
-// exercised; its own question is answered.
-// #define MAME_SGI_KBD_STATE_TRACE_DIAG
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-#define MAME_SGI_KBD_STATE_TRACE_SCANCODE 18
-#endif
 
 namespace osd {
 
@@ -648,17 +614,6 @@ public:
 	// follows the events directly)
 	void set_input_buffer(bool enable) { m_input_buffer = enable; }
 
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-	void trace_kbd_state(char const *where)
-	{
-		int const sc = MAME_SGI_KBD_STATE_TRACE_SCANCODE;
-		osd_printf_info("MAME_SGI_KBD_STATE_TRACE_DIAG: %s %-14s state=%02x pending_first_sample=%d release_deferred=%d queued_repress=%d pending_repress_armed=%d\n",
-			kbd_raw_event_timestamp().c_str(), where,
-			unsigned(m_keyboard.state[sc]), int(m_keyboard.pending_first_sample[sc]),
-			int(m_keyboard.release_deferred[sc]), int(m_keyboard.queued_repress[sc]),
-			int(m_keyboard.pending_repress_armed[sc]));
-	}
-#endif
 
 	virtual void poll(bool relative_reset) override
 	{
@@ -691,13 +646,6 @@ public:
 		// SAME call that reaches this loop - the release must only be
 		// applied once pending_first_sample was already clear *before*
 		// this burst, i.e. on a later call, or the deferral is a no-op.
-#ifdef MAME_SGI_KBD_STICKY_DIAG
-		int sticky_count = 0;
-		for (s8 deferred : m_keyboard.release_deferred)
-			sticky_count += deferred ? 1 : 0;
-		if (sticky_count > MAME_SGI_KBD_STICKY_LOG_THRESHOLD)
-			osd_printf_info("MAME_SGI_KBD_STICKY_DIAG: %d keys simultaneously saved from being dropped this poll cycle\n", sticky_count);
-#endif
 		for (size_t sc = 0; m_input_buffer && (sc < std::size(m_keyboard.release_deferred)); sc++)
 		{
 			// Snapshot before this call's own changes - the "survived a
@@ -748,14 +696,6 @@ public:
 			if (was_pending)
 				m_keyboard.pending_first_sample[sc] = 0;
 
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE
-				&& (m_keyboard.state[sc] || m_keyboard.pending_first_sample[sc] || m_keyboard.release_deferred[sc]
-					|| m_keyboard.queued_repress[sc] || m_keyboard.pending_repress_armed[sc]))
-			{
-				trace_kbd_state("poll-end");
-			}
-#endif
 		}
 	}
 
@@ -801,10 +741,6 @@ public:
 				m_keyboard.pending_first_sample[sc] = 1;
 				m_keyboard.release_deferred[sc] = 0;
 			}
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
-				trace_kbd_state(event.key.repeat ? "keydown(repeat)" : busy ? "keydown(busy)" : "keydown(idle)");
-#endif
 			break;
 		}
 
@@ -831,10 +767,6 @@ public:
 			// there is nothing to update here.
 			if (m_keyboard.queued_repress[sc] > 0)
 			{
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-				if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
-					trace_kbd_state("keyup(queued-noop)");
-#endif
 				break;
 			}
 
@@ -845,10 +777,6 @@ public:
 				m_keyboard.release_deferred[sc] = 1;
 			else
 				m_keyboard.state[sc] = 0x00;
-#ifdef MAME_SGI_KBD_STATE_TRACE_DIAG
-			if (sc == MAME_SGI_KBD_STATE_TRACE_SCANCODE)
-				trace_kbd_state("keyup");
-#endif
 			break;
 		}
 		}
@@ -906,9 +834,6 @@ private:
 		s8  pending_repress_armed[0x3ff]; // a queued cycle is waiting to become visible on the NEXT poll()
 	};
 
-#ifdef MAME_SGI_KBD_STICKY_DIAG
-	static constexpr int MAME_SGI_KBD_STICKY_LOG_THRESHOLD = 0;
-#endif
 
 	// Cap on queued_repress - bounds worst case to a handful of same-key
 	// taps arriving faster than poll() can drain them; typing, even a
@@ -948,13 +873,6 @@ public:
 		// was the identical unprotected level-state pattern, and a fast
 		// click-and-release landing inside a stalled poll gap would be
 		// just as invisible to the guest as a dropped keystroke.
-#ifdef MAME_SGI_MOUSE_BTN_STICKY_DIAG
-		int sticky_count = 0;
-		for (s8 deferred : m_button_release_deferred)
-			sticky_count += deferred ? 1 : 0;
-		if (sticky_count > 0)
-			osd_printf_info("MAME_SGI_MOUSE_BTN_STICKY_DIAG: %d buttons simultaneously saved from being dropped this poll cycle\n", sticky_count);
-#endif
 		for (size_t b = 0; m_input_buffer && (b < std::size(m_button_release_deferred)); b++)
 		{
 			if (m_button_release_deferred[b] && !m_button_pending_first_sample[b])

@@ -39,15 +39,6 @@
 #endif
 
 
-// Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
-// prints below - previously gated only by the general
-// -verbose flag, which this project's own tooling passes by default
-// for unrelated reasons, so these fired on every launch regardless of
-// whether anyone was investigating mouse focus. Off by default;
-// the SDL mouse/keyboard focus issue after -state reload is still
-// open, so re-enable if that needs revisiting rather than deleting.
-// #define MAME_SGI_MOUSEFOCUS_DIAG
-
 //============================================================
 //  PARAMETERS
 //============================================================
@@ -71,7 +62,6 @@
 #endif
 
 #define SDL_VERSION_EQUALS(v1, vnum2) (SDL_VERSIONNUM(v1.major, v1.minor, v1.patch) == vnum2)
-
 
 
 //============================================================
@@ -146,12 +136,7 @@ void sdl_window_info::capture_pointer()
 	{
 		SDL_SetWindowGrab(platform_window(), SDL_TRUE);
 		int const relmode_rc = SDL_SetRelativeMouseMode(SDL_TRUE);
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: capture_pointer() engaging - SetRelativeMouseMode rc=%d err='%s' actual_relmode=%d\n",
-			relmode_rc, SDL_GetError(), (int)SDL_GetRelativeMouseMode());
-#else
 		(void)relmode_rc;
-#endif
 		m_mouse_captured = true;
 	}
 }
@@ -161,12 +146,7 @@ void sdl_window_info::release_pointer()
 	if (m_mouse_captured)
 	{
 		int const relmode_rc = SDL_SetRelativeMouseMode(SDL_FALSE);
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: release_pointer() releasing - SetRelativeMouseMode rc=%d err='%s' actual_relmode=%d\n",
-			relmode_rc, SDL_GetError(), (int)SDL_GetRelativeMouseMode());
-#else
 		(void)relmode_rc;
-#endif
 		SDL_SetWindowGrab(platform_window(), SDL_FALSE);
 		m_mouse_captured = false;
 	}
@@ -399,10 +379,6 @@ void sdl_window_info::mouse_down(unsigned device, int x, int y, unsigned button)
 		// window - self-heal rather than trust m_mouse_inside, which can
 		// get stuck false if a SDL_WINDOWEVENT_ENTER is ever missed after
 		// a LEAVE (see MOUSEFOCUS_DIAG investigation, 2026-08-14).
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: mouse_down() self-heal: m_mouse_inside was false, now true window=%p device=%u x=%d y=%d button=%u\n",
-			(void *)this, device, x, y, button);
-#endif
 		m_mouse_inside = true;
 	}
 
@@ -442,10 +418,6 @@ void sdl_window_info::mouse_up(unsigned device, int x, int y, unsigned button)
 {
 	if (!m_mouse_inside)
 	{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: mouse_up() self-heal: m_mouse_inside was false, now true window=%p device=%u x=%d y=%d button=%u\n",
-			(void *)this, device, x, y, button);
-#endif
 		m_mouse_inside = true;
 	}
 
@@ -483,10 +455,6 @@ void sdl_window_info::mouse_moved(unsigned device, int x, int y)
 {
 	if (!m_mouse_inside)
 	{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: mouse_moved() self-heal: m_mouse_inside was false, now true window=%p device=%u x=%d y=%d\n",
-			(void *)this, device, x, y);
-#endif
 		m_mouse_inside = true;
 	}
 
@@ -519,10 +487,6 @@ void sdl_window_info::mouse_wheel(unsigned device, int y)
 {
 	if (!m_mouse_inside)
 	{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-		osd_printf_verbose("MOUSEFOCUS_DIAG: mouse_wheel() self-heal: m_mouse_inside was false, now true window=%p device=%u y=%d\n",
-			(void *)this, device, y);
-#endif
 		m_mouse_inside = true;
 	}
 
@@ -1228,7 +1192,6 @@ osd_rect sdl_window_info::constrain_to_aspect_ratio(const osd_rect &rect, int ad
 }
 
 
-
 //============================================================
 //  get_min_bounds
 //  (window thread)
@@ -1385,8 +1348,6 @@ inline sdl_window_info::sdl_pointer_info::sdl_pointer_info(SDL_FingerID f, unsig
 	, finger(f)
 {
 }
-
-
 
 
 //============================================================

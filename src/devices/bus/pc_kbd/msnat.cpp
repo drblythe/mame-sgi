@@ -61,8 +61,8 @@ std::string kbd_matrix_scan_timestamp()
 // TEMPORARY diagnostic (2026-08-23) - investigation of keys dropped during
 // a host stall: MAME_SGI_KBD_MATRIX_SCAN_DIAG proved a key that IS
 // correctly toggled at the host layer (a real, guaranteed-visible
-// state=0x80 window, confirmed via input_sdl.cpp's own
-// MAME_SGI_KBD_STATE_TRACE_DIAG) can still never be observed by this
+// state=0x80 window, confirmed with a host-side key state trace in
+// input_sdl.cpp) can still never be observed by this
 // firmware's own matrix scan. The remaining question is *why*: does the
 // 8051 simply not run enough during a stall, or does it run plenty but
 // its own row-select scan cycle - visiting all 16 rows in sequence -

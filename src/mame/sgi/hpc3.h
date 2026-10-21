@@ -105,19 +105,6 @@ public:
 protected:
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
-#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
-	// TEMPORARY (2026-08-14): dumps all 4 m_pbus_dma[] channels plus their
-	// HAL2 get_rate() immediately after a -state reload, for the
-	// eret-race-onset investigation. A binary diff of healthy vs stuck save
-	// endpoints (2,749,877 vs 2,829,794 cycles) showed PBUS DMA channels 1
-	// and 2 transitioning from fully inactive (attotime::never) to actively
-	// armed in exactly this window - almost certainly the Indy boot chime
-	// starting up. This checks whether either channel is captured in a
-	// similarly inconsistent mid-configuration state as the channel-2
-	// zero-rate-rearm bug already found and fixed, just via
-	// different fields this time.
-	void func_pbus_dma_postload_diag();
-#endif
 
 	virtual space_config_vector memory_space_config() const override;
 

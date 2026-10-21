@@ -8,15 +8,6 @@
 
 #include "emu.h"
 
-// TEMPORARY diagnostic (2026-08-14): dumps all 8 m_pbus_dma[] channels plus
-// their HAL2 rate on every -state postload, for the eret-race-onset
-// investigation - see hpc3_device::func_pbus_dma_postload_diag's own comment.
-// Must be defined before "hpc3.h" is included, since it also gates that
-// function's declaration there.
-// DISABLED (2026-10-19): a -state resume at the desktop with real
-// mouse/keyboard use showed every channel idle after postload and input
-// working; nothing left to investigate.
-// #define MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
 
 #include "hpc3.h"
 
@@ -182,31 +173,8 @@ void hpc3_device::device_start()
 
 	m_enet_tx_timer = timer_alloc(FUNC(hpc3_device::enet_transmit), this);
 
-#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
-	machine().save().register_postload(save_prepost_delegate(FUNC(hpc3_device::func_pbus_dma_postload_diag), this));
-#endif
 }
 
-#ifdef MAME_SGI_PBUS_DMA_POSTLOAD_DIAG
-void hpc3_device::func_pbus_dma_postload_diag()
-{
-	// Uses osd_printf_verbose (not fprintf(stderr,...)) - confirmed live
-	// 2026-08-14 that raw fprintf(stderr,...) here loses/tears lines
-	// unpredictably (root cause not pinned down; possibly a concurrent
-	// writer on the same fd from another OSD thread), while
-	// osd_printf_verbose has been reliable throughout this whole
-	// investigation for every other postload diagnostic (mips3.cpp,
-	// pit8253.cpp).
-	for (uint32_t i = 0; i < 8; i++)
-	{
-		pbus_dma_t &dma = m_pbus_dma[i];
-		attotime rate = m_hal2->get_rate(i);
-		osd_printf_verbose("MAME_PBUS_DMA_DIAG: channel=%u active=%d cur_ptr=%08x desc_ptr=%08x desc_flags=%08x next_ptr=%08x bytes_left=%08x config=%08x control=%08x timer_enabled=%d timer_remaining=%s hal2_rate=%s\n",
-			i, dma.m_active, dma.m_cur_ptr, dma.m_desc_ptr, dma.m_desc_flags, dma.m_next_ptr, dma.m_bytes_left, dma.m_config, dma.m_control,
-			dma.m_timer->enabled(), dma.m_timer->remaining().as_string(18), rate.as_string(18));
-	}
-}
-#endif
 
 void hpc3_device::device_reset()
 {

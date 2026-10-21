@@ -28,26 +28,6 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// Investigating a sustained ~100k/sec interrupt storm on Local0/MAPPABLE0
-// that hangs SGI Indy boot: at_keybc.cpp instrumentation showed the kbdc's
-// own IRQ-request flip-flops (and the embedded i8042 firmware that drives
-// them) go completely silent once the storm starts, ruling that device
-// out as the storm's origin - yet the guest keeps re-entering pckm_intr().
-// check_mappable_interrupt(0) ORs together BOTH kbdc_int_w (mask 0x10) and
-// duart_int_w (mask 0x20) into the same Local0/MAPPABLE0 line; if the
-// DUART (m_scc, which drives the serial console link) has its own
-// interrupt genuinely stuck asserted, Local0 would stay latched with kbdc
-// completely quiet. This counts both sources' calls/state to check.
-// DISABLED (2026-07-31): investigation resolved, real fix is the kbd_int_w/
-// aux_int_w change replacing the input_merger_device wiring above. Left
-// in place, gated, in case future work needs it again.
-// RE-ENABLED (2026-08-15): live repro - checking whether the
-// SDL-side mouse/keyboard freeze coincides with a similar stuck-latched
-// interrupt pattern on the guest side.
-// DISABLED (2026-10-19): a -state resume at the desktop with real
-// mouse/keyboard use showed Local0 raising and lowering in step (no stuck
-// assertion) and input working.
-// #define MAME_SGI_IOC2_STORM_DIAG
 
 /*static*/ char const *const ioc2_device::SCC_TAG = "scc";
 /*static*/ char const *const ioc2_device::PI1_TAG = "pi1";
@@ -273,26 +253,9 @@ void ioc2_device::pit_clock2_out(int state)
 	m_pit->write_clk1(state);
 }
 
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-namespace {
-	uint64_t s_ioc2_kbdc_int_w_calls = 0;
-	uint64_t s_ioc2_duart_int_w_calls = 0;
-	uint64_t s_ioc2_kbdc_int_w_asserts = 0;
-	uint64_t s_ioc2_duart_int_w_asserts = 0;
-	uint64_t s_ioc2_check_mappable0_calls = 0;
-	uint64_t s_ioc2_raise_local0_calls = 0;
-	uint64_t s_ioc2_lower_local0_calls = 0;
-	osd_ticks_t s_ioc2_next_dump = 0;
-}
-#endif
 
 void ioc2_device::kbdc_int_w(int state)
 {
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-	s_ioc2_kbdc_int_w_calls++;
-	if (state)
-		s_ioc2_kbdc_int_w_asserts++;
-#endif
 	set_mappable_int(0x10, state);
 }
 
@@ -310,11 +273,6 @@ void ioc2_device::aux_int_w(int state)
 
 void ioc2_device::duart_int_w(int state)
 {
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-	s_ioc2_duart_int_w_calls++;
-	if (state)
-		s_ioc2_duart_int_w_asserts++;
-#endif
 	set_mappable_int(0x20, state);
 }
 
@@ -329,21 +287,6 @@ void ioc2_device::set_mappable_int(uint8_t mask, bool state)
 	else
 		m_int3_map_status_reg &= ~mask;
 
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-	osd_ticks_t const now = osd_ticks();
-	if (s_ioc2_next_dump == 0)
-		s_ioc2_next_dump = now + osd_ticks_per_second() * 2;
-	if (now >= s_ioc2_next_dump)
-	{
-		osd_printf_info("MAME_SGI_IOC2_STORM_DIAG: kbdc_int_w=%llu(assert=%llu) duart_int_w=%llu(assert=%llu) check_map0=%llu raise_local0=%llu lower_local0=%llu map_status=0x%02x map_mask0=0x%02x local0_status=0x%02x local0_mask=0x%02x\n",
-			(unsigned long long)s_ioc2_kbdc_int_w_calls, (unsigned long long)s_ioc2_kbdc_int_w_asserts,
-			(unsigned long long)s_ioc2_duart_int_w_calls, (unsigned long long)s_ioc2_duart_int_w_asserts,
-			(unsigned long long)s_ioc2_check_mappable0_calls, (unsigned long long)s_ioc2_raise_local0_calls, (unsigned long long)s_ioc2_lower_local0_calls,
-			(unsigned)m_int3_map_status_reg, (unsigned)m_int3_map_mask_reg[0],
-			(unsigned)m_int3_local_status_reg[0], (unsigned)m_int3_local_mask_reg[0]);
-		s_ioc2_next_dump = now + osd_ticks_per_second() * 2;
-	}
-#endif
 
 	const uint8_t new0 = m_int3_map_mask_reg[0] & m_int3_map_status_reg;
 	if (old0 ^ new0)
@@ -360,24 +303,14 @@ void ioc2_device::set_mappable_int(uint8_t mask, bool state)
 
 void ioc2_device::check_mappable_interrupt(int channel)
 {
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-	if (channel == 0)
-		s_ioc2_check_mappable0_calls++;
-#endif
 	if (channel == 0)
 	{
 		if (m_int3_map_mask_reg[channel] & m_int3_map_status_reg)
 		{
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-			s_ioc2_raise_local0_calls++;
-#endif
 			raise_local_irq(channel, INT3_LOCAL0_MAPPABLE0);
 		}
 		else
 		{
-#ifdef MAME_SGI_IOC2_STORM_DIAG
-			s_ioc2_lower_local0_calls++;
-#endif
 			lower_local_irq(channel, INT3_LOCAL0_MAPPABLE0);
 		}
 	}
