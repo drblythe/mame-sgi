@@ -1,5 +1,5 @@
 // license:BSD-3-Clause
-// copyright-holders:
+// copyright-holders:smf, blythe
 /**********************************************************************
 
     The reduced SGI build's (SUBTARGET=sgi, MAME_SGI_REDUCED_BUILD)
