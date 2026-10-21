@@ -51,12 +51,6 @@
 #define MAME_SGI_CENSUS_CYCLES() uint64_t(osd_ticks())
 #endif
 
-// Dedicated toggle (2026-08-21) for the mouse/cursor-focus diagnostic
-// prints below - see osd/sdl/window.cpp's own copy of
-// this macro/comment for the full rationale (self-defined per-file,
-// per this project's src/devices/ scoping convention). Off by default;
-// re-enable to revisit the mouse/cursor-focus investigation.
-// #define MAME_SGI_MOUSEFOCUS_DIAG
 
 // Originated as a TEMPORARY diagnostic (2026-09-17) - counting
 // per-frame contributions to frame_dirty (screen_update()'s own dirty
@@ -86,14 +80,6 @@
 #include <chrono>
 // #define MAME_SGI_PENDING_RECTS_DIAG
 namespace {
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-	// Per-frame counters for the OPTIONAL MAME_SGI_DIRTY_SOURCE_DIAG print
-	// below only - reset to 0 every print (see that block), so NOT safe to
-	// reuse as a cumulative/triggered-interval counter. Kept exactly as
-	// this diagnostic originally used them.
-	uint64_t g_mame_sgi_dirty_pixel_writes_this_frame = 0;
-	uint64_t g_mame_sgi_dirty_cursor_calls_this_frame = 0;
-#endif
 
 	// Cumulative-since-last-"sgistat reset" counters (2026-09-25) -
 	// separate variables from the pair above on purpose,
@@ -133,41 +119,8 @@ namespace {
 	// on it before swapping) or not.
 	uint64_t g_mame_sgi_stat_vblank_events = 0;
 	uint64_t g_mame_sgi_stat_vrint_asserts = 0;
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-	// Time-throttled (one print per real second), not count-capped - a
-	// flat count cap would exhaust itself during early boot's own
-	// legitimate dirty activity (PROM/kernel text, real redraws) long
-	// before ever reaching the specific later state under investigation
-	// (a supposedly-static GUI login screen, many boot-seconds in).
-	std::chrono::steady_clock::time_point g_mame_sgi_dirty_diag_next_print{};
-#endif
 }
-// #define MAME_SGI_DIRTY_SOURCE_DIAG
 
-// TEMPORARY diagnostic (2026-09-18) - answers two concrete questions
-// about a reported low-resolution-fallback display issue (booting with
-// unconfigured/default NVRAM, no console=d1, no ConsoleRes override):
-// (1) does vc2_device::update_screen_size()/newport_base_device::
-// update_screen_size() ever fire more than once during boot (a genuine
-// resolution switch), or does the kernel just inherit whatever the PROM
-// programs once, as expected; (2) what pixel mode/size does XMAP9's
-// mode table actually carry for the active DID entries once painting
-// starts, to separate "low resolution" (VC2 timing, this file) from
-// "low bit depth" (XMAP9 mode table, an independent axis) empirically
-// instead of by inference. Low call volume expected (a handful of
-// resize events at most, one pixel-mode snapshot) - no throttling
-// needed.
-// #define MAME_SGI_LOWRES_BOOT_DIAG
-
-// TEMPORARY, separate from the above - forces screen_update() to fully
-// recompute every single frame (bypasses both the dirty_hold_frames
-// early-exit and the dirty-rect row-range clip entirely), to isolate
-// testing the top_scanline/vram_row register-interpretation fix from
-// the separate dirty-rect coordinate-space question while both are
-// still being nailed down live (2026-09-19). Real, measurable
-// performance cost (full per-pixel recompute every frame instead of
-// only dirtied rows) - never leave this defined in a committed build.
-// #define MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
 
 // TEMPORARY diagnostic (2026-09-22) - NOT a real fix.
 // mark_full_dirty() always marks the whole 1344x1088 raw-buffer
@@ -214,29 +167,6 @@ namespace {
 // measurement harness, not a real code path choice.
 // #define MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
 
-// TEMPORARY diagnostic (2026-09-22) - NOT a real fix. Prints
-// the row range mark_dirty_for_xmap_slot() actually computes (see that
-// function's own comment) - directly answers whether the "precise" XMAP
-// fix produces a tight row band matching a real window's height, or
-// degenerates to near-full-screen for this system's real XMAP slot-
-// allocation pattern, rather than inferring it from write frequency
-// alone (which turned out to be an unreliable way to reason about this;
-// this follows up the XMAP mode-table write-frequency finding noted at
-// the VERBOSE definition below).
-// #define MAME_SGI_XMAP_SLOT_RANGE_DIAG
-
-// TEMPORARY diagnostic (2026-09-25) - NOT a real fix. Prints
-// the actual row_start_y/row_end_y screen_update() uses for a real
-// recompute (see that function's own comment) - checks whether some
-// OTHER dirty-rect contribution (rb2_dirty from real pixel draws, or the
-// vc2/cursor path - both merged into m_pending_dirty every frame via
-// frame_dirty, independent of the XMAP fix) is unioning in a broader
-// range than mark_dirty_for_xmap_slot()'s own confirmed-narrow
-// contribution. Follows up directly on a perf-record profile showing
-// screen_update()'s self-time share unchanged between the pre-fix
-// baseline and the real fix despite the fix's own row-range being
-// independently confirmed tight.
-// #define MAME_SGI_ROW_RANGE_USED_DIAG
 
 // TEMPORARY diagnostic (2026-09-25) - NOT a real fix. Prints a
 // running histogram, once/second, of how many distinct dirty rects
@@ -250,14 +180,6 @@ namespace {
 // into-cheapest-slot fallback), that's a sign MAX_RECTS should grow.
 // #define MAME_SGI_RECT_COUNT_STATS_DIAG
 
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-#include <unordered_set>
-namespace {
-	uint32_t g_mame_sgi_lowres_resize_calls = 0;
-	uint32_t g_mame_sgi_lowres_pixmode_prints = 0;
-	std::unordered_set<uint32_t> g_mame_sgi_lowres_seen_table_entries;
-}
-#endif
 
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_VC2         (1U << 2)
@@ -576,20 +498,7 @@ void xmap9_device::write(uint32_t offset, uint32_t data)
 		break;
 	case 5:
 		LOGMASKED(LOG_XMAP, "Mode Register Write: %02x = %06x\n", data >> 24, data & 0xffffff);
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-		if (m_mode_table[data >> 24] != (data & 0xffffff))
-		{
-			m_mode_table[data >> 24] = data & 0xffffff;
-			osd_printf_info("MAME_SGI_LOWRES_BOOT_DIAG mode_table changed (slot %u):\n", data >> 24);
-			for (uint32_t i = 0; i < 0x20; i++)
-			{
-				const uint32_t e = m_mode_table[i];
-				osd_printf_info("  [%u]=%06x pix_mode=%u pix_size=%u\n", i, e, (e >> 8) & 3, (e >> 10) & 3);
-			}
-		}
-#else
 		m_mode_table[data >> 24] = data & 0xffffff;
-#endif
 		break;
 	case 6:
 		LOGMASKED(LOG_XMAP, "Unused Write (Ignored): %08x\n", data);
@@ -880,22 +789,12 @@ void vc2_device::deserialize(FILE *file)
 void vc2_device::mark_cursor_dirty()
 {
 	g_mame_sgi_stat_cursor_calls++;
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-	g_mame_sgi_dirty_cursor_calls_this_frame++;
-#endif
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-	osd_printf_verbose("MOUSEFOCUS_DIAG: mark_cursor_dirty() called, m_enable_cursor=%d m_cursor_x=%d m_cursor_y=%d\n",
-		(int)m_enable_cursor, (int)m_cursor_x, (int)m_cursor_y);
-#endif
 
 	if (!m_enable_cursor)
 		return;
 
 	int x0, y0, x1, y1;
 	cursor_bounds(x0, y0, x1, y1);
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-	osd_printf_verbose("MOUSEFOCUS_DIAG: mark_cursor_dirty() bounds x0=%d y0=%d x1=%d y1=%d\n", x0, y0, x1, y1);
-#endif
 	m_dirty.add_rect(x0, y0, x1, y1);
 }
 
@@ -1571,9 +1470,6 @@ ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t 
 		m_run_x0 = m_run_x1 = x;
 	}
 	g_mame_sgi_stat_pixel_writes++;
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-	g_mame_sgi_dirty_pixel_writes_this_frame++;
-#endif
 #ifdef MAME_SGI_REX3_FAST_PIXEL_VERIFY
 	s_verify_pixels++;
 	if (*vp != expected && ++s_verify_bad <= 20)
@@ -1975,9 +1871,6 @@ void rb2_device::store_pixel(uint32_t value)
 	m_dirty.add_rect(m_cur_x, m_cur_y, m_cur_x, m_cur_y);
 #endif
 	g_mame_sgi_stat_pixel_writes++;
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-	g_mame_sgi_dirty_pixel_writes_this_frame++;
-#endif
 }
 
 
@@ -2169,31 +2062,6 @@ void newport_base_device::mark_dirty_for_xmap_slot(uint8_t slot)
 			y1 = y;
 		}
 	}
-#ifdef MAME_SGI_XMAP_SLOT_RANGE_DIAG
-	// TEMPORARY diagnostic (2026-09-22) - NOT a real fix, just
-	// visibility. Prints the actual row range computed for this slot,
-	// throttled to the first 40 INFORMATIVE prints (y0 >= 0, i.e. the
-	// slot was actually referenced by some row) - directly answers "is
-	// this precise (a tight band matching a window's real height) or
-	// does it degenerate to near-full-screen for this system's real XMAP
-	// slot-allocation pattern", rather than inferring it from write
-	// frequency/value patterns alone. First attempt at this (2026-09-22)
-	// counted EVERY call including uninformative y0=-1 ones (a slot
-	// written before screen_update() has ever populated the row mask for
-	// it, e.g. sequential mode-table setup at boot before the first
-	// frame renders) - that exhausted the whole budget on boot-time noise
-	// before wave.cpp ever launched, printing nothing useful. Revert once
-	// answered.
-	{
-		static int g_mame_sgi_xmap_slot_range_diag_prints = 0;
-		if (y0 >= 0 && g_mame_sgi_xmap_slot_range_diag_prints < 40)
-		{
-			g_mame_sgi_xmap_slot_range_diag_prints++;
-			osd_printf_info("MAME_SGI_XMAP_SLOT_RANGE_DIAG slot=%u y0=%d y1=%d span=%d\n",
-					slot, y0, y1, y1 - y0 + 1);
-		}
-	}
-#endif
 	if (y0 >= 0)
 	{
 		m_pending_dirty.add_rect(0, y0, 1280 + 64 - 1, y1);
@@ -2397,43 +2265,11 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 
 		if (frame_dirty.valid())
 		{
-#ifdef MAME_SGI_MOUSEFOCUS_DIAG
-			osd_printf_verbose("MOUSEFOCUS_DIAG: screen_update() frame_dirty.valid()=true\n");
-#endif
 			m_pending_dirty.add_rect(frame_dirty);
 		}
-#ifdef MAME_SGI_DIRTY_SOURCE_DIAG
-		if (frame_dirty.valid())
-		{
-			auto const mame_sgi_now = std::chrono::steady_clock::now();
-			if (mame_sgi_now >= g_mame_sgi_dirty_diag_next_print)
-			{
-				g_mame_sgi_dirty_diag_next_print = mame_sgi_now + std::chrono::seconds(1);
-				auto const wall = std::chrono::system_clock::now();
-				auto const t = std::chrono::system_clock::to_time_t(wall);
-				auto const us = std::chrono::duration_cast<std::chrono::microseconds>(wall.time_since_epoch()) % 1'000'000;
-				std::tm tm_buf{};
-				localtime_r(&t, &tm_buf);
-				char tsbuf[24];
-				std::snprintf(tsbuf, sizeof(tsbuf), "%02d:%02d:%02d.%06d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(us.count()));
-				osd_printf_info(
-						"MAME_SGI_DIRTY_SOURCE_DIAG wallclock=%s frame dirty: pixel_writes=%llu cursor_calls=%llu rect=(%d,%d)-(%d,%d)\n",
-						tsbuf,
-						(unsigned long long)g_mame_sgi_dirty_pixel_writes_this_frame,
-						(unsigned long long)g_mame_sgi_dirty_cursor_calls_this_frame,
-						frame_dirty.x0(), frame_dirty.y0(), frame_dirty.x1(), frame_dirty.y1());
-			}
-		}
-		g_mame_sgi_dirty_pixel_writes_this_frame = 0;
-		g_mame_sgi_dirty_cursor_calls_this_frame = 0;
-#endif
 	}
 
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
-	constexpr bool mame_sgi_force_full_recompute = true;
-#else
 	constexpr bool mame_sgi_force_full_recompute = false;
-#endif
 	// This frame's region to refresh: fresh dirt plus what the previous
 	// call consumed (see m_prev_dirty's comment). Consumed here, before
 	// the skip decision, so a skipped frame correctly leaves nothing
@@ -2528,7 +2364,6 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	struct row_range_t { int y0, y1, x0, x1; };	// rows inclusive, columns [x0, x1)
 	row_range_t row_ranges[newport_dirty_rect::MAX_RECTS];
 	int num_row_ranges = 0;
-#ifndef MAME_SGI_LOWRES_BOOT_DIAG_FORCE_FULL_RECOMPUTE
 	if (walk_dirty.valid())
 	{
 		for (int i = 0; i < walk_dirty.count(); i++)
@@ -2544,9 +2379,6 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	{
 		row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y, cliprect.min_x, cliprect.max_x };
 	}
-#else
-	row_ranges[num_row_ranges++] = { cliprect.min_y, cliprect.max_y, cliprect.min_x, cliprect.max_x };
-#endif
 #ifdef MAME_SGI_RENDER_DIRTY_RECTS
 	// Report what the walk below writes: each range's rows (only its
 	// columns when compositing spans, whole rows otherwise), plus the
@@ -2594,35 +2426,6 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 					(unsigned long long)g_mame_sgi_rect_count_histogram[2],
 					(unsigned long long)g_mame_sgi_rect_count_histogram[3],
 					(unsigned long long)g_mame_sgi_rect_count_histogram[4]);
-		}
-	}
-#endif
-#ifdef MAME_SGI_ROW_RANGE_USED_DIAG
-	// TEMPORARY diagnostic (2026-09-25) - NOT a real fix, just
-	// visibility. Prints the ACTUAL row range(s) this recompute is about
-	// to walk, once/second throughout the whole run (matching
-	// MAME_SGI_RECT_COUNT_STATS_DIAG's own time-throttled design) - NOT a
-	// "first N prints from boot" count. That was this diagnostic's first
-	// version's real bug (2026-09-25): screen_update() runs continuously
-	// from early boot, so a "first 40 real recomputes" budget could be
-	// entirely exhausted during login-screen rendering, desktop/toolchest
-	// icons appearing, or the app's own window being created - all
-	// legitimately-broad transient activity - well before the actual
-	// steady-state swap this diagnostic meant to characterize ever
-	// started. Sampling continuously across the whole run instead avoids
-	// front-loading on whatever happens to occur first.
-	{
-		static std::chrono::steady_clock::time_point g_mame_sgi_row_range_used_diag_next_print{};
-		const auto now = std::chrono::steady_clock::now();
-		if (now >= g_mame_sgi_row_range_used_diag_next_print)
-		{
-			g_mame_sgi_row_range_used_diag_next_print = now + std::chrono::seconds(1);
-			for (int i = 0; i < num_row_ranges; i++)
-			{
-				osd_printf_info("MAME_SGI_ROW_RANGE_USED_DIAG rect=%d/%d row_start_y=%d row_end_y=%d span=%d cliprect=[%d,%d]\n",
-						i, num_row_ranges, row_ranges[i].y0, row_ranges[i].y1,
-						row_ranges[i].y1 - row_ranges[i].y0 + 1, cliprect.min_y, cliprect.max_y);
-			}
 		}
 	}
 #endif
@@ -2732,18 +2535,6 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		uint8_t pix_size = (table_entry >> 10) & 3;
 		uint8_t aux_pix_mode = (table_entry >> 16) & 7;
 		uint16_t aux_msb = (table_entry >> 11) & 0x1f00;
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-		if (g_mame_sgi_lowres_seen_table_entries.find(table_entry) == g_mame_sgi_lowres_seen_table_entries.end()
-				&& g_mame_sgi_lowres_pixmode_prints < 50)
-		{
-			g_mame_sgi_lowres_seen_table_entries.insert(table_entry);
-			g_mame_sgi_lowres_pixmode_prints++;
-			osd_printf_info(
-					"MAME_SGI_LOWRES_BOOT_DIAG pixmode #%u (new table_entry): row=%d did_entry=%04x table_entry=%08x pix_mode=%u pix_size=%u aux_pix_mode=%u\n",
-					g_mame_sgi_lowres_pixmode_prints, y, curr_did_entry, table_entry,
-					pix_mode, pix_size, aux_pix_mode);
-		}
-#endif
 		uint16_t ci_msb = 0;
 		switch ((table_entry >> 8) & 3)
 		{
@@ -3090,11 +2881,6 @@ mame_sgi_composite_done:
 #ifndef MAME_SGI_NEWPORT_LUT_FOLD
 #error MAME_SGI_NEWPORT_SPAN_COMPOSITE needs MAME_SGI_NEWPORT_LUT_FOLD
 #endif
-// TEMPORARY diag: composited pixels per display mode, printed every 5 s
-// #define MAME_SGI_SPAN_MODE_DIAG
-#ifdef MAME_SGI_SPAN_MODE_DIAG
-static uint64_t s_span_mode_pixels[128];
-#endif
 
 // MAME_SGI_SPAN_OVERLAY_FAST: the common modes' span loops, with no aux
 // plane (Ovl 0) or with a 2-bit overlay (aux mode 2) on an 8bpp board (Ovl
@@ -3209,22 +2995,6 @@ void newport_base_device::composite_span(const composite_mode &mode, const uint3
 	const uint16_t aux_msb = mode.aux_msb;
 	const uint16_t ci_msb = mode.ci_msb;
 	const uint16_t popup_msb = mode.popup_msb;
-#ifdef MAME_SGI_SPAN_MODE_DIAG
-	{
-		static std::chrono::steady_clock::time_point next_print{};
-		s_span_mode_pixels[(aux_pix_mode << 4) | (pix_mode << 2) | pix_size] += count;
-		const auto now = std::chrono::steady_clock::now();
-		if (now >= next_print)
-		{
-			next_print = now + std::chrono::seconds(5);
-			osd_printf_info("MAME_SGI_SPAN_MODE_DIAG (aux,mode,size)=pixels:");
-			for (int i = 0; i < 128; i++)
-				if (s_span_mode_pixels[i])
-					osd_printf_info(" (%d,%d,%d)=%llu", i >> 4, (i >> 2) & 3, i & 3, (unsigned long long)s_span_mode_pixels[i]);
-			osd_printf_info("\n");
-		}
-	}
-#endif
 
 	// MAME_SGI_SPAN_OVERLAY_FAST
 	if (aux_pix_mode == 0)
@@ -3681,13 +3451,6 @@ void newport_base_device::update_screen_size(int state)
 	const int x_end = m_vc2->readout_x1();
 	const int y_end = m_vc2->readout_y1();
 
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-	g_mame_sgi_lowres_resize_calls++;
-	osd_printf_info(
-			"MAME_SGI_LOWRES_BOOT_DIAG resize #%u: readout=(%d,%d)-(%d,%d) new_size=%dx%d\n",
-			g_mame_sgi_lowres_resize_calls, x_start, y_start, x_end, y_end,
-			x_end - x_start, y_end - y_start);
-#endif
 
 	m_screen->set_size((uint16_t)(x_end - x_start), (uint16_t)(y_end - y_start));
 	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the VC2 readout spans 8 columns more
@@ -7305,28 +7068,11 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		{
 			const uint32_t data32 = (uint32_t)(data >> 32);
 			LOGMASKED(LOG_REX3, "REX3 Top of Screen Scanline Write: %08x\n", data32);
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-			if (m_rex3.m_top_scanline != (data32 & 0x3ff))
-			{
-				osd_printf_info(
-						"MAME_SGI_LOWRES_BOOT_DIAG top_scanline changed: old=%u new=%u\n",
-						m_rex3.m_top_scanline, data32 & 0x3ff);
-			}
-#endif
 			m_rex3.m_top_scanline = data32 & 0x3ff;
 		}
 		if (ACCESSING_BITS_0_31)
 		{
 			LOGMASKED(LOG_REX3, "REX3 XY Window Write: %08x\n", (uint32_t)data);
-#ifdef MAME_SGI_LOWRES_BOOT_DIAG
-			if (m_rex3.m_xy_window != (uint32_t)data)
-			{
-				osd_printf_info(
-						"MAME_SGI_LOWRES_BOOT_DIAG xy_window changed: old=%08x new=%08x (x_window=%d y_window=%d)\n",
-						m_rex3.m_xy_window, (uint32_t)data,
-						(int)(int16_t)((uint32_t)data >> 16), (int)(int16_t)(uint32_t)data);
-			}
-#endif
 			m_rex3.m_xy_window = (uint32_t)data;
 			m_rex3.m_x_window = (int16_t)(m_rex3.m_xy_window >> 16);
 			m_rex3.m_y_window = (int16_t)m_rex3.m_xy_window;
