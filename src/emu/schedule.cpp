@@ -87,92 +87,6 @@ void mame_sgi_cost_sources_dump(FILE *f, double tsc_hz)
 }
 #endif
 
-// TEMPORARY diagnostic (2026-08-24, reworked same day) - bisecting the
-// scheduler's own major phases (CPU execution vs timer/device callback
-// processing) to find which one clobbers the host MXCSR. The original
-// version of this check only logged whenever RC happened to read
-// round-toward-zero, on the assumption that a correctly-behaving system
-// would never observe RTZ "leaking" past the few-instruction window where
-// a guest MIPS3 CPU's own _mixed_dtoa()/_get_int_digits() legitimately
-// holds it there - that's backwards for the actual bug being chased
-// (MXCSR failing to reach RTZ when it should, not RTZ persisting when it
-// shouldn't), so it could never have caught this failure mode regardless
-// of how many checkpoints were added. Reworked to record the real MXCSR
-// right after the CPU's own exec->run() finishes a timeslice (trusted as
-// correct, since it's freshly left by the CPU/DRC's own op_setfmod
-// machinery) and compare it at every subsequent scheduler boundary -
-// execute_timers() as a whole and each individual named timer callback -
-// until the next exec->run(). A mismatch at a specific boundary pinpoints
-// the clobberer by name; if nothing outside exec->run() ever shows one,
-// the corruption is happening inside exec->run() itself but outside
-// ordinary sequential instruction execution (DRC cache flush, on-the-fly
-// recompile, exception handling). Bits 0-5 (sticky FP exception flags,
-// which legitimately change as a side effect of ordinary guest FP
-// computation and aren't managed by op_setfmod at all) are masked out of
-// the comparison; bits 6-15 (rounding control, DAZ/FTZ, exception masks)
-// are exactly what MAME's sse_control[] table manages and are the only
-// bits expected to stay pinned to the CPU's last-recorded value. Part of
-// the MXCSR-desync investigation.
-// DISABLED (2026-09-01) - investigation concluded. This check was correct
-// (record-and-compare against own baseline) but structurally could only
-// ever detect an UNEXPECTED write - the real bug (drcbex64.cpp's DRC entry
-// point never resyncing m_state.fmod, fixed via MAME_SGI_FMOD_ENTRY_RESYNC_FIX)
-// is a MISSING write, invisible to this technique regardless of checkpoint
-// density.
-// #define MAME_SGI_SCHEDULER_MXCSR_DIAG
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-#include <xmmintrin.h>
-#include <cstdio>
-#include <atomic>
-// Extern linkage (not an anonymous namespace) - mips3.cpp shares this same
-// baseline via its own MAME_SGI_MXCSR_DESYNC_DIAG checks inside
-// execute_run()'s DRC loop (m_drcuml->execute/code_compile_block/
-// code_flush_cache), so the two files form one continuous timeline rather
-// than two independently-baselined trackers that could each read "clean"
-// while missing a drift that happens to straddle the boundary between
-// them. schedule.cpp and mips3.cpp link into different static libraries
-// (libemu.a vs liboptional.a) but both resolve into the final mamesgi
-// binary at link time, same as g_mame_sgi_lwc1_target_block's precedent
-// in drcbex64.cpp/mips3drc.cpp.
-constexpr unsigned int MAME_SGI_MXCSR_COMPARE_MASK = ~0x3fu; // exclude sticky exception flags (bits 0-5)
-std::atomic<unsigned int> g_mame_sgi_mxcsr_last_known{0xffffffffu}; // sentinel: not yet recorded
-std::atomic<unsigned long> g_mame_sgi_mxcsr_diag_count{0};
-constexpr unsigned long MAME_SGI_MXCSR_DIAG_CAP = 200;
-
-// Trusts whatever just finished (CPU execution, a recompile, a cache
-// flush) as ground truth going forward.
-void mame_sgi_mxcsr_diag_record()
-{
-	g_mame_sgi_mxcsr_last_known.store(_mm_getcsr(), std::memory_order_relaxed);
-}
-
-// Flags any drift from the last-recorded value at this checkpoint, naming
-// it directly. Updates the baseline to the new value so a single clobber
-// is reported once, not re-flagged at every later checkpoint too.
-void mame_sgi_mxcsr_diag_check(const char *checkpoint)
-{
-	unsigned int last = g_mame_sgi_mxcsr_last_known.load(std::memory_order_relaxed);
-	if (last == 0xffffffffu)
-		return; // not yet recorded - first exec->run() hasn't happened yet
-	unsigned int now = _mm_getcsr();
-	if ((now & MAME_SGI_MXCSR_COMPARE_MASK) != (last & MAME_SGI_MXCSR_COMPARE_MASK))
-	{
-		unsigned long n = ++g_mame_sgi_mxcsr_diag_count;
-		if (n <= MAME_SGI_MXCSR_DIAG_CAP)
-		{
-			fprintf(stderr, "SCHED_MXCSR_DIAG n=%lu checkpoint=%s last=0x%04x now=0x%04x\n", n, checkpoint, last, now);
-			fflush(stderr);
-			if (n == MAME_SGI_MXCSR_DIAG_CAP)
-				fprintf(stderr, "SCHED_MXCSR_DIAG cap reached, further hits suppressed\n");
-		}
-		g_mame_sgi_mxcsr_last_known.store(now, std::memory_order_relaxed);
-	}
-}
-namespace {
-inline void sched_mxcsr_diag_record() { mame_sgi_mxcsr_diag_record(); }
-inline void sched_mxcsr_diag_check(const char *checkpoint) { mame_sgi_mxcsr_diag_check(checkpoint); }
-}
-#endif
 
 //**************************************************************************
 //  DEBUGGING
@@ -271,7 +185,6 @@ namespace {
 #endif
 
 
-
 //**************************************************************************
 //  CONSTANTS
 //**************************************************************************
@@ -283,7 +196,6 @@ enum
 	TRIGGER_YIELDTIME   = -3000,
 	TRIGGER_SUSPENDTIME = -4000
 };
-
 
 
 //**************************************************************************
@@ -520,7 +432,6 @@ void emu_timer::dump() const
 }
 
 
-
 //**************************************************************************
 //  DEVICE SCHEDULER
 //**************************************************************************
@@ -703,9 +614,6 @@ void device_scheduler::timeslice()
 						exec->m_cycles_stolen = 0;
 						m_executing_device = exec;
 						*exec->m_icountptr = exec->m_cycles_running;
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-						sched_mxcsr_diag_check("before_exec_run");
-#endif
 						if (!call_debugger)
 						{
 #if defined(__x86_64__) || defined(_M_X64)
@@ -727,10 +635,6 @@ void device_scheduler::timeslice()
 							exec->run();
 							exec->debugger_stop_cpu_hook();
 						}
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-						sched_mxcsr_diag_check("after_exec_run");
-						sched_mxcsr_diag_record();
-#endif
 
 						// adjust for any cycles we took back
 						assert(ran >= *exec->m_icountptr);
@@ -772,13 +676,7 @@ void device_scheduler::timeslice()
 	}
 
 	// execute timers
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-	sched_mxcsr_diag_check("before_execute_timers");
-#endif
 	execute_timers();
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-	sched_mxcsr_diag_check("after_execute_timers");
-#endif
 }
 
 
@@ -1232,15 +1130,6 @@ inline void device_scheduler::execute_timers()
 			if (!timer.m_callback.isnull())
 			{
 				LOG("execute_timers: timer callback %s\n", timer.m_callback.name());
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-				{
-					char const *mame_sgi_diag_cbname = timer.m_callback.name();
-					char mame_sgi_diag_before[128];
-					snprintf(mame_sgi_diag_before, sizeof(mame_sgi_diag_before), "before_cb:%s",
-						mame_sgi_diag_cbname ? mame_sgi_diag_cbname : "<unnamed>");
-					sched_mxcsr_diag_check(mame_sgi_diag_before);
-				}
-#endif
 #ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG
 				osd_ticks_t mame_sgi_t0 = osd_ticks();
 				osd_ticks_t mame_sgi_idle_t0 = mame_sgi_throttle_idle_ticks;
@@ -1280,15 +1169,6 @@ inline void device_scheduler::execute_timers()
 								mame_sgi_outlier_tsbuf, (unsigned long long)mame_sgi_outlier_ns,
 								mame_sgi_outlier_cbname ? mame_sgi_outlier_cbname : "<unnamed>");
 					}
-				}
-#endif
-#ifdef MAME_SGI_SCHEDULER_MXCSR_DIAG
-				{
-					char const *mame_sgi_diag_cbname = timer.m_callback.name();
-					char mame_sgi_diag_after[128];
-					snprintf(mame_sgi_diag_after, sizeof(mame_sgi_diag_after), "after_cb:%s",
-						mame_sgi_diag_cbname ? mame_sgi_diag_cbname : "<unnamed>");
-					sched_mxcsr_diag_check(mame_sgi_diag_after);
 				}
 #endif
 #ifdef MAME_SGI_TIMER_CALLBACK_STATS_DIAG

@@ -228,14 +228,6 @@
 #include <utility>
 #include <vector>
 
-// DISABLED (2026-09-01) - MXCSR-desync investigation concluded. Repurposed
-// UML_GETFMOD (unused by any real CPU core - see op_getfmod below) to read
-// the real live MXCSR via stmxcsr instead of the cached m_state.fmod belief,
-// letting mips3drc.cpp's diagnostics capture ground truth mid-generated-code.
-// Root cause found and fixed elsewhere (MAME_SGI_FMOD_ENTRY_RESYNC_FIX,
-// this file's DRC entry point) - nothing calls UML_GETFMOD once this and the
-// mips3drc.cpp-side diagnostics that used it are all disabled.
-// #define MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
 
 // TEMPORARY diagnostic (2026-08-02): -drc_log_native/-drc_log_uml's
 // per-block disassembly logging (generate(), below) is prohibitively
@@ -548,9 +540,6 @@ private:
 		u32                 ssemode;                // saved SSE mode on entry
 		u32                 ssemodesave;            // temporary location for saving SSE mode across calls
 		u8                  nominalfmod;            // FMOD equivalent to SSE mode on entry or 0xff
-#ifdef MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
-		u32                 mame_sgi_getfmod_diag_scratch; // dedicated scratch for op_getfmod real-MXCSR diagnostic
-#endif
 
 		u32                 ssecontrol[4];          // copy of the sse_control array
 		float               single1;                // 1.0 in single-precision
@@ -2811,23 +2800,6 @@ void drcbe_x64::op_setfmod(Assembler &a, const instruction &inst)
 //  op_getfmod - process a GETFMOD opcode
 //-------------------------------------------------
 
-// TEMPORARY diagnostic (2026-08-24): UML_GETFMOD is unused by every actual
-// CPU core in the tree (only the backend implementations and the macro
-// itself reference it - confirmed via a full-tree grep before repurposing
-// this), so it's safe to redefine here to read the REAL, live host MXCSR
-// (via stmxcsr) instead of the cached m_state.fmod belief the opcode
-// normally returns. This exists to let mips3drc.cpp capture the true
-// pre-callout MXCSR value into a UML register *before* any UML_CALLC runs
-// (UML_CALLC's own op_callc always forces MXCSR to the default mode before
-// the call, making it otherwise impossible to observe the true live value
-// from inside a called C function) - part of the MXCSR-desync investigation.
-// Revert to the original
-// m_state.fmod-based body if GETFMOD is ever wired up for real use.
-// (MAME_SGI_GETFMOD_REAL_MXCSR_DIAG is defined near the top of the file,
-// above near_state, so its dedicated scratch field can be added to the
-// struct - MABS() below requires an m_near/m_state field, not an
-// arbitrary global, since it addresses relative to rbp.)
-
 void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 {
 	// validate instruction
@@ -2838,19 +2810,6 @@ void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 	// normalize parameters
 	be_parameter dstp(*this, inst.param(0), PTYPE_MR);
 
-#ifdef MAME_SGI_GETFMOD_REAL_MXCSR_DIAG
-	Mem const scratch = MABS(&m_near.mame_sgi_getfmod_diag_scratch, 4);
-	a.stmxcsr(scratch);
-	if (dstp.is_int_register())
-	{
-		a.mov(gpd(dstp.ireg()), scratch);
-	}
-	else
-	{
-		a.mov(eax, scratch);
-		a.mov(MABS(dstp.memory()), eax);
-	}
-#else
 	Mem const fmod = MABS(&m_state.fmod, 1);
 
 	// fetch the current mode and store to the destination
@@ -2863,7 +2822,6 @@ void drcbe_x64::op_getfmod(Assembler &a, const instruction &inst)
 		a.movzx(eax, fmod);
 		a.mov(MABS(dstp.memory()), eax);
 	}
-#endif
 }
 
 

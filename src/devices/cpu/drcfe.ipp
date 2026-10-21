@@ -38,49 +38,6 @@
 #define MAME_SGI_INTRABLOCK_TARGET_FIX
 
 
-// TEMPORARY diagnostic (2026-08-08, mame-sgi investigation) - categorizes
-// which of build_sequence()'s four independent set_end_sequence() call
-// sites actually terminates each sequence: ran off the end of the
-// describe_code() scan window/hit a gap in already-described instructions
-// (structural, window_start/window_end-driven), the *next* instruction is
-// independently a branch target so this one must end here too (a
-// fundamental multi-entry-point requirement - every jump target needs its
-// own compiled entry point - unrelated to window size), or the
-// max_sequence consecutive-instruction cap was reached. Self-contained
-// static counters (not per-CPU-core state) since this generic template
-// has no access to any owning device's state; only meaningful in a build
-// where exactly one CPU type instantiates this template (true for
-// mame-sgi's SUBTARGET=sgi, not assumed true in general - would double-
-// count across CPU types sharing a process otherwise).
-// DISABLED (2026-09-11): investigation concluded, and this was already
-// classed as safe to disable/delete - it had
-// just never actually been turned off, and its self-rate-limited (every
-// 50000-event) stderr print was still firing live during ordinary play.
-// Left in place, commented out, in case a future investigation into
-// build_sequence()'s sequence-termination reasons needs it again.
-// #define MAME_SGI_SEQEND_REASON_DIAG
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-namespace {
-	uint32_t s_seqend_window_gap = 0;      // line ~265: nextdesc == nullptr
-	uint32_t s_seqend_discontinuity = 0;   // line ~287: gap in described instructions
-	uint32_t s_seqend_branch_target = 0;   // line ~291: next instruction is independently a branch target
-	uint32_t s_seqend_max_sequence = 0;    // line ~296: hit m_max_sequence cap
-	void report_seqend_reasons()
-	{
-		static uint32_t s_last_reported = 0;
-		uint32_t const total = s_seqend_window_gap + s_seqend_discontinuity + s_seqend_branch_target + s_seqend_max_sequence;
-		if (total > 0 && total >= s_last_reported + 50000)
-		{
-			fprintf(stderr, "[SEQEND_REASON] window_gap=%u discontinuity=%u branch_target=%u max_sequence=%u\n",
-				s_seqend_window_gap, s_seqend_discontinuity, s_seqend_branch_target, s_seqend_max_sequence);
-			fflush(stderr);
-			s_last_reported = total;
-		}
-	}
-}
-#endif
-
-
 //**************************************************************************
 //  DRC FRONTEND
 //**************************************************************************
@@ -343,9 +300,6 @@ void drc_frontend_base<Desc>::build_sequence(int start, int end, bool redispatch
 				seqstart = descnum;
 			}
 
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-			bool const already_ended_pre_window = curdesc->end_sequence();
-#endif
 			// if we are the last instruction, indicate end-of-sequence and redispatch
 			if (nextdesc == nullptr)
 			{
@@ -354,13 +308,6 @@ void drc_frontend_base<Desc>::build_sequence(int start, int end, bool redispatch
 					curdesc->set_redispatch();
 				else if (nextdescnum == end)
 					curdesc->set_return_to_start();
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-				if (!already_ended_pre_window)
-				{
-					s_seqend_window_gap++;
-					report_seqend_reasons();
-				}
-#endif
 			}
 
 			// otherwise, do some analysis based on the next instruction
@@ -375,45 +322,17 @@ void drc_frontend_base<Desc>::build_sequence(int start, int end, bool redispatch
 					if (scandesc != nullptr || scandesc == nextdesc)
 						break;
 				}
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-				bool const already_ended = curdesc->end_sequence();
-#endif
 				if (scandesc != nextdesc)
 					curdesc->set_end_sequence();
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-				if (!already_ended && curdesc->end_sequence())
-				{
-					s_seqend_discontinuity++;
-					report_seqend_reasons();
-				}
-				bool const ended_before_target_check = curdesc->end_sequence();
-#endif
 
 				// if the next instruction is a branch target, mark this instruction as end of sequence
 				if (nextdesc->is_branch_target())
 					curdesc->set_end_sequence();
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-				if (!ended_before_target_check && curdesc->end_sequence())
-				{
-					s_seqend_branch_target++;
-					report_seqend_reasons();
-				}
-#endif
 			}
 
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-			bool const ended_before_max_check = curdesc->end_sequence();
-#endif
 			// if we exceed the maximum consecutive count, cut off the sequence
 			if (++consecutive >= m_max_sequence)
 				curdesc->set_end_sequence();
-#ifdef MAME_SGI_SEQEND_REASON_DIAG
-			if (!ended_before_max_check && curdesc->end_sequence())
-			{
-				s_seqend_max_sequence++;
-				report_seqend_reasons();
-			}
-#endif
 			if (curdesc->end_sequence())
 				consecutive = 0;
 

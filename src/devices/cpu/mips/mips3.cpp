@@ -25,14 +25,6 @@
 // investigation session, set to a real cycle count to re-arm.
 // #define MAME_SGI_EARLY_SAVE_DIAG 2829794
 
-// Dedicated toggle (2026-08-21) for mame_sgi_postload_diag()'s and
-// mame_sgi_presave_diag()'s prints - concluded alongside the save/restore
-// investigation above, was unconditionally wired via register_postload()/
-// register_presave() (so fired on every single save/load, forever),
-// and both prints were mislabeled "MOUSEFOCUS_DIAG:" (an unrelated
-// copy-paste leftover, now fixed to their own name). Off by default;
-// re-enable if -state save/restore needs revisiting.
-// #define MAME_SGI_MIPS3_SAVE_DIAG
 
 // TEMPORARY diagnostic (2026-08-14): periodic PC/SR/Cause/k0/k1 trace, every
 // MAME_SGI_PC_TRACE_STEP cycles within [LO,HI], printed from inside
@@ -93,12 +85,6 @@
 // itself is disabled, breaking that unconditional print's own compile.
 #define MAME_SGI_STALL_DIAG_THRESHOLD_NS 10'000'000ULL
 
-// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - see
-// diag_last_compile_instruction_count's comment in mips3.h. Self-defined
-// here too, matching mips3drc.cpp's own copy - see that file's comment on
-// this same macro for why (shared "optional" project, sgi.lua's defines{}
-// doesn't reach it).
-// #define MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
 
 #include "emu.h"
 #include "mame_sgi_framecost.h"
@@ -117,55 +103,6 @@
 #include <ctime>
 #include <string>
 
-#ifdef MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
-namespace {
-// Wall-clock HH:MM:SS.uuuuuu (microsecond precision, local time) - matches
-// `strace -tt`'s own timestamp format so an outlier print here can be lined
-// up directly against a syscall trace captured over the same boot, without
-// needing to convert between clock domains by hand. See diag_compile_
-// duration_histogram's comment in mips3.h for why this investigation needs
-// external syscall-level correlation rather than more internal chrono
-// bisection.
-std::string mame_sgi_wallclock_timestamp()
-{
-	using namespace std::chrono;
-	auto const now = system_clock::now();
-	auto const t = system_clock::to_time_t(now);
-	auto const us = duration_cast<microseconds>(now.time_since_epoch()) % 1'000'000;
-	std::tm tm_buf;
-	localtime_r(&t, &tm_buf);
-	char buf[24];
-	std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%06d", tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, int(us.count()));
-	return buf;
-}
-}
-#endif
-
-// TEMPORARY diagnostic (2026-08-24) - MXCSR-desync investigation, continuing
-// from schedule.cpp's own MAME_SGI_SCHEDULER_MXCSR_DIAG (see that file's
-// comment for the full history). That check found zero drift across the
-// CPU/timer scheduler boundary while real corruption was independently
-// confirmed occurring in the same window (mxcsrtest's bad= counter), which
-// rules out the scheduler dispatches and points inside execute_run()'s own
-// DRC loop instead - the m_drcuml->execute()/code_compile_block()/
-// code_flush_cache() cycle below, not ordinary sequential compiled-block
-// execution (already shown too expensive to instrument per-instruction
-// without perturbing timing enough to suppress the bug entirely). Shares
-// schedule.cpp's baseline (mame_sgi_mxcsr_diag_record/check, extern
-// linkage - see that file's own comment on why) so the two form one
-// continuous timeline instead of two independently-baselined trackers.
-// DISABLED (2026-09-01) - investigation concluded, see schedule.cpp's own
-// MAME_SGI_SCHEDULER_MXCSR_DIAG disable comment (must stay disabled
-// together - this file only declares/calls the extern functions that
-// macro's block defines). Real root cause: drcbex64.cpp's DRC entry point
-// never resyncing m_state.fmod (MAME_SGI_FMOD_ENTRY_RESYNC_FIX), a missing
-// write invisible to this record-and-compare technique regardless of
-// checkpoint density.
-// #define MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-void mame_sgi_mxcsr_diag_record();
-void mame_sgi_mxcsr_diag_check(const char *checkpoint);
-#endif
 
 #define ENABLE_OVERFLOWS            (0)
 #define ENABLE_EE_ELF_LOADER        (0)
@@ -530,82 +467,6 @@ void mips3_device::device_stop()
 				m_core->diag_flush_stall_over_threshold_count);
 	}
 
-	// Clean-exit summary for MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG (task
-	// #97 QoS follow-up) - see diag_last_compile_instruction_count's
-	// comment in mips3.h. Pearson correlation coefficient between each
-	// compile call's total instruction count (a proxy for how far
-	// describe_code() traversed) and its measured wall-clock duration -
-	// answers "is a long compile a function of branch traversal/sequence
-	// length" directly and quantitatively, computed once here from running
-	// sums rather than needing a per-event log for the aggregate question.
-	if (m_core->diag_compile_corr_n > 1)
-	{
-		double const n = double(m_core->diag_compile_corr_n);
-		double const num = n * m_core->diag_compile_corr_sum_xy - m_core->diag_compile_corr_sum_x * m_core->diag_compile_corr_sum_y;
-		double const denom_x = n * m_core->diag_compile_corr_sum_x2 - m_core->diag_compile_corr_sum_x * m_core->diag_compile_corr_sum_x;
-		double const denom_y = n * m_core->diag_compile_corr_sum_y2 - m_core->diag_compile_corr_sum_y * m_core->diag_compile_corr_sum_y;
-		double const denom = std::sqrt(denom_x * denom_y);
-		double const r = (denom != 0.0) ? (num / denom) : 0.0;
-		osd_printf_verbose(
-				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG summary: n=%llu mean_instructions=%.2f mean_ns=%.0f mean_describe_ns=%.0f pearson_r=%.4f\n",
-				(unsigned long long)m_core->diag_compile_corr_n,
-				m_core->diag_compile_corr_sum_x / n,
-				m_core->diag_compile_corr_sum_y / n,
-				double(m_core->diag_describe_code_total_ns) / n,
-				r);
-		osd_printf_verbose(
-				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG longest event: pc=%08X ns=%llu instructions=%u describe_ns=%llu\n",
-				m_core->diag_compile_longest_pc,
-				(unsigned long long)m_core->diag_compile_longest_ns,
-				m_core->diag_compile_longest_instruction_count,
-				(unsigned long long)m_core->diag_compile_longest_describe_ns);
-		// See diag_compile_duration_histogram's comment in mips3.h -
-		// characterizes the full distribution's shape (sharp isolated
-		// outliers vs. a smoother tail) before drilling further into any
-		// one of them.
-		osd_printf_verbose(
-				"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG histogram: <1us=%llu <10us=%llu <100us=%llu <1ms=%llu <10ms=%llu >=10ms=%llu\n",
-				(unsigned long long)m_core->diag_compile_duration_histogram[0],
-				(unsigned long long)m_core->diag_compile_duration_histogram[1],
-				(unsigned long long)m_core->diag_compile_duration_histogram[2],
-				(unsigned long long)m_core->diag_compile_duration_histogram[3],
-				(unsigned long long)m_core->diag_compile_duration_histogram[4],
-				(unsigned long long)m_core->diag_compile_duration_histogram[5]);
-	}
-
-	// Clean-exit summary for MAME_SGI_TASK101_REENTRY_FREQ_DIAG
-	// (mips3drc.cpp) - see diag_entry_reentry_count's comment in mips3.h.
-	// Unconditionally safe when zero (only ever incremented if that macro
-	// was defined in mips3drc.cpp at compile time).
-	if (m_core->diag_entry_reentry_count != 0)
-	{
-		uint64_t const n_intervals = (m_core->diag_entry_reentry_count > 0) ? (m_core->diag_entry_reentry_count - 1) : 0;
-		double const mean_interval_ns = (n_intervals > 0) ? (double(m_core->diag_entry_interval_total_ns) / double(n_intervals)) : 0.0;
-		// See diag_entry_max_interval_guest_cycles's comment in mips3.h -
-		// this is the number that actually distinguishes "legitimately
-		// large guest-time quantum" from "host execution stalled" for the
-		// single longest gap. Effective guest MHz for that one interval,
-		// compared against m_cpu_clock, makes it directly readable: close
-		// to full clock rate means real guest cycles genuinely elapsed
-		// (large quantum); far below it means the same guest-cycle count
-		// took far longer in real time than it should have (host stall).
-		double const max_interval_effective_hz = (m_core->diag_entry_interval_max_ns > 0)
-				? (double(m_core->diag_entry_max_interval_guest_cycles) * 1e9 / double(m_core->diag_entry_interval_max_ns))
-				: 0.0;
-		osd_printf_verbose(
-				"MAME_SGI_TASK101_REENTRY_FREQ_DIAG summary: entry_reentries=%llu out_of_cycles_exits=%llu "
-				"mean_interval_ns=%.0f min_interval_ns=%llu max_interval_ns=%llu "
-				"max_interval_guest_cycles=%llu max_interval_effective_hz=%.0f cpu_clock_hz=%llu\n",
-				(unsigned long long)m_core->diag_entry_reentry_count,
-				(unsigned long long)m_core->diag_out_of_cycles_count,
-				mean_interval_ns,
-				(unsigned long long)(n_intervals > 0 ? m_core->diag_entry_interval_min_ns : 0),
-				(unsigned long long)m_core->diag_entry_interval_max_ns,
-				(unsigned long long)m_core->diag_entry_max_interval_guest_cycles,
-				max_interval_effective_hz,
-				(unsigned long long)m_cpu_clock);
-	}
-
 	// Clean-exit summary for MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
 	// (mips3drc.cpp) - see diag_null_seqlast_count's comment in mips3.h.
 	// The fallback this counts is permanent/unconditional; only this
@@ -791,27 +652,6 @@ void r5900_device::check_irqs()
 
 void mips3_device::mame_sgi_postload_diag()
 {
-#ifdef MAME_SGI_MIPS3_SAVE_DIAG
-	uint32_t local0 = m_program->read_dword(0x1fbd9880);
-	uint32_t local1 = m_program->read_dword(0x1fbd9888);
-	uint32_t mapstat = m_program->read_dword(0x1fbd9890);
-	// TEMPORARY (2026-08-14): reads the exact stack slot (physical
-	// 0x087FEF7C = KSEG1 0xA87FEF7C-0xA0000000, i.e. $sp+0x14 for the
-	// $sp=0xA87FEF68 frame at the 0xbfc1174c fault site) SYNCHRONOUSLY
-	// during postload, before any guest instruction has executed - unlike
-	// reading it later via a live trace hook (which only tells you what's
-	// there several thousand cycles after resume, leaving room for
-	// something else having touched it in between), this is the actual,
-	// unambiguous, race-free restored value.
-	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
-	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 postload IMMEDIATE: PC=%08X SR=%08X Cause=%08X EPC=%08X | ioc2 local0=%08X local1=%08X mapstat=%08X | k0=%08X%08X k1=%08X%08X ra=%08X%08X | stack_slot@087FEF7C=%08X\n",
-		m_core->pc, m_core->cpr[0][COP0_Status], m_core->cpr[0][COP0_Cause], m_core->cpr[0][COP0_EPC],
-		local0, local1, mapstat,
-		(uint32_t)(m_core->r[26] >> 32), (uint32_t)m_core->r[26],
-		(uint32_t)(m_core->r[27] >> 32), (uint32_t)m_core->r[27],
-		(uint32_t)(m_core->r[31] >> 32), (uint32_t)m_core->r[31],
-		stack_slot);
-#endif
 }
 
 void mips3_device::mame_sgi_presave_diag()
@@ -825,11 +665,6 @@ void mips3_device::mame_sgi_presave_diag()
 	// same instant). Closes the other half of the round-trip verification:
 	// mame_sgi_postload_diag() already confirmed LOAD restores exactly
 	// what's in the file; this confirms SAVE wrote exactly what was live.
-#ifdef MAME_SGI_MIPS3_SAVE_DIAG
-	uint32_t stack_slot = m_program->read_dword(0x087FEF7C);
-	osd_printf_verbose("MAME_SGI_MIPS3_SAVE_DIAG: mips3 presave: PC=%08X SR=%08X Cause=%08X | stack_slot@087FEF7C=%08X\n",
-		m_core->pc, m_core->cpr[0][COP0_Status], m_core->cpr[0][COP0_Cause], stack_slot);
-#endif
 }
 
 void mips3_device::device_start()
@@ -854,9 +689,6 @@ void mips3_device::device_start()
 	// immediately above: memset() leaves this 0, a real guest PC.
 	m_core->nocode_retry_pc = 0xffffffff;
 	m_core->stub_site_pc = 0xffffffff;      // MAME_SGI_STALE_STUB_FIX: no stub pending
-	// Fixed-checkpoint checkints experiment (Phase 0) diag - memset() leaves this 0, which would make
-	// the very first interval look like a 0ns minimum forever after.
-	m_core->diag_entry_interval_min_ns = ~uint64_t(0);
 
 	m_cpu_clock = clock();
 	m_program = &space(AS_PROGRAM);
@@ -5608,9 +5440,6 @@ void mips3_device::execute_run()
 		/* reset the cache if dirty */
 		if (m_drc_cache_dirty)
 		{
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-			mame_sgi_mxcsr_diag_check("before_dirty_flush_cache");
-#endif
 #ifdef MAME_SGI_STALL_DURATION_DIAG
 			auto const stall_start = std::chrono::steady_clock::now();
 #endif
@@ -5626,25 +5455,14 @@ void mips3_device::execute_run()
 					m_core->diag_flush_stall_over_threshold_count++;
 			}
 #endif
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-			mame_sgi_mxcsr_diag_check("after_dirty_flush_cache");
-			mame_sgi_mxcsr_diag_record();
-#endif
 		}
 		m_drc_cache_dirty = false;
 
 		/* execute */
 		do
 		{
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-			mame_sgi_mxcsr_diag_check("before_drcuml_execute");
-#endif
 			/* run as much as we can */
 			execute_result = m_drcuml->execute(*m_entry);
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-			mame_sgi_mxcsr_diag_check("after_drcuml_execute");
-			mame_sgi_mxcsr_diag_record();
-#endif
 
 
 			/* if we need to recompile, do it */
@@ -5653,9 +5471,6 @@ void mips3_device::execute_run()
 				// MAME_SGI_DISPATCH_MODE_ASID_FIX: hash registration inside
 				// code_compile_block() must use the same composite key
 				// runtime dispatch (UML_HASHJMP) will look up under.
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-				mame_sgi_mxcsr_diag_check("before_compile_block");
-#endif
 #ifdef MAME_SGI_STALL_DURATION_DIAG
 				auto const compile_stall_start = std::chrono::steady_clock::now();
 #endif
@@ -5683,57 +5498,7 @@ void mips3_device::execute_run()
 						m_core->diag_compile_stall_max_ns = ns;
 					if (ns > MAME_SGI_STALL_DIAG_THRESHOLD_NS)
 						m_core->diag_compile_stall_over_threshold_count++;
-#ifdef MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG
-					// See diag_last_compile_instruction_count's comment in
-					// mips3.h. code_compile_block() just set this to the
-					// total opcode_desc count for the call above.
-					{
-						double const x = double(m_core->diag_last_compile_instruction_count);
-						double const y = double(ns);
-						m_core->diag_compile_corr_n++;
-						m_core->diag_compile_corr_sum_x += x;
-						m_core->diag_compile_corr_sum_y += y;
-						m_core->diag_compile_corr_sum_xy += x * y;
-						m_core->diag_compile_corr_sum_x2 += x * x;
-						m_core->diag_compile_corr_sum_y2 += y * y;
-						// See diag_last_describe_code_ns's comment in mips3.h -
-						// isolating how much of THIS compile call's ns was
-						// spent inside describe_code() itself (front-end
-						// decode/window-walk), vs the remaining codegen work.
-						m_core->diag_describe_code_total_ns += m_core->diag_last_describe_code_ns;
-						// See diag_compile_duration_histogram's comment in
-						// mips3.h - log-scale bucket boundaries in ns:
-						// 1e3, 1e4, 1e5, 1e6, 1e7, overflow.
-						{
-							unsigned bucket = 5;
-							if (ns < 1'000ULL) bucket = 0;
-							else if (ns < 10'000ULL) bucket = 1;
-							else if (ns < 100'000ULL) bucket = 2;
-							else if (ns < 1'000'000ULL) bucket = 3;
-							else if (ns < 10'000'000ULL) bucket = 4;
-							m_core->diag_compile_duration_histogram[bucket]++;
-						}
-						if (ns > m_core->diag_compile_longest_ns)
-						{
-							m_core->diag_compile_longest_ns = ns;
-							m_core->diag_compile_longest_pc = m_core->pc;
-							m_core->diag_compile_longest_instruction_count = m_core->diag_last_compile_instruction_count;
-							m_core->diag_compile_longest_describe_ns = m_core->diag_last_describe_code_ns;
-						}
-						if (ns > MAME_SGI_STALL_DIAG_THRESHOLD_NS)
-						{
-							osd_printf_info(
-									"MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG outlier: pc=%08X ns=%llu instructions=%u describe_ns=%llu wallclock=%s\n",
-									m_core->pc, (unsigned long long)ns, m_core->diag_last_compile_instruction_count,
-									(unsigned long long)m_core->diag_last_describe_code_ns, mame_sgi_wallclock_timestamp().c_str());
-						}
-					}
-#endif
 				}
-#endif
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-				mame_sgi_mxcsr_diag_check("after_compile_block");
-				mame_sgi_mxcsr_diag_record();
 #endif
 			}
 			else if (execute_result == EXECUTE_UNMAPPED_CODE)
@@ -5742,9 +5507,6 @@ void mips3_device::execute_run()
 			}
 			else if (execute_result == EXECUTE_RESET_CACHE)
 			{
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-				mame_sgi_mxcsr_diag_check("before_reset_flush_cache");
-#endif
 #ifdef MAME_SGI_STALL_DURATION_DIAG
 				auto const reset_stall_start = std::chrono::steady_clock::now();
 #endif
@@ -5759,10 +5521,6 @@ void mips3_device::execute_run()
 					if (ns > MAME_SGI_STALL_DIAG_THRESHOLD_NS)
 						m_core->diag_flush_stall_over_threshold_count++;
 				}
-#endif
-#ifdef MAME_SGI_EXECUTE_RUN_MXCSR_DIAG
-				mame_sgi_mxcsr_diag_check("after_reset_flush_cache");
-				mame_sgi_mxcsr_diag_record();
 #endif
 			}
 

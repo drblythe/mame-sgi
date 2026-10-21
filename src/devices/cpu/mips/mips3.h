@@ -356,12 +356,6 @@ public:
 	// by timing luck - see mc.cpp's check_fastram_settle() for why that
 	// distinction mattered here.
 	void invalidate_fastram_cache() { code_flush_cache(); }
-	// Temporary: dumps the raw m_fastram[] table (every slot
-	// up to m_fastram_select) to stderr - start/end/base exactly as
-	// stored, not as re-derived from the caller's own registration
-	// arithmetic, to rule out "the table holds something other than
-	// what was asked for" as a hypothesis in its own right.
-	void dump_fastram_table();
 	void mips3drc_set_options(uint32_t options);
 	uint32_t mips3drc_get_options();
 	void mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cycles);
@@ -526,115 +520,6 @@ protected:
 		// encoding and meaning.
 		uint32_t        dispatch_mode;
 
-		// TEMPORARY diagnostic (2026-08-06) - jmpdest (JR/JALR) dispatch-key
-		// same-page hit rate for generate_select_dispatch_key()'s short-
-		// circuit. IRIX's PIC ABI resolves essentially every cross-DSO call
-		// through this exact indirect-JALR path (GOT + $t9), so this isn't
-		// a rare corner case - measuring the real hit rate rather than
-		// trusting the "function entries rarely land on the last page slot"
-		// assumption. Incremented directly by JIT'd code at the jmpdest
-		// call site only (mips3drc.cpp), not inside
-		// generate_select_dispatch_key() itself, so the other 4 call sites
-		// (EPC/ErrorPC/branch/entry-point) stay completely unaffected.
-		uint32_t        diag_jmpdest_dispatch_total;
-		uint32_t        diag_jmpdest_dispatch_crosspage;
-
-		// TEMPORARY diagnostic (2026-08-07) - validate_tlb()'s inline
-		// runtime check (mips3drc.cpp, the block-entry/page-boundary TLB
-		// verify, unrelated to ASID_FIX - the same mechanism the
-		// 0x0fac5ffc investigation traced) execution count, for sizing
-		// how much total execution goes to per-dispatch-ish runtime
-		// checks versus real guest work (paired with the jmpdest
-		// counters above for the same measurement). Incremented directly
-		// by JIT'd code at validate_tlb's fast-path site only (the
-		// common case - TLB entry present at compile time); the rare
-		// unconditional-exception path isn't counted, since that exits
-		// immediately and never re-executes this check again for that
-		// compile.
-		uint32_t        diag_validate_tlb_total;
-
-		// TEMPORARY diagnostic (2026-08-07) - real frequency split between
-		// the two independent triggers that mutate vtlb_table() for live
-		// (post-reset) entries, both funneling through tlb_map_entry()
-		// (mips3com.cpp): bulk ASID-switch remaps (mips3com_asid_changed())
-		// vs. single-entry TLBWI/TLBWR writes (tlb_write_common()). Needed
-		// before sizing a global-vs-per-ASID epoch counter for the epoch/
-		// host-fault redesign - if TLBWI/TLBWR fire far more often than
-		// ASID switches, a naive global epoch bumped on every vtlb_table()
-		// mutation would over-invalidate every compiled block on each
-		// write, reproducing the same recompile-storm shape as the
-		// FETCH_ALLOWED regression via a different trigger. Both are plain
-		// host C++ counters (mips3com.cpp), not JIT'd - these call sites
-		// aren't compiled UML code.
-		uint32_t        diag_asid_changed_events;
-		uint32_t        diag_tlbwi_tlbwr_events;
-
-		// TEMPORARY diagnostic (2026-08-07) - dedup potential for
-		// tlb_map_entry()'s real (non-degenerate) vtlb_load() writes:
-		// compares vtlb_table()'s entry before/after each write to see
-		// whether the mapping actually changed, or just re-established
-		// an identical value. If most of the 5.19M TLBWI/TLBWR-triggered
-		// mutations are no-ops, a value-compare before bumping any future
-		// epoch counter could cut the effective invalidation rate by
-		// orders of magnitude with far less new code than a full per-page
-		// epoch redesign. Only covers the "real load" branch (a valid,
-		// in-range mapping); the degenerate/unmap branches (ASID
-		// mismatch, out-of-range VPN, explicit unmap) are counted
-		// separately without a dedup claim, since their actual affected
-		// table index isn't cheaply knowable from mips3com.cpp alone.
-		uint32_t        diag_tlb_write_total;
-		uint32_t        diag_tlb_write_nochange;
-		uint32_t        diag_tlb_write_degenerate;
-
-		// TEMPORARY diagnostic (2026-08-22) - resuming the 0x0fac5ffc
-		// validate_tlb() anomaly investigation (investigated extensively,
-		// still not resolved): every prior check confirmed both the live TLB entry and the
-		// compile-time-baked immediate are individually correct and
-		// stable, yet the JIT'd CMP still evaluates NE far more often
-		// than it should. This field lets an independent, unconditional
-		// C-side re-check run on every dispatch through that one PC's
-		// validate_tlb site (see cfunc_0fac5ffc_anomaly_diag,
-		// mips3drc.cpp) - bumped once per code_compile_block() call for
-		// pc==0x0fac5ffc, read back both at compile time (baked as this
-		// instance's own "generation") and live (this field's current
-		// value) to test whether a stale/older compiled instance could
-		// somehow still be reachable and executing after a newer compile
-		// of the same dispatch key.
-		uint32_t        diag_0fac5ffc_compile_gen;
-
-		// TEMPORARY diagnostic (2026-09-02) - the intermittent gcc
-		// <built-in> flake, MAME_SGI_RODATA_LOAD_ADDR_DIAG (mips3drc.cpp). Must live
-		// here, not as plain file-scope statics - the x64 DRC backend
-		// addresses mem() operands RBP-relative to this struct, and a
-		// free-standing global elsewhere in the binary's BSS segment
-		// landed out of the encodable displacement range, crashing with
-		// "drcbe_x64::offset_from_rbp: delta out of range" the first time
-		// generated code actually tried to touch it (confirmed live -
-		// this is not a hypothetical). diag_rodata_hit is reset
-		// unconditionally at the top of every static_generate_memory_
-		// accessor() invocation and only set on this specific call's own
-		// in-range check, so stale data from an unrelated earlier access
-		// can't leak into the post-read callback.
-		uint32_t        diag_rodata_addr;
-		uint32_t        diag_rodata_value;
-		uint32_t        diag_rodata_hit;
-
-		// MAME_SGI_FASTRAM_COMPARE_DIAG (mips3drc.cpp) - same
-		// RBP-relative-struct requirement as diag_rodata_* above, same
-		// reason (a free-standing global crashed the x64 DRC backend the
-		// same way). addr/size are stashed BEFORE static_generate_
-		// fastram_accessor()'s own address-swizzle+load sequence runs
-		// (see that function's own comment on why), so they hold the
-		// real physical address and access width being served - value
-		// holds what the fast path's own inline load just returned, for
-		// func_fastram_compare_diag() to check against a fresh read of
-		// the same address through the generic slow path.
-		uint32_t        diag_fastram_addr;
-		uint32_t        diag_fastram_size;
-		uint64_t        diag_fastram_value;
-		uint32_t        diag_fastram_iswrite;
-		uint32_t        diag_fastram_masked;
-
 		// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - real
 		// host wall-clock (not guest-cycle) duration of each
 		// code_compile_block()/code_flush_cache() call from execute_run().
@@ -646,7 +531,7 @@ protected:
 		// thread in REAL time - already measured once, ad hoc, as a 373.9ms
 		// freeze directly correlated with a full drc_cache flush (the
 		// console "Bug B" stall) via two separate indirect diagnostics
-		// (MAME_SGI_KBD_SCAN_RATE_DIAG + MAME_SGI_DRC_COMPILE_RATE_DIAG)
+		// (MAME_SGI_KBD_SCAN_RATE_DIAG and a compile-rate counter)
 		// matched by timestamp after the fact - no direct instrument existed
 		// for this until now. This is a genuinely different axis from
 		// perf_ab_stats.sh's aggregate instructions/cycles comparison, which
@@ -666,24 +551,6 @@ protected:
 		uint64_t        diag_flush_stall_max_ns;
 		uint32_t        diag_flush_stall_over_threshold_count;
 		uint32_t        diag_flush_stall_event_count;
-
-		// MAME_SGI_COMPILE_LENGTH_CORRELATION_DIAG (2026-09-16, QoS
-		// follow-up) - is a long compile a function of how far describe_code()
-		// had to traverse (window_limit/branch-driven sequence length), or
-		// something else? code_compile_block() (mips3drc.cpp) counts the total
-		// opcode_desc nodes in this call's desclist (every instruction in
-		// every sequence describe_code() returned, not just one sequence -
-		// a single call can batch several) into diag_last_compile_instruction_
-		// count right after describe_code() returns; execute_run() (mips3.cpp)
-		// reads it back alongside the same wall-clock duration already being
-		// measured, accumulating the running sums needed for a Pearson
-		// correlation coefficient (computed once, at clean exit, from these
-		// sums - no per-event log needed for the aggregate answer). The two
-		// outlier fields capture the single longest event's own PC/count/
-		// duration directly, since with only ~2 events/boot over the 10ms
-		// threshold, individually inspecting them is cheap and more concrete
-		// than a coefficient alone.
-		uint32_t        diag_last_compile_instruction_count;
 
 		// Fix (2026-09-17, QoS follow-up, found while interpreting
 		// stall_ab_stats.sh's pearson_r/outlier output): code_compile_block()
@@ -711,97 +578,9 @@ protected:
 		// loop hits abort_compilation more than once in a single call.
 		uint64_t        diag_last_compile_flush_ns;
 
-		// TEMPORARY diagnostic (2026-09-17, QoS follow-up,
-		// continuing the investigation once the flush-attribution fix
-		// above ruled out the internal-flush mechanism as the cause of
-		// the ~10-13ms "long compile" outliers still seen after that fix).
-		// Narrows the still-open question this diagnostic's own original
-		// comment posed ("is a long compile a function of how far
-		// describe_code() had to traverse... or something else?") by
-		// timing describe_code() (mips3drc.cpp's call into it) separately
-		// from the rest of code_compile_block() - the front-end decode/
-		// window-walk pass (drcfe.ipp's build_sequence(), called twice per
-		// describe_code() - once forward, once backward from startpc - up
-		// to m_max_sequence or a window/branch-target boundary) is a
-		// plausible source of cost NOT reflected in diag_last_compile_
-		// instruction_count, which only counts what survives into the
-		// final compiled desclist, not how far the walk had to probe to
-		// get there. Set unconditionally each call, right after describe_
-		// code() returns (mirrors diag_last_compile_instruction_count's
-		// own placement/lifetime - no separate reset needed, always
-		// overwritten before use).
+		// MAME_SGI_STALL_DURATION_DIAG: wall-clock time of the last
+		// describe_code() call (mips3drc.cpp code_compile_block()).
 		uint64_t        diag_last_describe_code_ns;
-		uint64_t        diag_compile_corr_n;
-		double          diag_compile_corr_sum_x;   // instruction counts
-		double          diag_compile_corr_sum_y;   // durations (ns)
-		double          diag_compile_corr_sum_xy;
-		double          diag_compile_corr_sum_x2;
-		double          diag_compile_corr_sum_y2;
-		uint64_t        diag_compile_longest_ns;
-		uint32_t        diag_compile_longest_pc;
-		uint32_t        diag_compile_longest_instruction_count;
-		// describe_code()-share tracking (2026-09-17) alongside the above -
-		// see diag_last_describe_code_ns's comment above for what this is
-		// isolating. Running total lets execute_run() report describe_
-		// code()'s mean share of total compile time at clean exit;
-		// longest-event's own describe_ns is captured alongside its
-		// existing pc/ns/instruction_count fields so a single outlier can
-		// be read as "how much of this was describe_code()?" directly.
-		uint64_t        diag_describe_code_total_ns;
-		uint64_t        diag_compile_longest_describe_ns;
-
-		// Duration histogram (2026-09-17, QoS follow-up) - added
-		// after describe_code() was directly measured and ruled out as the
-		// outlier cause (0.01-0.16% share of the ~11-14ms events), to
-		// answer a prior question before drilling further: are these truly
-		// 2 sharp, isolated outliers per boot, or the visible tail of a
-		// smoother distribution the single "longest event" field can't
-		// show? Log-scale buckets, boundaries in nanoseconds: [0]<1000ns,
-		// [1]<10,000ns, [2]<100,000ns, [3]<1,000,000ns, [4]<10,000,000ns,
-		// [5]>=10,000,000ns. Indexed by the same corrected (flush-
-		// subtracted) per-event ns already fed to diag_compile_corr_*.
-		uint64_t        diag_compile_duration_histogram[6];
-
-		// TEMPORARY diagnostic (2026-09-17, fixed-checkpoint checkints experiment, Phase 0) - real
-		// host wall-clock frequency of the two mechanisms that can deliver
-		// an interrupt under DRC: static_generate_entry_point()'s
-		// unconditional per-re-entry check, and static_generate_out_of_
-		// cycles() (which doesn't check interrupts itself, but re-entering
-		// through entry_point almost always follows it - see this diag's
-		// own comment in mips3drc.cpp for the full motivation). Answers a
-		// question this project's own 2026-07-26 investigation
-		// (the mrupdatef livelock) left unexplained: given
-		// entry-point's check was already active then and still missed a
-		// real interrupt for 10 real wall-clock seconds, how often does
-		// host C++ actually regain control in practice? Lightweight
-		// in-memory counters + running interval stats only - no per-event
-		// log, per this project's own hard-won lesson about unfiltered
-		// diagnostics (the MAME_SGI_TASK84_WINDOW_TRACE incident - 20
-		// iterations, 2.3M+ events, 367MB log). Reported once as a
-		// clean-exit summary, same convention as every other *_DIAG in
-		// this file.
-		uint64_t        diag_entry_reentry_count;
-		uint64_t        diag_entry_last_timestamp_ns;   // 0 means "no prior sample yet"
-		uint64_t        diag_entry_interval_total_ns;
-		uint64_t        diag_entry_interval_max_ns;
-		uint64_t        diag_entry_interval_min_ns;      // starts at UINT64_MAX, see reset in device_start()
-		uint64_t        diag_out_of_cycles_count;
-
-		// Added 2026-09-17 (fasthz A/B) - alongside the wall-
-		// clock interval above, also snapshot device_execute_interface::
-		// total_cycles() (real guest cycles executed, cumulative) at every
-		// re-entry, and remember the guest-cycle delta specifically for
-		// whichever interval turned out to be the longest in wall-clock
-		// terms. Lets the longest gap be read two ways: a "legitimately
-		// large guest-time quantum" (many guest cycles - consistent with
-		// scheduler behavior, schedule.cpp's own target computation) shows
-		// a large delta here; a "host execution stalled" gap (DRC compile
-		// storm, I/O, etc.) shows a small delta despite the long wall
-		// time. Distinguishes the two explanations directly instead of
-		// guessing from the wall-clock number alone.
-		uint64_t        diag_entry_last_total_cycles;
-		uint64_t        diag_entry_max_interval_guest_cycles;
-
 		// MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG (mips3drc.cpp) - how often
 		// code_compile_block()'s null-seqlast fallback fires (the
 		// permanent fix itself is unconditional, see its own comment) and
@@ -843,8 +622,7 @@ protected:
 		// writability classification changes after that jump was compiled
 		// (routine under ASID switches), producing a hash miss even though
 		// valid code already exists under the CURRENT resolved key.
-		// Measured before this fix (MAME_SGI_VALIDATE_TLB_0FAC5FFC_DIAG,
-		// 2026-09-16): 99.985% of arrivals at pc=0x0fac5ffc's compile were
+		// Measured before this fix (2026-09-16): 99.985% of arrivals at pc=0x0fac5ffc's compile were
 		// exactly this - a "key_mismatch" (resolved-key code already
 		// present, raw/stale key missed). Same shape, same fix pattern as
 		// diag_tlb_mismatch_skip_total/refresh_hits above - see
@@ -857,75 +635,6 @@ protected:
 		// attempt. Initialised to ~0 (never a valid word-aligned PC).
 		uint32_t        nocode_retry_pc;
 
-		// TEMPORARY diagnostic (2026-08-07) - real compiled-sequence
-		// length distribution (seqhead-to-seqlast, in guest instructions),
-		// for characterizing DRC dispatch fragments after the interpreter-
-		// vs-DRC comparison showed only a ~2.15x wall-time win - far short
-		// of typical JIT speedups. An existing comment in code_compile_
-		// block() (2026-08-02 investigation) already found "231K+ compiles,
-		// all identical single-instruction sequences" for one specific
-		// case; this makes that observation a standing aggregate instead
-		// of an anecdote from one investigation. Plain host C++ counters
-		// (mips3drc.cpp), not JIT'd - counted once per sequence at compile
-		// time, not per dispatch.
-		uint32_t        diag_seq_count;
-		uint64_t        diag_seq_instr_total;
-		uint32_t        diag_seq_len1_count;
-		uint32_t        diag_seq_len_max;
-
-		// TEMPORARY diagnostic (2026-08-08) - categorizes *why* each
-		// sequence ended, using seqlast's own flags (mirroring
-		// describe()'s set_end_sequence() call sites in mips3fe.cpp).
-		// IRIX's PIC ABI resolves nearly every cross-DSO call through
-		// indirect JALR (established 2026-08-06/07), and JR/JALR always
-		// end a sequence since the target isn't statically known - the
-		// leading hypothesis for why sequences average only ~7
-		// instructions (2026-08-07 measurement). This splits that
-		// hypothesis from the alternatives (static jumps/calls,
-		// syscall/break, mode-changing COP0 writes/ERET, or simply
-		// running off the end of the describe_code() window/
-		// COMPILE_MAX_SEQUENCE cap with no terminating instruction at
-		// all) with real counts instead of just plausibility.
-		uint32_t        diag_seqend_indirect_jump;   // JR/JALR (targetpc == BRANCH_TARGET_DYNAMIC)
-		uint32_t        diag_seqend_static_jump;     // J/JAL/unconditional-idiom branches (static target)
-		uint32_t        diag_seqend_exception;       // SYSCALL/BREAK
-		uint32_t        diag_seqend_mode_change;     // MTC0-Status/ERET
-		uint32_t        diag_seqend_window_limit;    // none of the above - window/max-sequence boundary
-
-		// TEMPORARY diagnostic (2026-08-08) - which of the three sequence-
-		// exit transfer tiers actually gets used for the non-branch
-		// fall-through case (code_compile_block()'s per-sequence dispatch
-		// selection, ~line 1151): free (zero-cost straight-line fall-
-		// through - the very next sequence in this same compile batch
-		// already starts at nextpc, no code emitted at all),
-		// mode_change_hashjmp (seqlast->can_change_modes(), a real runtime
-		// hash-table lookup via live_dispatch_key()), or static_hashjmp
-		// (seqlast->next() is null or doesn't start at nextpc - also a
-		// real hash-table lookup, just with static_dispatch_key()'s
-		// compile-time-resolved key). Tests whether the dominant
-		// branch_target sequence-termination cause (2026-08-08, ~31% of
-		// all terminations) already gets the free tier for free (the
-		// split-off sequence is typically the very next node in program
-		// order) or actually pays the expensive hash-lookup path despite
-		// being reachable without one.
-		uint32_t        diag_seqexit_free_fallthrough;
-		uint32_t        diag_seqexit_mode_change_hashjmp;
-		uint32_t        diag_seqexit_static_hashjmp;
-
-		// TEMPORARY diagnostic (2026-08-08) - of the static_hashjmp cases
-		// above (66% of non-branch sequence exits), how many actually have
-		// nextpc's own opcode_desc compiled somewhere in the SAME batch's
-		// desclist (just not literally seqlast->next() - list order is
-		// whatever order do_describe_code()'s branch-target-stack walk
-		// discovered sequences in, not address order) versus genuinely
-		// outside this batch, needing the real hash lookup regardless.
-		// Sizes the actual opportunity for extending the existing
-		// intrablock_branch mechanism (currently gated to curdesc-
-		// >is_branch() only, mips3drc.cpp:4391) to this fall-through
-		// dispatch path too.
-		uint32_t        diag_seqexit_hashjmp_target_in_batch;
-		uint32_t        diag_seqexit_hashjmp_target_outside_batch;
-
 													/* parameters for subroutines */
 		uint64_t        numcycles;                  /* return value from gettotalcycles */
 		const char *    format;                     /* format string for print_debug */
@@ -936,25 +645,6 @@ protected:
 		uint64_t        count_zero_time;
 		uint32_t        compare_armed;
 		uint32_t        jmpdest;                    /* destination jump target */
-		uint32_t        diag_call_trace_target;     /* TEMPORARY (2026-09-09): JAL/JALR target for func_call_trace_diag */
-		uint32_t        diag_exc_type;               /* TEMPORARY (2026-09-10): exception code for log_drc_exception */
-		uint32_t        diag_tlb_mismatch_pc;        /* TEMPORARY (2026-09-10): recovered PC for log_tlb_mismatch_entry */
-		uint32_t        diag_cpperror_callsite_pc;  /* TEMPORARY (2026-09-10): this call's own desc->pc for func_cpperror_callsite_diag */
-		uint64_t        diag_cpperror_a2;            /* TEMPORARY (2026-09-10): $a2 (message ptr) at the real cpp_error call */
-		uint64_t        diag_cpperror_s3;            /* TEMPORARY (2026-09-10): $s3 at the real cpp_error call */
-		uint64_t        diag_cond_v1;                /* TEMPORARY (2026-09-10): $v1 (token type) for func_cpperror_cond_trace_diag */
-		uint64_t        diag_cond_s1;                /* TEMPORARY (2026-09-10): $s1 for func_cpperror_cond_trace_diag */
-		uint64_t        diag_srctext_s0;             /* TEMPORARY (2026-09-10): $s0 (pfile) for func_source_text_diag */
-		uint64_t        diag_srctext_s3;             /* TEMPORARY (2026-09-10): $s3 (loop iteration/acount) for func_source_text_diag */
-		uint64_t        diag_token_result_v0;       /* TEMPORARY (2026-09-09): stashed $v0 for func_token_result_diag */
-		uint64_t        diag_beql_s3;                /* TEMPORARY (2026-09-10): $s3 read right at the beql compare itself, for func_beql_s3_diag */
-		uint64_t        diag_beql_v0;                /* TEMPORARY (2026-09-10): $v0 at the same point, for func_beql_s3_diag */
-		uint64_t        diag_breakcheck_v0;          /* TEMPORARY (2026-09-10): $v0 (token type) at the loop's own break check, 0x1007df68 */
-		uint64_t        diag_breakcheck_s3;          /* TEMPORARY (2026-09-10): $s3 at the same point */
-		uint64_t        diag_s3_increment_newval;    /* TEMPORARY (2026-09-10): $s3's new value right after the loop's own acount++ */
-		uint64_t        diag_tlbmiss_redispatch_s3;  /* TEMPORARY (2026-09-10): $s3 at the moment static_generate_tlb_mismatch redispatches back to 0x1007DFFC (mid-delay-slot TLB miss test) */
-		uint32_t        diag_tlbmiss_redispatch_firstpc; /* TEMPORARY (2026-09-10): first UML_RECOVER's (delay-slot-rounded-up) PC, for the same event */
-		uint32_t        diag_new_epc;                /* TEMPORARY (2026-07-27): stashed I0 value about to become EPC in static_generate_exception's EXCEPTION_INTERRUPT case, read by func_interrupt_delivery_probe */
 		uint64_t        cop0_store_value;            /* value being written by mtc0, preserved across the interrupt check that precedes the store */
 		uint32_t        stub_container_pc;           /* MAME_SGI_STALE_STUB_FIX: entry pc of the block whose compiler_page_fault stub last fired */
 		uint32_t        stub_container_mode;         /* MAME_SGI_STALE_STUB_FIX: that block's hash key */
@@ -962,18 +652,6 @@ protected:
 		uint32_t        diag_study_serial;           /* MAME_SGI_RECOMPILE_STUDY_DIAG: compile serial baked into a traced validate_tlb check */
 		uint32_t        diag_study_baked;            /* MAME_SGI_RECOMPILE_STUDY_DIAG: compile-time vtlb entry of the last failed validate_tlb check */
 		uint32_t        diag_recompile_origin;       /* MAME_SGI_RECOMPILE_STUDY_DIAG: which handler requested the pending recompile (1 = nocode, 2 = tlb_mismatch) */
-		uint32_t        diag_new_status;             /* TEMPORARY (2026-07-27): stashed I0 value about to be stored to COP0_Status in generate_set_cop0_reg, read by func_status_store_probe */
-		uint32_t        diag_status_store_pc;        /* TEMPORARY (2026-07-27): desc->pc of the mtc0 about to run, stashed alongside diag_new_status */
-		uint64_t        diag_mtcz_i0_stash;          /* TEMPORARY (2026-07-27): I0 stashed/restored around func_mtcz_read_probe's CALLC so it can't clobber the value generate_set_cop0_reg consumes right after */
-		uint32_t        diag_sd_i0_stash;            /* TEMPORARY (2026-07-27): I0 (store address) stashed/restored around func_sd_value_probe's CALLC in the SD opcode case */
-		uint64_t        diag_sd_i1_stash;            /* TEMPORARY (2026-07-27): I1 (store value) stashed/restored around func_sd_value_probe's CALLC in the SD opcode case */
-		uint32_t        diag_mxcsr_desync_pc;        /* TEMPORARY (2026-08-24): guest pc of the instruction boundary where real MXCSR RC diverged from what CCR1(31)'s RM field predicts, read by func_mxcsr_desync_diag */
-		uint32_t        diag_mxcsr_desync_guest_rm;  /* TEMPORARY (2026-08-24): CCR1(31)&3 at the same boundary, stashed alongside diag_mxcsr_desync_pc */
-		uint32_t        diag_mxcsr_desync_real_rc;   /* TEMPORARY (2026-08-24): real live MXCSR RC bits (13:14) read via the repurposed GETFMOD, stashed alongside diag_mxcsr_desync_pc */
-		uint32_t        diag_ctc1_mxcsr_pc;          /* TEMPORARY (2026-08-24): guest pc of the CTC1 whose own just-emitted UML_SETFMOD didn't produce the expected real MXCSR RC, read by func_ctc1_mxcsr_check_diag */
-		uint32_t        diag_ctc1_mxcsr_fmod;        /* TEMPORARY (2026-08-24): the fmod value (uml::float_rounding_mode) that CTC1 just requested via UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
-		uint32_t        diag_ctc1_mxcsr_real_rc;     /* TEMPORARY (2026-08-24): real live MXCSR RC bits actually observed right after that UML_SETFMOD, stashed alongside diag_ctc1_mxcsr_pc */
-		uint32_t        diag_sd_pc;                  /* TEMPORARY (2026-07-27): desc->pc of the SD instruction, for func_sd_value_probe to report */
 	};
 
 	/* core state */
@@ -1098,17 +776,6 @@ protected:
 	}               m_hotspot[MIPS3_MAX_HOTSPOTS];
 	bool            m_isdrc;
 	bool            m_interp_running = false;   // interpreter execute_run() active (guest FP rounding applied to the host)
-
-	// TEMPORARY diagnostic (2026-07-28): the literal `pc` argument passed to
-	// the currently-executing code_compile_block() call - the address that
-	// genuinely caused an EXECUTE_MISSING_CODE miss. Set at the top of every
-	// call; consulted deep inside per-instruction codegen (generate_set_
-	// cop0_reg's COMPILETIME diagnostic) to tell a genuine forced recompile
-	// of a hot PC apart from that same PC merely being walked as a member of
-	// some *other* sequence's compile - the two were being conflated into
-	// one inflated count throughout tonight's redundant-recompile
-	// investigation.
-	offs_t m_diag_compile_entry_pc = 0;
 
 	// TEMPORARY diagnostic (2026-08-01): validating a theory about
 	// USER-mode (application) code recompilation during multi-process
@@ -1293,64 +960,15 @@ private:
 public:
 	void func_get_cycles();
 	void func_printf_exception();
-	void func_lockstate_probe(int site);
-	void func_mutex_wake_entry_probe();
-	void func_install_mutex_tap();
-	void func_mutex_unlock_entry_probe();
-	void func_sv_wait_sig_unlock_probe();
-	void func_sv_wait_sig_worker_entry_probe();
-	void func_sv_timedwait_entry_probe();
-	void func_sv_wait_entry_probe();
-	void func_xlog_state_clean_log_entry_probe();
-	void func_biodone_dispatch_probe();
-	void func_xlog_iodone_entry_probe();
-	void func_xlog_complete_entry_probe();
-	void func_xlog_inner_worker_stack_tap();
-	void func_xlog_tlb_recheck_probe();
-	void func_xfs_log_done_entry_probe();
-	void func_xlog_commit_record_entry_probe();
-	void func_xlog_write_call_capture_probe();
-	void func_xlog_write_return_check_probe();
-	void func_xfs_trans_commit_iclog_consume_probe();
-	void func_xlog_write_entry_log_probe();
-	void func_mutex_wake_dequeue_probe();
 	void recompile_study_validate_probe();
 	bool recompile_study_traced(uint32_t pc, bool near);
 	void recompile_study_tlb_handler_probe();
 	void syscall_log_diag();                    // MAME_SGI_SYSCALL_LOG_DIAG
-	void func_iclogspace_splhi_probe();
-	void func_iclogspace_splx_probe();
-	void func_interrupt_taken_probe();
-	void func_mutex_lock_enqueue_probe();
-	void func_mutex_lock_enqueue_end_probe();
-	void func_us_delay_entry_probe();
-	void func_mrupdatef_entry_probe();
-	void func_rmap_del_panic_probe(int site);
-	void func_tlbmiss_entry_probe();
-	void func_fault_store_mode_probe(int site);
-	void func_interrupt_delivery_probe();
-	void func_status_store_probe();
-	void func_premature_interrupt_probe();
-	void func_pckm_mutex_lock_call_probe();
-	void func_pckm_mutex_snapshot_probe();
-	void func_andi_ori_probe(int site);
-	void func_mtcz_read_probe(int compiletime_is_branch_target);
-	void func_sd_value_probe();
 	void func_printf_debug();
-	void func_0fac5ffc_anomaly_diag();
-	void func_validate_tlb_mismatch_class_diag();
 	void func_mxcsr_desync_diag();
-	void func_ctc1_mxcsr_check_diag();
-	void func_fpop_mxcsr_check_diag();
-	void func_nocode_0fac5ffc_diag();
-	void func_rodata_load_addr_diag();
-	void func_fastram_compare_diag();
 	void func_printf_probe();
 	void func_debug_break();
 	void func_unimplemented();
-	void func_checksum_mismatch_diag(void *ctx);
-	void func_task101_entry_reentry_diag();
-	void func_task101_out_of_cycles_diag();
 private:
 	/* internal compiler state */
 	struct compiler_state
@@ -1480,7 +1098,6 @@ private:
 	void generate_sequence_instruction(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	void generate_delay_slot_and_branch(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc, uint8_t linkreg);
 	void generate_likely_branch_skip_fixup(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
-	void generate_fpop_mxcsr_precheck(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 
 	bool generate_opcode(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);
 	bool generate_special(drcuml_block &block, compiler_state &compiler, const opcode_desc *desc);

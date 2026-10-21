@@ -6,22 +6,6 @@
 
 ***************************************************************************/
 
-// DISABLED (2026-07-29): the get_value() scan-distance instrumentation
-// below (see drcbeut.h's own comment on the m_diag_scan_* fields) is
-// gated behind this rather than left unconditionally active, after the
-// user raised a real concern this file's own header comment didn't
-// address: raw per-call cost is negligible, but if the actual bug under
-// investigation has any race-condition/timing-sensitive character,
-// *any* perturbation - even a few nanoseconds added consistently to a
-// path called thousands of times a second - could change whether it
-// manifests, making "negligible overhead" not the same guarantee as
-// "doesn't affect the bug." Re-enable only for a deliberate, isolated
-// measurement pass, not as a standing default.
-//
-// Re-enabled briefly 2026-09-30 to finally answer the question this
-// comment poses (measured result: call-frequency-dominated, not
-// scan-distance-dominated) - then disabled again below, as intended.
-// #define MAME_SGI_GETVALUE_SCAN_DIAG
 
 // Memoise drc_map_variables::get_value(). Each call (the RECOVER opcode,
 // used by exception handlers to recover the guest PC and cycle count)
@@ -58,7 +42,6 @@ using namespace uml;
 //**************************************************************************
 
 #define LOG_RECOVER         (0)
-
 
 
 //**************************************************************************
@@ -424,7 +407,6 @@ void drc_hash_table_t<Entry>::invalidate_range(uint32_t pcstart, uint32_t pcend)
 }
 
 
-
 template class drc_hash_table_t<drccodeptr>;
 template class drc_hash_table_t<uint32_t>;  // MAME_SGI_HASH32
 
@@ -625,23 +607,10 @@ uint32_t drc_map_variables::get_value(drccodeptr codebase, uint32_t mapvar) cons
 	auto curscan = reinterpret_cast<uint64_t const *>((uintptr_t(codebase) | 7) + 1);
 	auto const endscan = reinterpret_cast<uint64_t const *>(m_cache.top());
 
-#ifdef MAME_SGI_GETVALUE_SCAN_DIAG
-	// TEMPORARY diagnostic (2026-07-29): measure real scan distance - see
-	// this class's own comment in drcbeut.h for why (in-memory counters,
-	// no I/O, read via a live debugger session rather than printed).
-	auto const diag_scan_start = curscan;
-#endif
 
 	// look for the signature
 	while ((curscan < endscan) && (*curscan++ != m_uniquevalue)) { }
 
-#ifdef MAME_SGI_GETVALUE_SCAN_DIAG
-	m_diag_scan_calls++;
-	uint64_t const diag_words_scanned = curscan - diag_scan_start;
-	m_diag_scan_words_total += diag_words_scanned;
-	if (diag_words_scanned > m_diag_scan_words_max)
-		m_diag_scan_words_max = diag_words_scanned;
-#endif
 
 	if (curscan >= endscan)
 		return 0;
@@ -698,7 +667,6 @@ uint32_t drc_map_variables::get_value(drccodeptr codebase, uint32_t mapvar) cons
 }
 
 
-
 //-------------------------------------------------
 //  get_last_value - return the most recently set
 //  map value
@@ -709,7 +677,6 @@ uint32_t drc_map_variables::get_last_value(uint32_t mapvar)
 	assert(mapvar >= MAPVAR_M0 && mapvar < MAPVAR_END);
 	return m_mapvalue[mapvar - MAPVAR_M0];
 }
-
 
 
 //**************************************************************************
@@ -847,7 +814,6 @@ drc_label_list::label_entry &drc_label_list::find_or_allocate(uml::code_label la
 	newlabel->codeptr = nullptr;
 	return *newlabel;
 }
-
 
 
 //**************************************************************************
