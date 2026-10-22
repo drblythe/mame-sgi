@@ -257,10 +257,15 @@ TIMER_CALLBACK_MEMBER(hpc3_device::do_pbus_dma)
 
 	if (dma.m_active && channel < 4)
 	{
-		uint16_t temp16 = m_gio64_space->read_dword(dma.m_cur_ptr) >> 16;
-		int16_t stemp16 = (int16_t)(BIT(m_pbus_dma[channel].m_config, 19) ? temp16 : swapendian_int16(temp16));
-
-		m_hal2->dma_write(channel, stemp16);
+		// MAME_SGI_HAL2_SAMPLE_FORMAT_FIX: each 32-bit word in memory holds
+		// one audio sample, 24-bit right-justified (HAL2's AES width), so a
+		// codec's 16-bit sample is bits 23..8 - how SGI's own HAL2 tests build
+		// their buffers (sample << 8). Taking bits 31..16 and swapping them
+		// put the sample's high byte on top and its sign extension in the low
+		// byte, losing the low 8 bits. Config bit 19 ("even address bytes on
+		// 15..8") selects the other byte lane; IRIX leaves it clear.
+		const uint16_t lane = uint16_t(m_gio64_space->read_dword(dma.m_cur_ptr) >> 8);
+		m_hal2->dma_write(channel, int16_t(BIT(dma.m_config, 19) ? swapendian_int16(lane) : lane));
 
 		dma.m_cur_ptr += 4;
 		dma.m_bytes_left -= 4;
