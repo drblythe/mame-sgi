@@ -43,10 +43,18 @@ public:
 	// channel, alternating left and right
 	int16_t dma_read(uint32_t channel);
 
+	// MAME_SGI_HAL2_AES: the CS8411 AES receiver (PBUS PIO1 words
+	// 0x00-0x1f) and CS8401A transmitter (words 0x20-0x3f), one register
+	// byte per word; the rest of the channel reads back as RAM
+	uint16_t aes_r(offs_t offset, uint16_t mem_mask);
+	void aes_w(offs_t offset, uint16_t data, uint16_t mem_mask);
+	DECLARE_INPUT_CHANGED_MEMBER(aes_connection_changed);
+
 protected:
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
 	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
+	virtual ioport_constructor device_input_ports() const override ATTR_COLD;
 	virtual void sound_stream_update(sound_stream &stream) override;
 
 	void update_clock_freq(int clock_gen);
@@ -55,6 +63,27 @@ protected:
 	void update_output_gain();   // MAME_SGI_HAL2_CODEC_GAINS
 	void update_input_gain();    // MAME_SGI_HAL2_CODEC_GAINS
 	void postload();  // MAME_SGI_HAL2_BRES_POSTLOAD_FIX - see device_start()'s comment
+
+	// MAME_SGI_HAL2_AES
+	enum
+	{
+		AES_NONE = 0,       // nothing connected: the receiver never locks
+		AES_LOOPBACK,       // a cable from AES out to AES in
+		AES_HOST            // AES out/in are MAME sound devices for the host
+	};
+	unsigned aes_connection() const;
+	unsigned aestx_channel() const { return m_aestx_ctrl & 7; }
+	unsigned aestx_clock() const { return (m_aestx_ctrl >> 3) & 3; }
+	unsigned aestx_count() const { const unsigned n = (m_aestx_ctrl >> 8) & 3; return n ? n : 2; }
+	unsigned aesrx_channel() const { return m_aesrx_ctrl & 7; }
+	u32 aes_rx_hz() const;
+	void update_aes_master();
+	void update_aes_tx_rate();
+	uint8_t aesrx_read(unsigned reg);
+	void aesrx_write(unsigned reg, uint8_t data);
+	void aestx_write(unsigned reg, uint8_t data);
+	void aes_tx_sample(int16_t data);
+	int16_t aes_rx_sample();
 
 	enum
 	{
@@ -98,21 +127,67 @@ protected:
 	required_device<dac_16bit_r2r_twos_complement_device> m_rdac;
 	required_device<microphone_device> m_mic;
 
-	// MAME_SGI_HAL2_AUDIO_INPUT: the microphone feeds a two-input stream at
-	// codec B's sample rate; its samples wait in a FIFO for receive DMA.
-	// about 43 ms at 48 kHz: over two sound updates of slack, and the most
-	// the input can lag when the FIFO is full between recordings
-	static constexpr unsigned ADC_FIFO_FRAMES = 2048;
+	// MAME_SGI_HAL2_AUDIO_INPUT: stereo frames waiting for receive DMA.
+	// 2048 frames is about 43 ms at 48 kHz: over two sound updates of
+	// slack, and the most the input can lag when the FIFO is full between
+	// recordings. When full, the oldest frame is dropped.
+	struct frame_fifo
+	{
+		static constexpr unsigned FRAMES = 2048;
+		int16_t data[FRAMES][2]{};
+		unsigned read = 0;
+		unsigned count = 0;
+
+		void clear() { read = count = 0; }
+		void push(int16_t l, int16_t r);
+		bool pop(int16_t frame[2]);
+		void trim(unsigned keep);
+	};
+
+	// host input at the stream's rate, linearly interpolated to a guest
+	// sample rate: pos is the next output position between prev and the
+	// current input frame
+	struct input_converter
+	{
+		double pos = 0.0;
+		int16_t prev[2]{};
+	};
+	static void convert_input(const int16_t frame[2], double step, input_converter &conv, frame_fifo &fifo);
+
+	// MAME_SGI_HAL2_AUDIO_INPUT: the microphone (inputs 0-1) and, with the
+	// host AES connection, the AES input (inputs 2-3) feed one stream at
+	// the host rate, converted into FIFOs at codec B's and the AES rate
 	sound_stream *m_adc_stream = nullptr;
-	int16_t m_adc_fifo[ADC_FIFO_FRAMES][2]{};
-	unsigned m_adc_fifo_read = 0;
-	unsigned m_adc_fifo_count = 0;
+	frame_fifo m_adc_fifo;
+	input_converter m_adc_conv;
 	uint16_t m_curr_adc = 0;
 	int16_t m_adc_frame[2]{};
 	u32 m_adc_rate = 48000;       // codec B sample rate
-	double m_adc_pos = 0.0;       // next output position between m_adc_prev and the current input
-	int16_t m_adc_prev[2]{};
 	double m_tone_phase[2]{};   // MAME_SGI_HAL2_INPUT_TEST_TONE only (unconditional: same layout in every file)
+
+	// MAME_SGI_HAL2_AES
+	required_device<dac_16bit_r2r_twos_complement_device> m_aes_ldac;
+	required_device<dac_16bit_r2r_twos_complement_device> m_aes_rdac;
+	required_device<microphone_device> m_aes_mic;
+	required_ioport m_aes_config;
+	// loopback: frames buffered between transmit and receive DMA, which run
+	// at the same rate; receive starts this many frames behind transmit so
+	// timer ordering never underruns it
+	static constexpr unsigned AES_LOOPBACK_LATENCY = 64;
+	uint16_t m_aestx_ctrl = 0;    // HAL2 AES TX control: DMA channel, clock, channel count
+	uint16_t m_aesrx_ctrl = 0;    // HAL2 AES RX control: DMA channel
+	uint8_t m_aesrx_reg[32]{};    // CS8411: 0/1 status, 2/3 control, 4.. buffer
+	uint8_t m_aesrx_ier[2]{};     // CS8411 interrupt enables (at 0/1 when CR1 IER/SR is set)
+	uint8_t m_aestx_reg[32]{};    // CS8401A: 0 status, 1-3 control, 4-7 user data, 8.. channel status
+	uint16_t m_aes_ram[0x100]{};  // the rest of PBUS PIO1, and all of it with no HAL2 fitted
+	frame_fifo m_aes_fifo;        // AES input frames (loopback or host)
+	input_converter m_aes_conv;
+	u32 m_aes_rx_hz = 0;          // received sample rate, 0 when the receiver is not locked
+	bool m_aes_rx_sync = true;    // loopback: waiting for the latency to build up
+	uint16_t m_curr_aes_tx = 0;
+	uint16_t m_curr_aes_rx = 0;
+	int16_t m_aes_tx_frame[2]{};
+	int16_t m_aes_rx_frame[2]{};
 
 	uint16_t m_isr = 0;
 	uint16_t m_iar = 0;

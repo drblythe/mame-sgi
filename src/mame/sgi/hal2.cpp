@@ -33,6 +33,10 @@ hal2_device::hal2_device(const machine_config &mconfig, const char *tag, device_
 	, m_ldac(*this, "ldac")
 	, m_rdac(*this, "rdac")
 	, m_mic(*this, "mic")
+	, m_aes_ldac(*this, "aes_ldac")
+	, m_aes_rdac(*this, "aes_rdac")
+	, m_aes_mic(*this, "aes_in")
+	, m_aes_config(*this, "AES")
 {
 }
 
@@ -59,14 +63,24 @@ void hal2_device::device_start()
 	save_item(NAME(m_codecb_ctrl2_hi));
 	save_item(NAME(m_volume));
 	save_item(NAME(m_adc_frame));
+	save_item(NAME(m_aestx_ctrl));
+	save_item(NAME(m_aesrx_ctrl));
+	save_item(NAME(m_aesrx_reg));
+	save_item(NAME(m_aesrx_ier));
+	save_item(NAME(m_aestx_reg));
+	save_item(NAME(m_aes_ram));
+	save_item(NAME(m_curr_aes_tx));
+	save_item(NAME(m_curr_aes_rx));
+	save_item(NAME(m_aes_tx_frame));
+	save_item(NAME(m_aes_rx_frame));
 
-	// MAME_SGI_HAL2_AUDIO_INPUT: two inputs (microphone left/right) at the
-	// microphone's own rate, pulled by dma_read(). The rate never changes:
-	// sound_stream::set_sample_rate() on a stream with inputs left MAME's
-	// input resampler reading past its buffer (a crash when IRIX switched
-	// codec B to 44.1 kHz), so sound_stream_update() converts to codec B's
-	// rate itself.
-	m_adc_stream = stream_alloc(2, 0, SAMPLE_RATE_INPUT_ADAPTIVE);
+	// MAME_SGI_HAL2_AUDIO_INPUT: four inputs (microphone left/right, AES in
+	// left/right) at the host's own rate, pulled by dma_read(). The rate
+	// never changes: sound_stream::set_sample_rate() on a stream with
+	// inputs left MAME's input resampler reading past its buffer (a crash
+	// when IRIX switched codec B to 44.1 kHz), so sound_stream_update()
+	// converts to the guest rates itself.
+	m_adc_stream = stream_alloc(4, 0, SAMPLE_RATE_INPUT_ADAPTIVE);
 
 	// MAME_SGI_HAL2_BRES_POSTLOAD_FIX (permanent, no #ifdef - companion to
 	// MAME_SGI_PBUS_DMA_DEGENERATE_RATE_REARM_FIX in hpc3.cpp, same task
@@ -90,10 +104,13 @@ void hal2_device::device_start()
 
 void hal2_device::postload()
 {
+	// MAME_SGI_HAL2_AES: the received rate is derived, not saved
+	m_aes_rx_hz = aes_rx_hz();
 	for (int clock_gen = 0; clock_gen < 3; clock_gen++)
 		update_clock_freq(clock_gen);
-	m_adc_fifo_read = 0;
-	m_adc_fifo_count = 0;
+	m_adc_fifo.clear();
+	m_aes_fifo.clear();
+	m_aes_rx_sync = true;
 	update_output_gain();
 	update_input_gain();
 }
@@ -124,8 +141,22 @@ void hal2_device::device_reset()
 	m_curr_dac = 0;
 	m_curr_adc = 0;
 	m_adc_frame[0] = m_adc_frame[1] = 0;
-	m_adc_fifo_read = 0;
-	m_adc_fifo_count = 0;
+	m_adc_fifo.clear();
+	// MAME_SGI_HAL2_AES: both chips power up with every control bit clear
+	// (held in reset)
+	m_aestx_ctrl = 0;
+	m_aesrx_ctrl = 0;
+	std::fill(std::begin(m_aesrx_reg), std::end(m_aesrx_reg), 0);
+	std::fill(std::begin(m_aesrx_ier), std::end(m_aesrx_ier), 0);
+	std::fill(std::begin(m_aestx_reg), std::end(m_aestx_reg), 0);
+	m_aes_fifo.clear();
+	m_aes_rx_hz = 0;
+	m_aes_rx_sync = true;
+	m_curr_aes_tx = 0;
+	m_curr_aes_rx = 0;
+	m_aes_tx_frame[0] = m_aes_tx_frame[1] = 0;
+	m_aes_rx_frame[0] = m_aes_rx_frame[1] = 0;
+	update_aes_tx_rate();
 	update_dac_rate();
 	update_adc_rate();
 	update_output_gain();
@@ -186,11 +217,36 @@ void hal2_device::write(offs_t offset, uint16_t data)
 			case 0x0100:
 				LOGMASKED(LOG_WRITES, "        Synth In\n");
 				break;
+			// MAME_SGI_HAL2_AES: control 1 of each AES port, laid out like the
+			// codecs' (bits 2..0 DMA channel, 4..3 clock, 9..8 channel count)
 			case 0x0200:
 				LOGMASKED(LOG_WRITES, "        AES In\n");
+				if (((data & IAR_PARAM) >> IAR_PARAM_SHIFT) == 1)
+				{
+					if (data & IAR_ACCESS_SEL)
+						m_idr[0] = m_aesrx_ctrl;
+					else
+					{
+						m_aesrx_ctrl = m_idr[0];
+						m_curr_aes_rx = 0;
+						m_aes_rx_sync = true;
+					}
+				}
 				break;
 			case 0x0300:
 				LOGMASKED(LOG_WRITES, "        AES Out\n");
+				if (((data & IAR_PARAM) >> IAR_PARAM_SHIFT) == 1)
+				{
+					if (data & IAR_ACCESS_SEL)
+						m_idr[0] = m_aestx_ctrl;
+					else
+					{
+						m_aestx_ctrl = m_idr[0];
+						m_curr_aes_tx = 0;
+						update_aes_tx_rate();
+						update_aes_master();
+					}
+				}
 				break;
 			case 0x0400:
 			{
@@ -310,6 +366,7 @@ void hal2_device::write(offs_t offset, uint16_t data)
 							default: LOGMASKED(LOG_WRITES, "                Unknown (%d)\n", m_idr[0]); break;
 						}
 						update_clock_freq(clock_gen);
+						update_aes_master();   // MAME_SGI_HAL2_AES: the loopback rate follows the transmit clock
 					}
 				}
 				else if (param == 2)
@@ -326,6 +383,7 @@ void hal2_device::write(offs_t offset, uint16_t data)
 						m_bres_clock_modctrl[clock_gen] = m_idr[1];
 						LOGMASKED(LOG_WRITES, "                Inc:%04x, ModCtrl:%04x\n", m_idr[0], m_idr[1]);
 						update_clock_freq(clock_gen);
+						update_aes_master();   // MAME_SGI_HAL2_AES
 					}
 				}
 				else
@@ -411,11 +469,19 @@ void hal2_device::update_clock_freq(int clock_gen)
 		case 1: // 44.1kHz
 			m_bres_clock_freq[clock_gen] = 44100;
 			break;
+		case 2: // MAME_SGI_HAL2_AES: the AES receiver's recovered clock
+			if (m_aes_rx_hz)
+			{
+				m_bres_clock_freq[clock_gen] = m_aes_rx_hz;
+				break;
+			}
+			[[fallthrough]];   // not locked: no clock
 		default:
 			m_bres_clock_freq[clock_gen] = 0;
 			m_bres_clock_rate[clock_gen] = attotime::zero;
 			update_dac_rate();
 			update_adc_rate();
+			update_aes_tx_rate();
 			return;
 	}
 
@@ -432,6 +498,7 @@ void hal2_device::update_clock_freq(int clock_gen)
 		m_bres_clock_rate[clock_gen] = attotime::from_ticks(mod, m_bres_clock_freq[clock_gen] * m_bres_clock_inc[clock_gen]);
 	update_dac_rate();
 	update_adc_rate();
+	update_aes_tx_rate();
 }
 
 // HPC3 DMA writes each DAC once per codec A sample, so run the DAC streams
@@ -463,18 +530,68 @@ void hal2_device::update_adc_rate()
 	{
 		// audio converted at the old rate would play at the wrong speed
 		m_adc_rate = rate;
-		m_adc_fifo_read = 0;
-		m_adc_fifo_count = 0;
+		m_adc_fifo.clear();
 	}
+}
+
+void hal2_device::frame_fifo::push(int16_t l, int16_t r)
+{
+	if (count == FRAMES)
+	{
+		read = (read + 1) % FRAMES;
+		count--;
+	}
+	const unsigned write = (read + count) % FRAMES;
+	data[write][0] = l;
+	data[write][1] = r;
+	count++;
+}
+
+bool hal2_device::frame_fifo::pop(int16_t frame[2])
+{
+	if (count == 0)
+		return false;
+	frame[0] = data[read][0];
+	frame[1] = data[read][1];
+	read = (read + 1) % FRAMES;
+	count--;
+	return true;
+}
+
+void hal2_device::frame_fifo::trim(unsigned keep)
+{
+	while (count > keep)
+	{
+		read = (read + 1) % FRAMES;
+		count--;
+	}
+}
+
+// one input frame advances the output position by step output samples
+// (output rate / input rate); linear interpolation between the previous and
+// current input frame
+void hal2_device::convert_input(const int16_t frame[2], double step, input_converter &conv, frame_fifo &fifo)
+{
+	while (conv.pos < 1.0)
+	{
+		int16_t out[2];
+		for (int ch = 0; ch < 2; ch++)
+			out[ch] = int16_t(std::lround(conv.prev[ch] + (frame[ch] - conv.prev[ch]) * conv.pos));
+		fifo.push(out[0], out[1]);
+		conv.pos += 1.0 / step;
+	}
+	conv.pos -= 1.0;
+	conv.prev[0] = frame[0];
+	conv.prev[1] = frame[1];
 }
 
 void hal2_device::sound_stream_update(sound_stream &stream)
 {
-	// one input sample advances the output position by this many codec B
-	// samples; linear interpolation between the previous and current input
 	if (stream.sample_rate() == 0)
 		return;
-	const double step = double(m_adc_rate) / double(stream.sample_rate());
+	const double adc_step = double(m_adc_rate) / double(stream.sample_rate());
+	const bool aes_host = aes_connection() == AES_HOST;
+	const double aes_step = double(m_aes_rx_hz ? m_aes_rx_hz : 48000) / double(stream.sample_rate());
 	for (int i = 0; i < stream.samples(); i++)
 	{
 		int16_t frame[2];
@@ -489,26 +606,16 @@ void hal2_device::sound_stream_update(sound_stream &stream)
 		for (int ch = 0; ch < 2; ch++)
 			frame[ch] = int16_t(std::clamp<double>(std::lround(stream.get(ch, i) * m_adc_gain[ch] * 32767.0), -32768.0, 32767.0));
 #endif
-		while (m_adc_pos < 1.0)
+		convert_input(frame, adc_step, m_adc_conv, m_adc_fifo);
+
+		// MAME_SGI_HAL2_AES: digital input, no gain stage
+		if (aes_host && m_aes_rx_hz)
 		{
-			int16_t out[2];
+			int16_t aes[2];
 			for (int ch = 0; ch < 2; ch++)
-				out[ch] = int16_t(std::lround(m_adc_prev[ch] + (frame[ch] - m_adc_prev[ch]) * m_adc_pos));
-			// keep the newest audio: drop the oldest frame when the FIFO is full
-			if (m_adc_fifo_count == ADC_FIFO_FRAMES)
-			{
-				m_adc_fifo_read = (m_adc_fifo_read + 1) % ADC_FIFO_FRAMES;
-				m_adc_fifo_count--;
-			}
-			const unsigned write = (m_adc_fifo_read + m_adc_fifo_count) % ADC_FIFO_FRAMES;
-			m_adc_fifo[write][0] = out[0];
-			m_adc_fifo[write][1] = out[1];
-			m_adc_fifo_count++;
-			m_adc_pos += 1.0 / step;
+				aes[ch] = int16_t(std::clamp<double>(std::lround(stream.get(2 + ch, i) * 32767.0), -32768.0, 32767.0));
+			convert_input(aes, aes_step, m_aes_conv, m_aes_fifo);
 		}
-		m_adc_pos -= 1.0;
-		m_adc_prev[0] = frame[0];
-		m_adc_prev[1] = frame[1];
 	}
 }
 
@@ -516,20 +623,18 @@ void hal2_device::sound_stream_update(sound_stream &stream)
 // left then right in stereo. An empty FIFO repeats the last frame.
 int16_t hal2_device::dma_read(uint32_t channel)
 {
+	// MAME_SGI_HAL2_AES
+	if (m_aesrx_ctrl && channel == aesrx_channel() && channel != m_codecb_channel)
+		return aes_rx_sample();
+
 	if (channel != m_codecb_channel && channel != (3 - m_codecb_channel))
 		return 0;
 
 	if (m_curr_adc == 0)
 	{
-		if (m_adc_fifo_count == 0)
+		if (m_adc_fifo.count == 0)
 			m_adc_stream->update();
-		if (m_adc_fifo_count != 0)
-		{
-			m_adc_frame[0] = m_adc_fifo[m_adc_fifo_read][0];
-			m_adc_frame[1] = m_adc_fifo[m_adc_fifo_read][1];
-			m_adc_fifo_read = (m_adc_fifo_read + 1) % ADC_FIFO_FRAMES;
-			m_adc_fifo_count--;
-		}
+		m_adc_fifo.pop(m_adc_frame);
 	}
 
 	const int16_t sample = m_adc_frame[m_curr_adc & 1];
@@ -569,15 +674,36 @@ void hal2_device::update_input_gain()
 
 attotime hal2_device::get_rate(const uint32_t channel)
 {
-	if ((channel == m_codeca_channel || channel == (3 - m_codeca_channel)) && m_codeca_clock > 0 && m_codeca_channel_count > 0)
+	if (channel == m_codeca_channel && m_codeca_clock > 0 && m_codeca_channel_count > 0)
 		return m_bres_clock_rate[m_codeca_clock - 1] / m_codeca_channel_count;
-	if ((channel == m_codecb_channel || channel == (3 - m_codecb_channel)) && m_codecb_clock > 0 && m_codecb_channel_count > 0)
+	if (channel == m_codecb_channel && m_codecb_clock > 0 && m_codecb_channel_count > 0)
+		return m_bres_clock_rate[m_codecb_clock - 1] / m_codecb_channel_count;
+
+	// MAME_SGI_HAL2_AES: the transmitter runs from its Bresenham clock, the
+	// receiver from the received stream (no clock when not locked). Before
+	// this, the AES channels (2 and 3 under IRIX) ran at the codecs' rates
+	// through the codec pairing below.
+	if (m_aestx_ctrl && channel == aestx_channel())
+		return aestx_clock() > 0 ? m_bres_clock_rate[aestx_clock() - 1] / aestx_count() : attotime::zero;
+	if (m_aesrx_ctrl && channel == aesrx_channel())
+		return m_aes_rx_hz ? attotime::from_hz(m_aes_rx_hz) / 2 : attotime::zero;
+
+	if (channel == (3 - m_codeca_channel) && m_codeca_clock > 0 && m_codeca_channel_count > 0)
+		return m_bres_clock_rate[m_codeca_clock - 1] / m_codeca_channel_count;
+	if (channel == (3 - m_codecb_channel) && m_codecb_clock > 0 && m_codecb_channel_count > 0)
 		return m_bres_clock_rate[m_codecb_clock - 1] / m_codecb_channel_count;
 	return attotime::zero;
 }
 
 void hal2_device::dma_write(uint32_t channel, int16_t data)
 {
+	// MAME_SGI_HAL2_AES
+	if (m_aestx_ctrl && channel == aestx_channel() && channel != m_codeca_channel)
+	{
+		aes_tx_sample(data);
+		return;
+	}
+
 	if (channel >= 2)
 		return;
 
@@ -607,4 +733,247 @@ void hal2_device::device_add_mconfig(machine_config &config)
 	MICROPHONE(config, m_mic, 2).front();
 	m_mic->add_route(0, DEVICE_SELF, 1.0, 0);
 	m_mic->add_route(1, DEVICE_SELF, 1.0, 1);
+
+	// MAME_SGI_HAL2_AES: the AES/S/PDIF connector, used with the host
+	// connection setting; map them in the Audio Mixer
+	SPEAKER(config, "aes_out", 2).front();
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_aes_ldac, 0);
+	m_aes_ldac->add_route(ALL_OUTPUTS, "aes_out", 1.0, 0);
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_aes_rdac, 0);
+	m_aes_rdac->add_route(ALL_OUTPUTS, "aes_out", 1.0, 1);
+	MICROPHONE(config, m_aes_mic, 2).front();
+	m_aes_mic->add_route(0, DEVICE_SELF, 1.0, 2);
+	m_aes_mic->add_route(1, DEVICE_SELF, 1.0, 3);
+}
+
+// MAME_SGI_HAL2_AES: what is plugged into the AES connector
+INPUT_PORTS_START(hal2)
+	PORT_START("AES")
+	PORT_CONFNAME(0x03, 0x00, "AES Digital Audio Connection") PORT_CHANGED_MEMBER(DEVICE_SELF, FUNC(hal2_device::aes_connection_changed), 0)
+	PORT_CONFSETTING(0x00, "None")
+	PORT_CONFSETTING(0x01, "Loopback (AES out to AES in)")
+	PORT_CONFSETTING(0x02, "Host audio")
+INPUT_PORTS_END
+
+ioport_constructor hal2_device::device_input_ports() const
+{
+	return INPUT_PORTS_NAME(hal2);
+}
+
+INPUT_CHANGED_MEMBER(hal2_device::aes_connection_changed)
+{
+	update_aes_master();
+}
+
+unsigned hal2_device::aes_connection() const
+{
+	return m_aes_config->read() & 3;
+}
+
+// The received sample rate: what IRIX can lock to. Zero with nothing
+// connected or the receiver held in reset (CR1 RST clear); in loopback,
+// the transmitter's frame rate while its drivers are on (CR2 RST), unless
+// its own clock is the AES clock (no signal to recover); with the host
+// connection, 48 kHz.
+u32 hal2_device::aes_rx_hz() const
+{
+	if (m_absent || !BIT(m_aesrx_reg[2], 0))
+		return 0;
+	switch (aes_connection())
+	{
+	case AES_LOOPBACK:
+	{
+		const unsigned clock = aestx_clock();
+		if (!m_aestx_ctrl || !BIT(m_aestx_reg[2], 0) || clock == 0 || m_bres_clock_sel[clock - 1] == 2 || m_bres_clock_rate[clock - 1] == attotime::zero)
+			return 0;
+		return u32(m_bres_clock_rate[clock - 1].as_hz() + 0.5);
+	}
+	case AES_HOST:
+		return 48000;
+	default:
+		return 0;
+	}
+}
+
+// Recompute the received rate and the Bresenham clocks that use it. A
+// change of rate (or of lock) restarts the received stream.
+void hal2_device::update_aes_master()
+{
+	const u32 hz = aes_rx_hz();
+	if (hz != m_aes_rx_hz)
+	{
+		m_aes_rx_hz = hz;
+		m_aes_fifo.clear();
+		m_aes_rx_sync = true;
+	}
+	for (int clock_gen = 0; clock_gen < 3; clock_gen++)
+		if (m_bres_clock_sel[clock_gen] == 2)
+			update_clock_freq(clock_gen);
+}
+
+// one DAC write per transmitted frame, as for codec A
+void hal2_device::update_aes_tx_rate()
+{
+	u32 rate = 48000;
+	const unsigned clock = aestx_clock();
+	if (m_aestx_ctrl && clock > 0 && m_bres_clock_rate[clock - 1] != attotime::zero)
+		rate = u32(m_bres_clock_rate[clock - 1].as_hz() + 0.5);
+	if (rate < 1000)
+		rate = 48000;
+	m_aes_ldac->set_stream_sample_rate(rate);
+	m_aes_rdac->set_stream_sample_rate(rate);
+}
+
+// a transmitted sample: frames go to the receiver (loopback) or the host
+// (CS8401A CR2: RST clear turns the line drivers off, MUTE clear sends zeros)
+void hal2_device::aes_tx_sample(int16_t data)
+{
+	const unsigned count = aestx_count();
+	if (m_curr_aes_tx < 2)
+		m_aes_tx_frame[m_curr_aes_tx] = data;
+	if (count == 1)
+		m_aes_tx_frame[1] = data;
+	if (++m_curr_aes_tx < count)
+		return;
+	m_curr_aes_tx = 0;
+
+	if (!BIT(m_aestx_reg[2], 0))
+		return;
+	const bool mute = !BIT(m_aestx_reg[2], 1);
+	const int16_t l = mute ? 0 : m_aes_tx_frame[0];
+	const int16_t r = mute ? 0 : m_aes_tx_frame[1];
+	switch (aes_connection())
+	{
+	case AES_LOOPBACK:
+		if (m_aes_rx_hz)
+			m_aes_fifo.push(l, r);
+		break;
+	case AES_HOST:
+		m_aes_ldac->write(l);
+		m_aes_rdac->write(r);
+		break;
+	}
+}
+
+// a received sample, left then right. Loopback starts each run a fixed
+// number of frames behind the transmitter and sends zeros until then (and
+// after an underrun), so the received audio is the transmitted audio,
+// sample for sample.
+int16_t hal2_device::aes_rx_sample()
+{
+	if (m_curr_aes_rx == 0)
+	{
+		if (aes_connection() == AES_HOST)
+		{
+			if (m_aes_fifo.count == 0)
+				m_adc_stream->update();
+			m_aes_fifo.pop(m_aes_rx_frame);
+		}
+		else
+		{
+			if (m_aes_rx_sync && m_aes_fifo.count >= AES_LOOPBACK_LATENCY)
+			{
+				m_aes_fifo.trim(AES_LOOPBACK_LATENCY);
+				m_aes_rx_sync = false;
+			}
+			if (m_aes_rx_sync || !m_aes_fifo.pop(m_aes_rx_frame))
+			{
+				m_aes_rx_sync = true;
+				m_aes_rx_frame[0] = m_aes_rx_frame[1] = 0;
+			}
+		}
+	}
+	const int16_t sample = m_aes_rx_frame[m_curr_aes_rx & 1];
+	m_curr_aes_rx = (m_curr_aes_rx + 1) & 1;
+	return sample;
+}
+
+// The chips' registers are bytes; the PBUS channel puts them on data lines
+// 15..8 (IRIX's setting) or 7..0, so both halves carry the byte.
+uint16_t hal2_device::aes_r(offs_t offset, uint16_t mem_mask)
+{
+	if (m_absent || offset >= 0x40)
+		return m_aes_ram[offset & 0xff];
+	const uint8_t data = (offset < 0x20) ? aesrx_read(offset) : m_aestx_reg[offset & 0x1f];
+	return (uint16_t(data) << 8) | data;
+}
+
+void hal2_device::aes_w(offs_t offset, uint16_t data, uint16_t mem_mask)
+{
+	if (m_absent || offset >= 0x40)
+	{
+		COMBINE_DATA(&m_aes_ram[offset & 0xff]);
+		return;
+	}
+	const uint8_t byte = ACCESSING_BITS_8_15 ? uint8_t(data >> 8) : uint8_t(data);
+	if (offset < 0x20)
+		aesrx_write(offset, byte);
+	else
+		aestx_write(offset & 0x1f, byte);
+}
+
+// CS8411 receiver, buffer mode 0 (IRIX's): 0 status 1 / interrupt enable 1,
+// 1 status 2 / interrupt enable 2 (CR1 IER/SR selects), 2-3 control,
+// 4-7 user data, 8-31 the received channel status bytes 0-23.
+uint8_t hal2_device::aesrx_read(unsigned reg)
+{
+	const bool locked = m_aes_rx_hz != 0;
+	switch (reg)
+	{
+	case 0:
+		return BIT(m_aesrx_reg[2], 5) ? m_aesrx_ier[0] : 0x00;
+	case 1:
+	{
+		if (BIT(m_aesrx_reg[2], 5))
+			return m_aesrx_ier[1];
+		// bit 3 LOCK: set while the PLL is not locked. FREQ (bits 7..5) is
+		// only valid with the frequency comparator on (CR1 FCEN).
+		uint8_t sr2 = locked ? 0x00 : 0x08;
+		if (locked && BIT(m_aesrx_reg[2], 6))
+			sr2 |= (m_aes_rx_hz == 48000) ? 0x80 : (m_aes_rx_hz == 44100) ? 0xa0 : (m_aes_rx_hz == 32000) ? 0xe0 : 0x00;
+		return sr2;
+	}
+	case 2:
+	case 3:
+		return m_aesrx_reg[reg];
+	default:
+		if (!locked || reg < 8)
+			return 0x00;
+		if (aes_connection() == AES_LOOPBACK)
+			return m_aestx_reg[reg];   // the transmitted channel status
+		// host: consumer format, 48 kHz (byte 3 bits 3..0 = 2)
+		return (reg == 8 + 3) ? 0x02 : 0x00;
+	}
+}
+
+void hal2_device::aesrx_write(unsigned reg, uint8_t data)
+{
+	switch (reg)
+	{
+	case 0:
+	case 1:
+		if (BIT(m_aesrx_reg[2], 5))
+			m_aesrx_ier[reg] = data;
+		break;
+	case 2:
+		m_aesrx_reg[2] = data;
+		update_aes_master();
+		break;
+	case 3:
+		m_aesrx_reg[3] = data;
+		break;
+	default:   // the buffer is written by the receiver, not the host
+		break;
+	}
+}
+
+// CS8401A transmitter: 0 status (read only), 1-3 control, 4-7 user data,
+// 8-31 channel status bytes 0-23 (buffer mode 0).
+void hal2_device::aestx_write(unsigned reg, uint8_t data)
+{
+	if (reg == 0)
+		return;
+	m_aestx_reg[reg] = data;
+	if (reg == 2)
+		update_aes_master();
 }

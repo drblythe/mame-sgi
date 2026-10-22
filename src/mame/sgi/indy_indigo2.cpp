@@ -309,7 +309,8 @@ void ip24_state::pio0_map(address_map &map)
 
 void ip24_state::pio1_map(address_map &map)
 {
-	map(0x00, 0xff).ram(); // hack
+	// MAME_SGI_HAL2_AES: the AES receiver and transmitter chips
+	map(0x00, 0xff).rw(m_hal2, FUNC(hal2_device::aes_r), FUNC(hal2_device::aes_w));
 }
 
 void ip24_state::pio2_map(address_map &map)
