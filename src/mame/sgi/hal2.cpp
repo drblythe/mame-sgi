@@ -7,7 +7,15 @@
 **********************************************************************/
 
 #include "emu.h"
+
+// MAME_SGI_HAL2_INPUT_TEST_TONE: feed codec B (the ADC) a 1 kHz sine on the
+// left and 500 Hz on the right instead of the microphone, to check the
+// recording path end to end from IRIX. Off by default.
+// #define MAME_SGI_HAL2_INPUT_TEST_TONE
+
 #include "hal2.h"
+
+#include <cmath>
 
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_READS       (1U << 2)
@@ -21,8 +29,10 @@ DEFINE_DEVICE_TYPE(SGI_HAL2, hal2_device, "hal2", "SGI HAL2")
 
 hal2_device::hal2_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock)
 	: device_t(mconfig, SGI_HAL2, tag, owner, clock)
+	, device_sound_interface(mconfig, *this)
 	, m_ldac(*this, "ldac")
 	, m_rdac(*this, "rdac")
+	, m_mic(*this, "mic")
 {
 }
 
@@ -44,6 +54,16 @@ void hal2_device::device_start()
 	save_item(NAME(m_bres_clock_modctrl));
 	save_item(NAME(m_bres_clock_freq));
 	save_item(NAME(m_curr_dac));
+	save_item(NAME(m_curr_adc));
+	save_item(NAME(m_adc_frame));
+
+	// MAME_SGI_HAL2_AUDIO_INPUT: two inputs (microphone left/right) at the
+	// microphone's own rate, pulled by dma_read(). The rate never changes:
+	// sound_stream::set_sample_rate() on a stream with inputs left MAME's
+	// input resampler reading past its buffer (a crash when IRIX switched
+	// codec B to 44.1 kHz), so sound_stream_update() converts to codec B's
+	// rate itself.
+	m_adc_stream = stream_alloc(2, 0, SAMPLE_RATE_INPUT_ADAPTIVE);
 
 	// MAME_SGI_HAL2_BRES_POSTLOAD_FIX (permanent, no #ifdef - companion to
 	// MAME_SGI_PBUS_DMA_DEGENERATE_RATE_REARM_FIX in hpc3.cpp, same task
@@ -69,6 +89,8 @@ void hal2_device::postload()
 {
 	for (int clock_gen = 0; clock_gen < 3; clock_gen++)
 		update_clock_freq(clock_gen);
+	m_adc_fifo_read = 0;
+	m_adc_fifo_count = 0;
 }
 
 void hal2_device::device_reset()
@@ -93,7 +115,12 @@ void hal2_device::device_reset()
 		m_bres_clock_rate[i] = attotime::zero;
 	}
 	m_curr_dac = 0;
+	m_curr_adc = 0;
+	m_adc_frame[0] = m_adc_frame[1] = 0;
+	m_adc_fifo_read = 0;
+	m_adc_fifo_count = 0;
 	update_dac_rate();
+	update_adc_rate();
 }
 
 uint16_t hal2_device::read(offs_t offset)
@@ -212,6 +239,8 @@ void hal2_device::write(offs_t offset, uint16_t data)
 							m_codecb_channel = m_idr[0] & 3;
 							m_codecb_clock = (m_idr[0] >> 3) & 3;
 							m_codecb_channel_count = (m_idr[0] >> 8) & 3;
+							m_curr_adc = 0;
+							update_adc_rate();
 						}
 						break;
 					case 2:
@@ -371,6 +400,7 @@ void hal2_device::update_clock_freq(int clock_gen)
 			m_bres_clock_freq[clock_gen] = 0;
 			m_bres_clock_rate[clock_gen] = attotime::zero;
 			update_dac_rate();
+			update_adc_rate();
 			return;
 	}
 
@@ -386,6 +416,7 @@ void hal2_device::update_clock_freq(int clock_gen)
 	else
 		m_bres_clock_rate[clock_gen] = attotime::from_ticks(mod, m_bres_clock_freq[clock_gen] * m_bres_clock_inc[clock_gen]);
 	update_dac_rate();
+	update_adc_rate();
 }
 
 // HPC3 DMA writes each DAC once per codec A sample, so run the DAC streams
@@ -402,6 +433,95 @@ void hal2_device::update_dac_rate()
 		rate = 48000;
 	m_ldac->set_stream_sample_rate(rate);
 	m_rdac->set_stream_sample_rate(rate);
+}
+
+// MAME_SGI_HAL2_AUDIO_INPUT: run the microphone stream at codec B's sample
+// rate, so each receive DMA transfer takes one stream sample per channel.
+void hal2_device::update_adc_rate()
+{
+	u32 rate = 48000;
+	if (m_codecb_clock > 0 && m_bres_clock_rate[m_codecb_clock - 1] != attotime::zero)
+		rate = u32(m_bres_clock_rate[m_codecb_clock - 1].as_hz() + 0.5);
+	if (rate < 1000)
+		rate = 48000;
+	if (rate != m_adc_rate)
+	{
+		// audio converted at the old rate would play at the wrong speed
+		m_adc_rate = rate;
+		m_adc_fifo_read = 0;
+		m_adc_fifo_count = 0;
+	}
+}
+
+void hal2_device::sound_stream_update(sound_stream &stream)
+{
+	// one input sample advances the output position by this many codec B
+	// samples; linear interpolation between the previous and current input
+	if (stream.sample_rate() == 0)
+		return;
+	const double step = double(m_adc_rate) / double(stream.sample_rate());
+	for (int i = 0; i < stream.samples(); i++)
+	{
+		int16_t frame[2];
+#ifdef MAME_SGI_HAL2_INPUT_TEST_TONE
+		static constexpr double freq[2] = { 1000.0, 500.0 };
+		for (int ch = 0; ch < 2; ch++)
+		{
+			frame[ch] = int16_t(std::clamp<double>(std::lround(16384.0 * std::sin(m_tone_phase[ch])), -32768.0, 32767.0));
+			m_tone_phase[ch] = std::fmod(m_tone_phase[ch] + 2.0 * M_PI * freq[ch] / stream.sample_rate(), 2.0 * M_PI);
+		}
+#else
+		for (int ch = 0; ch < 2; ch++)
+			frame[ch] = int16_t(std::clamp<double>(std::lround(stream.get(ch, i) * 32767.0), -32768.0, 32767.0));
+#endif
+		while (m_adc_pos < 1.0)
+		{
+			int16_t out[2];
+			for (int ch = 0; ch < 2; ch++)
+				out[ch] = int16_t(std::lround(m_adc_prev[ch] + (frame[ch] - m_adc_prev[ch]) * m_adc_pos));
+			// keep the newest audio: drop the oldest frame when the FIFO is full
+			if (m_adc_fifo_count == ADC_FIFO_FRAMES)
+			{
+				m_adc_fifo_read = (m_adc_fifo_read + 1) % ADC_FIFO_FRAMES;
+				m_adc_fifo_count--;
+			}
+			const unsigned write = (m_adc_fifo_read + m_adc_fifo_count) % ADC_FIFO_FRAMES;
+			m_adc_fifo[write][0] = out[0];
+			m_adc_fifo[write][1] = out[1];
+			m_adc_fifo_count++;
+			m_adc_pos += 1.0 / step;
+		}
+		m_adc_pos -= 1.0;
+		m_adc_prev[0] = frame[0];
+		m_adc_prev[1] = frame[1];
+	}
+}
+
+// MAME_SGI_HAL2_AUDIO_INPUT: one 16-bit sample per receive DMA transfer,
+// left then right in stereo. An empty FIFO repeats the last frame.
+int16_t hal2_device::dma_read(uint32_t channel)
+{
+	if (channel != m_codecb_channel && channel != (3 - m_codecb_channel))
+		return 0;
+
+	if (m_curr_adc == 0)
+	{
+		if (m_adc_fifo_count == 0)
+			m_adc_stream->update();
+		if (m_adc_fifo_count != 0)
+		{
+			m_adc_frame[0] = m_adc_fifo[m_adc_fifo_read][0];
+			m_adc_frame[1] = m_adc_fifo[m_adc_fifo_read][1];
+			m_adc_fifo_read = (m_adc_fifo_read + 1) % ADC_FIFO_FRAMES;
+			m_adc_fifo_count--;
+		}
+	}
+
+	const int16_t sample = m_adc_frame[m_curr_adc & 1];
+	m_curr_adc++;
+	if (m_curr_adc >= std::max<uint16_t>(m_codecb_channel_count, 1))
+		m_curr_adc = 0;
+	return sample;
 }
 
 attotime hal2_device::get_rate(const uint32_t channel)
@@ -437,4 +557,9 @@ void hal2_device::device_add_mconfig(machine_config &config)
 
 	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_rdac, 0);
 	m_rdac->add_route(ALL_OUTPUTS, "speaker", 0.25, 1);
+
+	// MAME_SGI_HAL2_AUDIO_INPUT: the AD1843's stereo line/microphone input
+	MICROPHONE(config, m_mic, 2).front();
+	m_mic->add_route(0, DEVICE_SELF, 1.0, 0);
+	m_mic->add_route(1, DEVICE_SELF, 1.0, 1);
 }

@@ -264,8 +264,20 @@ TIMER_CALLBACK_MEMBER(hpc3_device::do_pbus_dma)
 		// put the sample's high byte on top and its sign extension in the low
 		// byte, losing the low 8 bits. Config bit 19 ("even address bytes on
 		// 15..8") selects the other byte lane; IRIX leaves it clear.
-		const uint16_t lane = uint16_t(m_gio64_space->read_dword(dma.m_cur_ptr) >> 8);
-		m_hal2->dma_write(channel, int16_t(BIT(dma.m_config, 19) ? swapendian_int16(lane) : lane));
+		if (dma.m_control & PBUS_CTRL_RECV)
+		{
+			// MAME_SGI_HAL2_AUDIO_INPUT: receive (recording) DMA. The word is
+			// sign-extended from bit 23, as software reads it as a signed int
+			// (24-bit samples, SGI's HAL2 tests' buf[i] >> 8)
+			const uint16_t sample = uint16_t(m_hal2->dma_read(channel));
+			const uint16_t lane = BIT(dma.m_config, 19) ? swapendian_int16(sample) : sample;
+			m_gio64_space->write_dword(dma.m_cur_ptr, uint32_t(int32_t(int16_t(lane)) * 256));
+		}
+		else
+		{
+			const uint16_t lane = uint16_t(m_gio64_space->read_dword(dma.m_cur_ptr) >> 8);
+			m_hal2->dma_write(channel, int16_t(BIT(dma.m_config, 19) ? swapendian_int16(lane) : lane));
+		}
 
 		dma.m_cur_ptr += 4;
 		dma.m_bytes_left -= 4;
@@ -945,6 +957,7 @@ void hpc3_device::pbusdma_w(address_space &space, offs_t offset, uint32_t data, 
 		break;
 	case 0x1000/4:
 		LOGMASKED(LOG_PBUS_DMA, "%s: PBUS DMA Channel %d Control Register Write: %08x\n", machine().describe_context(), channel, data);
+		dma.m_control = data;   // MAME_SGI_HAL2_AUDIO_INPUT: direction for do_pbus_dma()
 		if (data & PBUS_CTRL_ENDIAN)
 			LOGMASKED(LOG_PBUS_DMA, "    Little Endian\n");
 		else
