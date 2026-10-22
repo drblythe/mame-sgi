@@ -1,5 +1,9 @@
 # MAME
 
+> **This is a fork for SGI Indy and Challenge S emulation.** See
+> [README-SGI.md](README-SGI.md) for what it changes and how to build it.
+> The rest of this file is upstream MAME's README.
+
 ## What is MAME?
 
 MAME is a multi-purpose emulation framework.

@@ -1,0 +1,169 @@
+# SGI Indy and Challenge S: a fork of MAME 0.289
+
+This is a fork of [MAME](https://github.com/mamedev/mame) 0.289 that makes
+the SGI Indy and Challenge S (IP24) run IRIX 6.5 well enough for daily use:
+boot to the desktop, run the window system, OpenGL and IRIS GL programs,
+networking, audio, SCSI disks, CD-ROMs and DAT tape, and save and restore
+state. On a modern x86-64 Linux host an Indy boots IRIX to the login prompt
+in about a minute.
+
+It has been tested with many IRIS GL and OpenGL test and demo programs, and
+many emulation bugs found that way are fixed: in the SGI drivers and in code
+they share with the rest of MAME (the MIPS III recompiler, the x64 and C
+recompiler back ends, the scheduler, SCSI, serial and keyboard controllers,
+SDL input). There are also speedups and a few new devices and options. Each
+change is a separate commit on top of the `mame0289` release tag.
+
+The debugging, fixes and performance work were done with heavy assistance
+from Anthropic's Claude (Claude Code, with the Claude Sonnet 5 and Claude
+Opus 5.5 models); commits carry a `Co-Authored-By` line naming the model
+that worked on them.
+
+The tree builds two ways:
+
+- **Full MAME** (every driver), as upstream. SGI-specific behaviour is
+  switched on per device by the SGI drivers only, so other drivers keep
+  upstream behaviour. `mame -validate` passes.
+- **`mamesgi`**, a reduced build with only the SGI machines
+  (`SUBTARGET=sgi`), much faster to compile.
+
+## Machines
+
+| Name | Machine |
+|---|---|
+| `indy_4610` | Indy, R4600 100 MHz |
+| `indy_4613` | Indy, R4600 133 MHz |
+| `indy_5015` | Indy, R5000 150 MHz |
+| `challenge_s` | Challenge S, R5000SC 180 MHz (new; no graphics, serial console) |
+
+The Indy with IRIX 6.5 is what is tested most.
+
+## What you need
+
+Not included, and not available from this project:
+
+- **ROM sets.** For example `indy_4610.zip`, containing
+  `ip24prom.070-9101-011.bin` and the keyboard controller ROM
+  `72x8455.zm82`. Put the zip in a `roms` directory below the directory
+  you run MAME from, or point `-rompath` at it.
+- **IRIX.** An IRIX 6.5 installation on a hard disk image (CHD), made from
+  your own install media, or the prebuilt IRIX 6.5 CHD described in
+  [this IRIXNet forum thread](https://forums.irixnet.org/thread-4081.html),
+  which is what this fork was developed and tested with.
+
+[sgi.neocities.org](https://sgi.neocities.org/) is a general guide to
+running the SGI machines in MAME, including how to make a CHD and install
+IRIX on it.
+
+## Building
+
+The usual MAME build instructions apply (see the
+[MAME documentation](https://docs.mamedev.org/initialsetup/compilingmame.html)).
+This fork adds a reduced target for just the SGI machines:
+
+```sh
+make SUBTARGET=sgi -j$(nproc)          # mamesgi
+make -j$(nproc)                        # full MAME, as upstream
+```
+
+The two builds compile some shared files differently, so to keep both in
+one tree give the full build its own directory:
+`make BUILDDIR=build-full -j$(nproc)`.
+
+Built and tested with:
+
+| Host | Toolchain | Tested on |
+|---|---|---|
+| Linux x86-64 | GCC 11 | Linux x86-64 (main development platform) |
+| Linux x86-64, cross | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) 20260616 (LLVM 22), MAME's `windows_x64_clang` target | Windows 7 (SDL front end) |
+| Linux x86-64, cross | Clang 22 with a Debian bookworm arm64 sysroot, `TARGETOS=linux PLATFORM=arm64` | Raspberry Pi 3, 64-bit Raspberry Pi OS |
+
+LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
+
+## Running
+
+```sh
+./mamesgi indy_4610 -hard1 irix.chd -window -mouse -nofilter -resolution 1280x1024
+```
+
+- `-hard1` is the boot disk (SCSI ID 1); `-hard2` to `-hard7` are further
+  disks at those SCSI IDs.
+- The Indy keyboard takes all keys. Scroll Lock toggles MAME's own hotkeys
+  (Tab for the menu, F6/F7 to save/load state, Esc to quit). While they are
+  on, the keys also reach the emulated keyboard.
+- On a monitor the same size as the emulated screen, `-nowindow` (full
+  screen) is more practical than a window.
+
+Options and settings added by this fork:
+
+| Option or setting | What it does |
+|---|---|
+| `-drc_cache_mb N` | MIPS recompiler code cache size (the SGI machines default to 128 MB) |
+| Machine Configuration → RAM bank A/B | Each bank holds four SIMMs of 1, 2, 4, 8, 16 or 32 MB (4 to 128 MB per bank), so up to 256 MB; 128 MB by default. Change it before a cold boot |
+| Machine Configuration → Ethernet Link Speed | 10 Mbit/s or Unlimited |
+| `-sdl_input_buffer 0/1` | Buffer SDL key and mouse-button events so short presses during a host stall aren't lost (default 1) |
+| `-mouse_capture_focus 0/1` | With `-mouse`, capture the pointer while the window has focus instead of while the pointer is over it (default 1). Hover capture grabs and releases on every enter/leave, and dragging windows in IRIX caused bursts of those that left keyboard and mouse input dead until the next Alt-Tab. Part of the SDL front end on every platform; the problem and the fix were seen on X11 |
+| Machine Configuration → AES Digital Audio Connection | What is plugged into the AES/S/PDIF connector: None (default), Loopback (AES out to AES in), or Host audio, where AES out and in appear in the Audio Mixer to map to host devices such as an S/PDIF port (PCM audio; the mixer is not bit-transparent, so compressed pass-through formats don't survive) |
+| Negative `-str` | Skip the startup info screens without a time limit |
+
+New devices: an HLE PS/2 keyboard (the Indy default); a flat SGI SCSI
+controller with embedded disks (`nwd33c9x`), which reads the disk about 16
+times faster in real time than MAME's stock SCSI emulation (50 MB/s against
+3 MB/s reading the raw disk in IRIX, where the stock path also slows the
+whole emulation down); and a DDS DAT tape drive on SIMH `.tap` images
+(`-nwd33c9x:auxbus:7 tape -tape FILE.tap`).
+
+On the Indy, `-wavwrite` records four channels: the analog output (left,
+right), then the AES digital output (left, right).
+
+Networking uses MAME's TAP interface: a `tap` device on Linux, the
+TAP-Windows adapter on Windows. Pick it under Network Devices in the menu.
+
+## Performance
+
+Approximate gains, as measured in this project. Stock 0.289 can't be used
+as the baseline for most rows: on the test disk image it crashes in the MIPS
+recompiler during IRIX's first-boot kernel relink, and its serial console
+drops characters, so "before" is usually the fork without that change, which
+behaves like stock in that area.
+
+| Area | Before | After | Before is |
+|---|---|---|---|
+| Booting IRIX 6.5 to the login prompt | crashes in the recompiler | about 1 minute (modern x86-64 Linux host) | stock 0.289 |
+| Disk reads (raw, 197 MB) | 3.1 MB/s real time (7.8 MB/s guest time) | 50 MB/s | MAME's stock SCSI path |
+| Ethernet, 10 Mbit link (default) | transmit unpaced, receive ~1.2-1.4 MB/s, lost frames and Ethernet memory corruption (boot panics) | ~1.2 MB/s each way, like real hardware | stock behaviour |
+| Ethernet, Unlimited setting | not available | TCP ~8 MB/s out, ~10 MB/s in; UDP ~9.6 MB/s out with no loss | new |
+| Recompiles of user code per boot | 321-351 k | 235 k; host instructions -20 %, cycles -18 % | stock MIPS3 recompiler |
+| Recompiles avoided by redispatch (TLB-mismatch and missing-code handlers) | 0 % | ~50-56 % of arrivals | stock |
+| Recompiler code generation cost | | boot host instructions -19 % (cache-line size read once, label map, RECOVER memo) | stock |
+| Main memory access | | boot instructions -9.8 %, cycles -6 % (direct RAM path) | stock |
+| FPU and exception paths | | boot cycles -18.5 %, branch misses -59 % | stock |
+| Recompiler hash tables | 48.5 MB | 25.5 MB | stock |
+| Host CPU at the idle desktop | 0.52 cores | ~0.07 cores | earlier fork, measured step by step (idle loop, HLE keyboard, keyboard controller, dirty-rectangle GL upload) |
+| Audio | 8-bit playback precision, no recording, no digital audio | 16-bit playback, stereo recording, AES digital in/out | stock |
+
+The percentages are each change on its own, measured with hardware counters
+over a boot; they don't add up to a single figure.
+
+## Status
+
+- The SDL Windows build runs on Windows 7 with the Universal C Runtime;
+  the native Windows front end needs Windows 10.
+- On AArch64 the recompiler works but a Raspberry Pi 3 runs at about 40 %
+  of real speed.
+- Diagnostics used during development remain in the code as `MAME_SGI_*`
+  macros, all off by default.
+
+## Contact
+
+Questions and bug reports: open an issue on this repository. Problems that
+also happen in upstream MAME belong at [MAME Testers](https://mametesters.org/).
+
+## License
+
+Same as MAME: the project as a whole is GPL-2.0-or-later, and individual
+files carry their own (mostly BSD-3-Clause) license. See [COPYING](COPYING)
+and [docs/legal](docs/legal).
+
+MAME is a registered trademark of Gregory Ember. This is an unofficial fork,
+not endorsed by the MAME team.
