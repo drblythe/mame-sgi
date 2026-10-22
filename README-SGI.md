@@ -1,7 +1,7 @@
 # SGI Indy and Challenge S: a fork of MAME 0.289
 
 This is a fork of [MAME](https://github.com/mamedev/mame) 0.289 that makes
-the SGI Indy and Challenge S (IP24) run IRIX 6.5 well enough for daily use:
+the SGI Indy and Challenge S (IP24) run IRIX 6.5 well enough for regular use:
 boot to the desktop, run the window system, OpenGL and IRIS GL programs,
 networking, audio, SCSI disks, CD-ROMs and DAT tape, and save and restore
 state. On a modern x86-64 Linux host an Indy boots IRIX to the login prompt
@@ -104,7 +104,6 @@ Options and settings added by this fork:
 | `-sdl_input_buffer 0/1` | Buffer SDL key and mouse-button events so short presses during a host stall aren't lost (default 1) |
 | `-mouse_capture_focus 0/1` | With `-mouse`, capture the pointer while the window has focus instead of while the pointer is over it (default 1). Hover capture grabs and releases on every enter/leave, and dragging windows in IRIX caused bursts of those that left keyboard and mouse input dead until the next Alt-Tab. Part of the SDL front end on every platform; the problem and the fix were seen on X11 |
 | Machine Configuration → AES Digital Audio Connection | What is plugged into the AES/S/PDIF connector: None (default), Loopback (AES out to AES in), or Host audio, where AES out and in appear in the Audio Mixer to map to host devices such as an S/PDIF port (PCM audio; the mixer is not bit-transparent, so compressed pass-through formats don't survive) |
-| Negative `-str` | Skip the startup info screens without a time limit |
 
 New devices: an HLE PS/2 keyboard (the Indy default); a flat SGI SCSI
 controller with embedded disks (`nwd33c9x`), which reads the disk about 16
@@ -118,6 +117,31 @@ right), then the AES digital output (left, right).
 
 Networking uses MAME's TAP interface: a `tap` device on Linux, the
 TAP-Windows adapter on Windows. Pick it under Network Devices in the menu.
+
+### Challenge S console
+
+The Challenge S has no graphics board or keyboard: its console is serial
+port 1, MAME's `ioc2:rs232b` slot, at 9600 baud. Its default NVRAM already
+selects that console, so it boots straight to it; what is needed is
+something on the other end of the port. For example, a TCP socket to a
+terminal program, started before MAME:
+
+```sh
+socat -,raw,echo=0 TCP-LISTEN:2323,reuseaddr      # in another terminal
+./mamesgi challenge_s -hard1 irix.chd -ioc2:rs232b null_modem -bitb socket.127.0.0.1:2323
+```
+
+Once IRIX is up you can also log in over the network.
+
+### Save states
+
+Save states work: F6 saves (pick a slot), F7 loads, and `-state SLOT` on
+the command line starts from one. A state holds the machine, not the disk:
+IRIX keeps writing to the CHD after the save, and loading the state over a
+disk that has moved on corrupts the filesystem. Keep the disk with the
+state: save, quit MAME, copy the CHD, and resume later from that copy
+(`-hard1 copy.chd -state 1`). States may not load after updating the
+fork.
 
 ## Performance
 
