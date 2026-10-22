@@ -360,6 +360,8 @@ private:
 	uint32_t m_status;
 	uint32_t m_revision;
 	uint16_t m_palette_idx;
+	uint8_t m_command = 0;        // MAME_SGI_CMAP_READS: register 3, read back
+	uint32_t m_color_buffer = 0;  // MAME_SGI_CMAP_READS: last colour written (register 5)
 	uint32_t m_palette[0x10000];
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 	uint32_t m_dirty_lo = 0;

@@ -532,12 +532,16 @@ void cmap_device::device_start()
 	save_item(NAME(m_revision));
 	save_item(NAME(m_palette_idx));
 	save_item(NAME(m_palette));
+	save_item(NAME(m_command));
+	save_item(NAME(m_color_buffer));
 }
 
 void cmap_device::device_reset()
 {
 	m_status = 8;
 	m_palette_idx = 0;
+	m_command = 0;
+	m_color_buffer = 0;
 	std::fill(std::begin(m_palette), std::end(m_palette), 0);
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 	m_dirty_lo = 0;
@@ -579,6 +583,7 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 			fprintf(stderr, "CMAP_TRACE %s idx=%04x data=%06x\n", tag(), m_palette_idx, (data >> 8) & 0xffffff);
 #endif
 		m_palette[m_palette_idx] = data >> 8;
+		m_color_buffer = data >> 8;
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 		m_dirty_lo = std::min<uint32_t>(m_dirty_lo, m_palette_idx);
 		m_dirty_hi = std::max<uint32_t>(m_dirty_hi, m_palette_idx);
@@ -592,7 +597,17 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		// DirectColor maps (RGB Map1) that way
 		m_palette_idx++;
 		break;
+	case 0x01:
+		// MAME_SGI_CMAP_READS: address register high (5 bits of the 13-bit
+		// address); register 0 takes the whole address in one transfer
+		m_palette_idx = (m_palette_idx & 0x00ff) | ((data & 0x1f) << 8);
+		break;
+	case 0x07:
+		// MAME_SGI_CMAP_READS: initialise a colour palette read; nothing to
+		// set up, since reads come straight from the palette
+		break;
 	case 0x03:
+		m_command = uint8_t(data);
 		// Command register. The guest writes 7 before and 3 after each
 		// palette write (bit 2 disables CBLANK while the palette is
 		// written) and 3 also sets the palette FIFO to trip at half full.
@@ -608,10 +623,31 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 	}
 }
 
+// MAME_SGI_CMAP_READS: the reads of the MS622424 truth table. A palette
+// read returns the whole entry in one transfer, laid out like a palette
+// write (red in bits 31..24), and steps the address like the write does.
 uint32_t cmap_device::read(uint32_t offset)
 {
 	switch (offset)
 	{
+	case 0x00:
+		return m_palette_idx;
+	case 0x01:
+		return (m_palette_idx >> 8) & 0x1f;
+	case 0x02:
+	{
+		const uint32_t entry = m_palette[m_palette_idx];
+		if (!machine().side_effects_disabled())
+			m_palette_idx++;
+		return entry << 8;
+	}
+	case 0x03:
+		return m_command;
+	case 0x05:
+		return m_color_buffer << 8;
+	case 0x07:
+		// terminate a colour palette read
+		return 0;
 	case 0x04:
 		LOGMASKED(LOG_CMAP, "Status Read: %08x\n", m_status);
 		return m_status;
