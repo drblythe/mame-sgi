@@ -933,8 +933,8 @@ ROM_END
 
 
 //    YEAR  NAME          PARENT     COMPAT  MACHINE       INPUT CLASS       INIT        COMPANY                 FULLNAME                   FLAGS
-COMP( 1993, indy_4610,    0,         0,      indy_4610,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 100MHz)",    0 )
-COMP( 1993, indy_4613,    indy_4610, 0,      indy_4613,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 133MHz)",    0 )
-COMP( 1996, indy_5015,    indy_4610, 0,      indy_5015,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R5000, 150MHz)",    0 )
-COMP( 1996, challenge_s,  indy_4610, 0,      challenge_s,  ip24, ip24_state, init_challenge_s, "Silicon Graphics Inc", "Challenge S (R5000SC, 180MHz)", MACHINE_NO_SOUND_HW )
+COMP( 1993, indy_4610,    0,         0,      indy_4610,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 100MHz)",    MACHINE_SUPPORTS_SAVE )
+COMP( 1993, indy_4613,    indy_4610, 0,      indy_4613,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R4600, 133MHz)",    MACHINE_SUPPORTS_SAVE )
+COMP( 1996, indy_5015,    indy_4610, 0,      indy_5015,    ip24, ip24_state, empty_init, "Silicon Graphics Inc", "Indy (R5000, 150MHz)",    MACHINE_SUPPORTS_SAVE )
+COMP( 1996, challenge_s,  indy_4610, 0,      challenge_s,  ip24, ip24_state, init_challenge_s, "Silicon Graphics Inc", "Challenge S (R5000SC, 180MHz)", MACHINE_NO_SOUND_HW | MACHINE_SUPPORTS_SAVE )
 COMP( 1993, indigo2_4415, 0,         0,      indigo2_4415, ip24, ip22_state, empty_init, "Silicon Graphics Inc", "Indigo2 (R4400, 150MHz)", MACHINE_NOT_WORKING )

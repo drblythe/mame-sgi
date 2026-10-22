@@ -143,6 +143,12 @@ state: save, quit MAME, copy the CHD, and resume later from that copy
 (`-hard1 copy.chd -state 1`). States may not load after updating the
 fork.
 
+With `-autosave`, MAME saves the machine when you quit and loads it again
+the next time you start that machine without `-state`, so IRIX carries on
+where it was. The saved state belongs to the machine, not the disk: it is
+only safe if the disk isn't used in between (not booted without
+`-autosave`, not swapped for another image or an older copy).
+
 ## Performance
 
 Approximate gains, as measured in this project. Stock 0.289 can't be used
