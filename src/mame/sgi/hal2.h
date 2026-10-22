@@ -33,8 +33,10 @@ public:
 
 	attotime get_rate(const uint32_t channel);
 
-	void set_right_volume(uint8_t vol) { m_rdac->set_output_gain(ALL_OUTPUTS, vol / 255.0f); }
-	void set_left_volume(uint8_t vol) { m_ldac->set_output_gain(ALL_OUTPUTS, vol / 255.0f); }
+	// headphone/speaker volume register: linear, IRIX shows 20*log10(vol) dB
+	// (64 = its default, 255 = full scale)
+	void set_right_volume(uint8_t vol) { m_volume[1] = vol; update_output_gain(); }
+	void set_left_volume(uint8_t vol) { m_volume[0] = vol; update_output_gain(); }
 
 	void dma_write(uint32_t channel, int16_t data);
 	// MAME_SGI_HAL2_AUDIO_INPUT: next codec B (ADC) sample for a receive DMA
@@ -50,6 +52,8 @@ protected:
 	void update_clock_freq(int clock_gen);
 	void update_dac_rate();
 	void update_adc_rate();
+	void update_output_gain();   // MAME_SGI_HAL2_CODEC_GAINS
+	void update_input_gain();    // MAME_SGI_HAL2_CODEC_GAINS
 	void postload();  // MAME_SGI_HAL2_BRES_POSTLOAD_FIX - see device_start()'s comment
 
 	enum
@@ -115,11 +119,13 @@ protected:
 	uint16_t m_idr[4]{};
 
 	uint16_t m_codeca_ctrl[2]{};
+	uint16_t m_codeca_ctrl2_hi = 0;   // MAME_SGI_HAL2_CODEC_GAINS: control 2 second word (D/A attenuation)
 	uint16_t m_codeca_channel = 0;
 	uint16_t m_codeca_clock = 0;
 	uint16_t m_codeca_channel_count = 0;
 
 	uint16_t m_codecb_ctrl[2]{};
+	uint16_t m_codecb_ctrl2_hi = 0;
 	uint16_t m_codecb_channel = 0;
 	uint16_t m_codecb_clock = 0;
 	uint16_t m_codecb_channel_count = 0;
@@ -131,6 +137,10 @@ protected:
 	attotime m_bres_clock_rate[3]{};
 
 	uint16_t m_curr_dac = 0;
+
+	// MAME_SGI_HAL2_CODEC_GAINS
+	uint8_t m_volume[2] = { 255, 255 };
+	double m_adc_gain[2] = { 1.0, 1.0 };
 
 	static const uint32_t s_channel_pair[4];
 	bool m_absent = false;

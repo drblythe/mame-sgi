@@ -55,6 +55,9 @@ void hal2_device::device_start()
 	save_item(NAME(m_bres_clock_freq));
 	save_item(NAME(m_curr_dac));
 	save_item(NAME(m_curr_adc));
+	save_item(NAME(m_codeca_ctrl2_hi));
+	save_item(NAME(m_codecb_ctrl2_hi));
+	save_item(NAME(m_volume));
 	save_item(NAME(m_adc_frame));
 
 	// MAME_SGI_HAL2_AUDIO_INPUT: two inputs (microphone left/right) at the
@@ -91,6 +94,8 @@ void hal2_device::postload()
 		update_clock_freq(clock_gen);
 	m_adc_fifo_read = 0;
 	m_adc_fifo_count = 0;
+	update_output_gain();
+	update_input_gain();
 }
 
 void hal2_device::device_reset()
@@ -99,10 +104,12 @@ void hal2_device::device_reset()
 	m_iar = 0;
 	memset(m_idr, 0, sizeof(uint16_t) * 4);
 	memset(m_codeca_ctrl, 0, sizeof(uint16_t) * 2);
+	m_codeca_ctrl2_hi = 0;
 	m_codeca_channel = 0;
 	m_codeca_clock = 0;
 	m_codeca_channel_count = 0;
 	memset(m_codecb_ctrl, 0, sizeof(uint16_t) * 2);
+	m_codecb_ctrl2_hi = 0;
 	m_codecb_channel = 0;
 	m_codecb_clock = 0;
 	m_codecb_channel_count = 0;
@@ -121,6 +128,8 @@ void hal2_device::device_reset()
 	m_adc_fifo_count = 0;
 	update_dac_rate();
 	update_adc_rate();
+	update_output_gain();
+	update_input_gain();
 }
 
 uint16_t hal2_device::read(offs_t offset)
@@ -209,10 +218,13 @@ void hal2_device::write(offs_t offset, uint16_t data)
 						if (data & IAR_ACCESS_SEL)
 						{
 							m_idr[0] = m_codeca_ctrl[1];
+							m_idr[1] = m_codeca_ctrl2_hi;
 						}
 						else
 						{
 							m_codeca_ctrl[1] = m_idr[0];
+							m_codeca_ctrl2_hi = m_idr[1];
+							update_output_gain();
 						}
 						break;
 					default:
@@ -248,10 +260,13 @@ void hal2_device::write(offs_t offset, uint16_t data)
 						if (data & IAR_ACCESS_SEL)
 						{
 							m_idr[0] = m_codecb_ctrl[1];
+							m_idr[1] = m_codecb_ctrl2_hi;
 						}
 						else
 						{
 							m_codecb_ctrl[1] = m_idr[0];
+							m_codecb_ctrl2_hi = m_idr[1];
+							update_input_gain();
 						}
 						break;
 					default:
@@ -467,12 +482,12 @@ void hal2_device::sound_stream_update(sound_stream &stream)
 		static constexpr double freq[2] = { 1000.0, 500.0 };
 		for (int ch = 0; ch < 2; ch++)
 		{
-			frame[ch] = int16_t(std::clamp<double>(std::lround(16384.0 * std::sin(m_tone_phase[ch])), -32768.0, 32767.0));
+			frame[ch] = int16_t(std::clamp<double>(std::lround(16384.0 * m_adc_gain[ch] * std::sin(m_tone_phase[ch])), -32768.0, 32767.0));
 			m_tone_phase[ch] = std::fmod(m_tone_phase[ch] + 2.0 * M_PI * freq[ch] / stream.sample_rate(), 2.0 * M_PI);
 		}
 #else
 		for (int ch = 0; ch < 2; ch++)
-			frame[ch] = int16_t(std::clamp<double>(std::lround(stream.get(ch, i) * 32767.0), -32768.0, 32767.0));
+			frame[ch] = int16_t(std::clamp<double>(std::lround(stream.get(ch, i) * m_adc_gain[ch] * 32767.0), -32768.0, 32767.0));
 #endif
 		while (m_adc_pos < 1.0)
 		{
@@ -524,6 +539,34 @@ int16_t hal2_device::dma_read(uint32_t channel)
 	return sample;
 }
 
+// MAME_SGI_HAL2_CODEC_GAINS: codec control 2, as SGI's HAL2 tests set it up:
+// first word bit 10 mute, bits 9..8 input source, bits 7..4 / 3..0 left /
+// right A/D gain in 1.5 dB steps; second word bits 11..7 / 6..2 left / right
+// D/A attenuation (1.5 dB steps). Codec A drives the DACs, codec B the ADCs.
+void hal2_device::update_output_gain()
+{
+	const bool mute = BIT(m_codeca_ctrl[1], 10);
+	const unsigned atten[2] = { unsigned(BIT(m_codeca_ctrl2_hi, 7, 5)), unsigned(BIT(m_codeca_ctrl2_hi, 2, 5)) };
+	for (int ch = 0; ch < 2; ch++)
+	{
+		const double gain = mute ? 0.0 : (m_volume[ch] / 255.0) * std::pow(10.0, -1.5 * atten[ch] / 20.0);
+		(ch ? m_rdac : m_ldac)->set_output_gain(ALL_OUTPUTS, gain);
+	}
+}
+
+// The host input is already at a normal digital level, so each source's
+// usual IRIX setting is taken as unity: line in (source 0) at 0 dB, the
+// microphone (source 3, which needs a preamp on real hardware) at IRIX's
+// default 15 dB. Other settings scale relative to that.
+void hal2_device::update_input_gain()
+{
+	const bool mute = BIT(m_codecb_ctrl[1], 10);
+	const double unity_db = (BIT(m_codecb_ctrl[1], 8, 2) == 3) ? 15.0 : 0.0;
+	const unsigned steps[2] = { unsigned(BIT(m_codecb_ctrl[1], 4, 4)), unsigned(BIT(m_codecb_ctrl[1], 0, 4)) };
+	for (int ch = 0; ch < 2; ch++)
+		m_adc_gain[ch] = mute ? 0.0 : std::pow(10.0, (1.5 * steps[ch] - unity_db) / 20.0);
+}
+
 attotime hal2_device::get_rate(const uint32_t channel)
 {
 	if ((channel == m_codeca_channel || channel == (3 - m_codeca_channel)) && m_codeca_clock > 0 && m_codeca_channel_count > 0)
@@ -553,10 +596,12 @@ void hal2_device::device_add_mconfig(machine_config &config)
 	SPEAKER(config, "speaker", 2).front();
 
 	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_ldac, 0);
-	m_ldac->add_route(ALL_OUTPUTS, "speaker", 0.25, 0);
+	// MAME_SGI_HAL2_CODEC_GAINS: unity, so IRIX's full speaker volume is
+	// digital full scale (it was 0.25, 12 dB below that)
+	m_ldac->add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
 
 	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_rdac, 0);
-	m_rdac->add_route(ALL_OUTPUTS, "speaker", 0.25, 1);
+	m_rdac->add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
 
 	// MAME_SGI_HAL2_AUDIO_INPUT: the AD1843's stereo line/microphone input
 	MICROPHONE(config, m_mic, 2).front();
