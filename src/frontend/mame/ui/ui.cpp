@@ -661,14 +661,7 @@ void mame_ui_manager::display_startup_screens(bool first_time)
 
 	// disable everything if we are using -str for 300 or fewer seconds, or if we're the empty driver,
 	// or if we are debugging, or if there's no mame window to send inputs to
-	// MAME_SGI_STARTUP_SCREENS_NEGATIVE_STR_FIX (permanent, no #ifdef):
-	// a negative -str also disables these screens, but
-	// - unlike the positive 0<str<300 case above - does NOT cap runtime at
-	// all (see video.cpp's matching m_seconds_to_run>0 guard) - lets an
-	// unattended launch skip the "press any key"/warnings screens for a
-	// real, long-running session without the previous choice of either
-	// sitting on those screens forever or accepting a hard N-second exit
-	if (!first_time || (str > 0 && str < 60*5) || str < 0 || &machine().system() == &GAME_NAME(___empty) || (machine().debug_flags & DEBUG_FLAG_ENABLED) || video_none)
+	if (!first_time || (str > 0 && str < 60*5) || &machine().system() == &GAME_NAME(___empty) || (machine().debug_flags & DEBUG_FLAG_ENABLED) || video_none)
 		show_gameinfo = show_warnings = false;
 
 #if defined(__EMSCRIPTEN__)

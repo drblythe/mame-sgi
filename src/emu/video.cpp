@@ -1268,12 +1268,7 @@ void video_manager::recompute_speed(const attotime &emutime)
 	}
 
 	// if we're past the "time-to-execute" requested, signal an exit
-	// MAME_SGI_STARTUP_SCREENS_NEGATIVE_STR_FIX (permanent, no #ifdef,
-	// companion half - see ui.cpp's display_startup_screens()):
-	// a negative -str is used to skip the startup nag screens with no
-	// runtime cap at all, so only a strictly positive value should ever
-	// trigger this auto-exit
-	if (m_seconds_to_run > 0 && emutime.seconds() >= m_seconds_to_run)
+	if (m_seconds_to_run != 0 && emutime.seconds() >= m_seconds_to_run)
 	{
 		// create a final screenshot
 		if (m_snap_native)
