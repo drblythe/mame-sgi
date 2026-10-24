@@ -196,6 +196,13 @@ over a boot; they don't add up to a single figure.
 - Diagnostics used during development remain in the code as `MAME_SGI_*`
   macros, all off by default.
 
+## Releases
+
+Releases are tagged `mame0289-sgiNNN`, with built binaries for Linux
+x86-64, Linux ARM64 and Windows x64 on the repository's Releases page.
+What changed in each is in [CHANGES-SGI.md](CHANGES-SGI.md). No release
+yet.
+
 ## Contact
 
 Questions and bug reports: open an issue on this repository. Problems that
