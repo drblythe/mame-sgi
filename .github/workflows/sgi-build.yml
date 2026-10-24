@@ -1,0 +1,42 @@
+# Builds mamesgi (SUBTARGET=sgi) on this fork's self-hosted runner, which
+# runs in its own container. Upstream MAME's workflows are removed: they
+# would run on GitHub-hosted runners for every push.
+#
+# Push and manual runs only. A self-hosted runner must never run pull
+# requests from forks of a public repository (their code would run on the
+# runner's host), so there is no pull_request trigger.
+name: SGI build
+
+on:
+  push:
+    branches: [sgi-master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sgi-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mamesgi-linux-x64:
+    runs-on: [self-hosted, linux, x64, mame-sgi]
+    timeout-minutes: 240
+    env:
+      SDL_VIDEODRIVER: dummy
+    steps:
+      # clean: false keeps the build directory between runs, so a push
+      # rebuilds only what changed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+          fetch-depth: 1
+
+      - name: Build mamesgi
+        run: make SUBTARGET=sgi -j"$(nproc)"
+
+      - name: Validate the SGI drivers
+        run: |
+          ./mamesgi -validate indy_4610
+          ./mamesgi -validate challenge_s

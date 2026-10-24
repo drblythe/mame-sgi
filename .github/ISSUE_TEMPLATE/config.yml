@@ -2,13 +2,10 @@ blank_issues_enabled: true
 contact_links:
   - name: MAME Testers
     url: https://mametesters.org/
-    about: For reporting user-facing bugs in released versions of MAME.
-  - name: MAMEdev Discussions on GitHub
-    url: https://github.com/orgs/mamedev/discussions
-    about: For questions and discussion.
-  - name: MAMEdev Forum
-    url: https://forum.mamedev.org/
-    about: Official MAMEdev forums.
-  - name: r/MAME
-    url: https://www.reddit.com/r/MAME/
-    about: Community forum for discussion and support.
+    about: For bugs that also happen in official MAME, or in machines this fork doesn't change.
+  - name: IRIXNet forums
+    url: https://forums.irixnet.org/
+    about: For questions about installing and using IRIX.
+  - name: SGI machines in MAME (sgi.neocities.org)
+    url: https://sgi.neocities.org/
+    about: A general guide to running the SGI machines in MAME, including making a disk image and installing IRIX.
