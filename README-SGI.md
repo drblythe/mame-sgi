@@ -112,11 +112,23 @@ times faster in real time than MAME's stock SCSI emulation (50 MB/s against
 whole emulation down); and a DDS DAT tape drive on SIMH `.tap` images
 (`-nwd33c9x:auxbus:7 tape -tape FILE.tap`).
 
-On the Indy, `-wavwrite` records four channels: the analog output (left,
-right), then the AES digital output (left, right).
-
 Networking uses MAME's TAP interface: a `tap` device on Linux, the
 TAP-Windows adapter on Windows. Pick it under Network Devices in the menu.
+
+### Audio
+
+- Use MAME's high-quality resampler (Audio Mixer in the menu, or
+  `<resampler type="1" />` inside `<mixer>` in `cfg/default.cfg`). The
+  default low-fidelity one is fine at 48 kHz but adds audible distortion
+  to high frequencies when IRIX plays at 44.1 kHz or lower.
+- Recording (microphone or line in) needs a sound module that can capture:
+  on Linux that is `-sound portaudio`. The input comes from the host's
+  default capture device, or the one mapped in the Audio Mixer.
+- To monitor the input (apanel's monitor), give IRIX the same input and
+  output sample rate: with different rates IRIX's monitor copies the
+  samples without converting them, and the result is garbled.
+- On the Indy, `-wavwrite` records four channels: the analog output (left,
+  right), then the AES digital output (left, right).
 
 ### Challenge S console
 
