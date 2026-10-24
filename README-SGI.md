@@ -50,6 +50,10 @@ Not included, and not available from this project:
   your own install media, or the prebuilt IRIX 6.5 CHD described in
   [this IRIXNet forum thread](https://forums.irixnet.org/thread-4081.html),
   which is what this fork was developed and tested with.
+- **Demos (optional).** The standard SGI demos (buttonfly, powerflip,
+  ideas, flight and others) are on the IRIX 6.5.8 Applications CD, which
+  is available as an ISO and as a tarball at
+  [jrra.zone/sgi](https://jrra.zone/sgi/).
 
 [sgi.neocities.org](https://sgi.neocities.org/) is a general guide to
 running the SGI machines in MAME, including how to make a CHD and install
