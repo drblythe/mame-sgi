@@ -14,6 +14,8 @@
 #include "sound/dac.h"
 #include "speaker.h"
 
+#include <vector>
+
 class hal2_device : public device_t, public device_sound_interface
 {
 public:
@@ -144,13 +146,23 @@ protected:
 		void trim(unsigned keep);
 	};
 
-	// host input at the stream's rate, linearly interpolated to a guest
-	// sample rate: pos is the next output position between prev and the
-	// current input frame
+	// host input at the stream's rate converted to a guest sample rate with
+	// a windowed-sinc filter (TAPS taps, coefficients for PHASES fractional
+	// positions, interpolated between them). Equal rates pass through.
+	// Output frames lag the input by TAPS / 2 input frames.
 	struct input_converter
 	{
-		double pos = 0.0;
-		int16_t prev[2]{};
+		static constexpr int TAPS = 64;
+		static constexpr int PHASES = 256;
+		static constexpr unsigned HIST = 4096;   // frames of history before compacting
+		double step = 0.0;          // output rate / input rate the filter was built for
+		std::vector<float> coeff;   // (PHASES + 1) rows of TAPS
+		float hist[2][HIST]{};
+		unsigned count = 0;         // frames in hist
+		double pos = 0.0;           // next output time, in input frames from the newest one
+
+		void reset() { step = 0.0; count = 0; pos = 0.0; }
+		void build(double new_step);
 	};
 	static void convert_input(const int16_t frame[2], double step, input_converter &conv, frame_fifo &fifo);
 

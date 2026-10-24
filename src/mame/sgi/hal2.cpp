@@ -10,12 +10,20 @@
 
 // MAME_SGI_HAL2_INPUT_TEST_TONE: feed codec B (the ADC) a 1 kHz sine on the
 // left and 500 Hz on the right instead of the microphone, to check the
-// recording path end to end from IRIX. Off by default.
+// recording path end to end from IRIX. MAMESGI_TEST_TONE_HZ=LEFT,RIGHT in
+// the environment picks other frequencies. Off by default.
 // #define MAME_SGI_HAL2_INPUT_TEST_TONE
 
 #include "hal2.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+// pi; not every C library's <cmath> defines the POSIX constant (MinGW)
+constexpr double HAL2_PI = 3.14159265358979323846;
+}
 
 #define LOG_UNKNOWN     (1U << 1)
 #define LOG_READS       (1U << 2)
@@ -531,6 +539,7 @@ void hal2_device::update_adc_rate()
 		// audio converted at the old rate would play at the wrong speed
 		m_adc_rate = rate;
 		m_adc_fifo.clear();
+		m_adc_conv.reset();
 	}
 }
 
@@ -567,22 +576,111 @@ void hal2_device::frame_fifo::trim(unsigned keep)
 	}
 }
 
-// one input frame advances the output position by step output samples
-// (output rate / input rate); linear interpolation between the previous and
-// current input frame
+// MAME_SGI_HAL2_INPUT_RESAMPLE: Kaiser-windowed sinc, cut off at 47% of
+// the lower rate (about 90 dB stopband), each phase normalised to unity
+// gain at DC
+void hal2_device::input_converter::build(double new_step)
+{
+	constexpr double beta = 9.0;
+	auto bessel_i0 = [] (double x)
+	{
+		double sum = 1.0, term = 1.0;
+		for (int k = 1; k < 32; k++)
+		{
+			term *= (x / (2.0 * k)) * (x / (2.0 * k));
+			sum += term;
+		}
+		return sum;
+	};
+	const double fc = 0.47 * std::min(1.0, new_step);   // cycles per input frame
+	const double i0_beta = bessel_i0(beta);
+	coeff.assign((PHASES + 1) * TAPS, 0.0f);
+	for (int p = 0; p <= PHASES; p++)
+	{
+		const double frac = double(p) / PHASES;
+		double sum = 0.0;
+		double h[TAPS];
+		for (int k = 0; k < TAPS; k++)
+		{
+			// tap k is input frame (floor(t) - TAPS/2 + 1 + k); its distance from t
+			const double x = double(k - (TAPS / 2 - 1)) - frac;
+			const double r = x / (TAPS / 2);
+			const double w = (std::abs(r) < 1.0) ? bessel_i0(beta * std::sqrt(1.0 - r * r)) / i0_beta : 0.0;
+			const double arg = 2.0 * fc * x;
+			const double sinc = (arg == 0.0) ? 1.0 : std::sin(HAL2_PI * arg) / (HAL2_PI * arg);
+			h[k] = 2.0 * fc * sinc * w;
+			sum += h[k];
+		}
+		for (int k = 0; k < TAPS; k++)
+			coeff[p * TAPS + k] = float(h[k] / sum);
+	}
+	step = new_step;
+	count = 0;
+	pos = -double(TAPS / 2);
+}
+
+// one input frame at the stream's rate; pushes the output frames (at step
+// times the input rate) that it completes
 void hal2_device::convert_input(const int16_t frame[2], double step, input_converter &conv, frame_fifo &fifo)
 {
-	while (conv.pos < 1.0)
+	if (step == 1.0)
 	{
-		int16_t out[2];
-		for (int ch = 0; ch < 2; ch++)
-			out[ch] = int16_t(std::lround(conv.prev[ch] + (frame[ch] - conv.prev[ch]) * conv.pos));
-		fifo.push(out[0], out[1]);
-		conv.pos += 1.0 / step;
+		if (conv.step != 0.0)
+			conv.reset();
+		fifo.push(frame[0], frame[1]);
+		return;
 	}
+	if (step != conv.step)
+		conv.build(step);
+
+	constexpr int TAPS = input_converter::TAPS;
+	if (conv.count == input_converter::HIST)
+	{
+		// keep the last TAPS + 4 frames, enough for any pending output
+		const unsigned keep = TAPS + 4;
+		for (int ch = 0; ch < 2; ch++)
+			std::copy(conv.hist[ch] + conv.count - keep, conv.hist[ch] + conv.count, conv.hist[ch]);
+		conv.count = keep;
+	}
+	conv.hist[0][conv.count] = frame[0];
+	conv.hist[1][conv.count] = frame[1];
+	conv.count++;
 	conv.pos -= 1.0;
-	conv.prev[0] = frame[0];
-	conv.prev[1] = frame[1];
+
+	// an output at time t (frames relative to the newest, which is 0) needs
+	// frames floor(t) - TAPS/2 + 1 .. floor(t) + TAPS/2, all <= 0
+	const double out_step = 1.0 / step;
+	while (conv.pos < 1.0 - TAPS / 2)
+	{
+		const double base = std::floor(conv.pos);
+		const double phase = (conv.pos - base) * input_converter::PHASES;
+		const int p = std::min(int(phase), input_converter::PHASES - 1);
+		const float a = float(phase - p);
+		const int first = int(conv.count) - 1 + int(base) - TAPS / 2 + 1;
+		if (first >= 0)
+		{
+			// blend the two nearest phases once for both channels, then
+			// sum in 8 independent lanes so the compiler can vectorise it
+			const float *const c0 = &conv.coeff[p * TAPS];
+			const float *const c1 = c0 + TAPS;
+			float c[TAPS];
+			for (int k = 0; k < TAPS; k++)
+				c[k] = c0[k] + a * (c1[k] - c0[k]);
+			int16_t out[2];
+			for (int ch = 0; ch < 2; ch++)
+			{
+				const float *const x = conv.hist[ch] + first;
+				float acc[8] = {};
+				for (int k = 0; k < TAPS; k += 8)
+					for (int j = 0; j < 8; j++)
+						acc[j] += x[k + j] * c[k + j];
+				const float y = ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
+				out[ch] = int16_t(std::clamp<long>(std::lround(y), -32768, 32767));
+			}
+			fifo.push(out[0], out[1]);
+		}
+		conv.pos += out_step;
+	}
 }
 
 void hal2_device::sound_stream_update(sound_stream &stream)
@@ -596,11 +694,19 @@ void hal2_device::sound_stream_update(sound_stream &stream)
 	{
 		int16_t frame[2];
 #ifdef MAME_SGI_HAL2_INPUT_TEST_TONE
-		static constexpr double freq[2] = { 1000.0, 500.0 };
+		static double freq[2] = { 0.0, 0.0 };
+		if (freq[0] == 0.0)
+		{
+			freq[0] = 1000.0;
+			freq[1] = 500.0;
+			if (const char *env = std::getenv("MAMESGI_TEST_TONE_HZ"))
+				std::sscanf(env, "%lf,%lf", &freq[0], &freq[1]);
+			osd_printf_info("HAL2 test tone: %.1f Hz left, %.1f Hz right, input stream at %d Hz\n", freq[0], freq[1], stream.sample_rate());
+		}
 		for (int ch = 0; ch < 2; ch++)
 		{
 			frame[ch] = int16_t(std::clamp<double>(std::lround(16384.0 * m_adc_gain[ch] * std::sin(m_tone_phase[ch])), -32768.0, 32767.0));
-			m_tone_phase[ch] = std::fmod(m_tone_phase[ch] + 2.0 * M_PI * freq[ch] / stream.sample_rate(), 2.0 * M_PI);
+			m_tone_phase[ch] = std::fmod(m_tone_phase[ch] + 2.0 * HAL2_PI * freq[ch] / stream.sample_rate(), 2.0 * HAL2_PI);
 		}
 #else
 		for (int ch = 0; ch < 2; ch++)
