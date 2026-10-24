@@ -7,6 +7,10 @@ built binaries.
 
 ## Not yet released
 
+(Nothing yet.)
+
+## mame0289-sgi001 (2026-10-24)
+
 The first release: everything this fork adds to MAME 0.289.
 
 ### Added

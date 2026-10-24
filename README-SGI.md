@@ -38,6 +38,13 @@ The tree builds two ways:
 
 The Indy with IRIX 6.5 is what is tested most.
 
+With MAME's default throttling, each machine runs at its real speed: the
+emulated CPU at its native clock. So on a fast host, a faster machine
+(e.g. `indy_5015`) runs faster than a slower one, as on real hardware.
+Throttling can be turned off (`-nothrottle`, or F10 with MAME's hotkeys
+on) to run as fast as the host allows, but emulated time then runs ahead
+of real time, so the real-time clock and IRIX's system time quickly drift.
+
 ## What you need
 
 Not included, and not available from this project:
@@ -79,7 +86,7 @@ Built and tested with:
 | Host | Toolchain | Tested on |
 |---|---|---|
 | Linux x86-64 | GCC 11 | Linux x86-64 (main development platform) |
-| Linux x86-64, cross | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) 20260616 (LLVM 22), MAME's `windows_x64_clang` target | Windows 7 (SDL front end) |
+| Linux x86-64, cross | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) 20260616 (LLVM 22), MAME's `windows_x64_clang` target | Windows 7 (SDL front end; OpenGL and bgfx renderers) |
 | Linux x86-64, cross | Clang 22 with a Debian bookworm arm64 sysroot, `TARGETOS=linux PLATFORM=arm64` | Raspberry Pi 3, 64-bit Raspberry Pi OS |
 
 LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
@@ -97,6 +104,11 @@ LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
   on, the keys also reach the emulated keyboard.
 - On a monitor the same size as the emulated screen, `-nowindow` (full
   screen) is more practical than a window.
+- On Windows, MAME uses the bgfx renderer (normally on Direct3D 11) by
+  default. It needs the `bgfx` directory next to the binary; without it
+  MAME falls back to OpenGL. The fork's faster display updates (only the
+  changed parts of the screen are uploaded) are so far only in the OpenGL
+  renderer, so `-video opengl` is suggested.
 
 Options and settings added by this fork:
 
@@ -204,8 +216,8 @@ over a boot; they don't add up to a single figure.
 
 Releases are tagged `mame0289-sgiNNN`, with built binaries for Linux
 x86-64, Linux ARM64 and Windows x64 on the repository's Releases page.
-What changed in each is in [CHANGES-SGI.md](CHANGES-SGI.md). No release
-yet.
+What changed in each is in [CHANGES-SGI.md](CHANGES-SGI.md). Latest:
+`mame0289-sgi001` (2026-10-24).
 
 ## Contact
 
