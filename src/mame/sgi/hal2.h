@@ -131,8 +131,8 @@ protected:
 
 	// MAME_SGI_HAL2_AUDIO_INPUT: stereo frames waiting for receive DMA.
 	// 2048 frames is about 43 ms at 48 kHz: over two sound updates of
-	// slack, and the most the input can lag when the FIFO is full between
-	// recordings. When full, the oldest frame is dropped.
+	// slack. It fills while nothing records (the oldest frame is dropped
+	// when full); a recording starts by trimming it to ADC_START_FRAMES.
 	struct frame_fifo
 	{
 		static constexpr unsigned FRAMES = 2048;
@@ -174,6 +174,11 @@ protected:
 	input_converter m_adc_conv;
 	uint16_t m_curr_adc = 0;
 	int16_t m_adc_frame[2]{};
+	// receive DMA that starts after an idle gap first drops all but this
+	// many FIFO frames (~6 ms at 44.1 kHz): the FIFO fills while nothing
+	// records, which would otherwise add its full length as latency
+	static constexpr unsigned ADC_START_FRAMES = 256;
+	attotime m_adc_last_read;   // time of the last receive DMA frame
 	u32 m_adc_rate = 48000;       // codec B sample rate
 	double m_tone_phase[2]{};   // MAME_SGI_HAL2_INPUT_TEST_TONE only (unconditional: same layout in every file)
 

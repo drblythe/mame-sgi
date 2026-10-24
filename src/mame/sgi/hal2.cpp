@@ -738,6 +738,14 @@ int16_t hal2_device::dma_read(uint32_t channel)
 
 	if (m_curr_adc == 0)
 	{
+		const attotime now = machine().time();
+		if (now - m_adc_last_read > attotime::from_msec(20))
+		{
+			// a recording starts: drop the frames that queued up while idle
+			m_adc_stream->update();
+			m_adc_fifo.trim(ADC_START_FRAMES);
+		}
+		m_adc_last_read = now;
 		if (m_adc_fifo.count == 0)
 			m_adc_stream->update();
 		m_adc_fifo.pop(m_adc_frame);
