@@ -184,7 +184,7 @@ function createProjects_mame_sgi(_target, _subtarget)
 	-- a `defines` block here never reaches them - confirmed the hard way
 	-- (fix appeared to build clean but the exact pre-fix machine code was
 	-- still present in the binary). The marker is self-defined directly in
-	-- mips3drc.cpp instead. See wiki/assets.md's DRC section.
+	-- mips3drc.cpp instead.
 
 files{
 --	MAME_DIR .. "src/mame/bally/astrocde.cpp",
