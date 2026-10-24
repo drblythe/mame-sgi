@@ -99,6 +99,20 @@
 // silently under-count if edges were skipped rather than just
 // dispatched differently).
 #define MAME_SGI_PIT_BULK_CATCHUP_FIX
+
+// FIX: update() advanced m_last_updated by elapsed_cycles * m_clock_period,
+// and attotime's multiply takes a u32 factor, so an elapsed count of 2^32
+// cycles or more was truncated. The counter then simulated the whole
+// interval but recorded only the low 32 bits of it as done, so every later
+// update() found the same multiple of 2^32 cycles outstanding and replayed
+// it again. With a single lost 2^32, sub-cycle rounding eventually yields
+// an elapsed count of 2^32 - 1, which fits and clears it after one long
+// replay; with two or more lost the replay never ends. On the SGI Indy
+// (IOC2), counter 2 runs at 1 MHz and IRIX only uses it for delay-loop
+// calibration (at boot, and in the PROM at shutdown), so this is a shutdown
+// hang after about 143 minutes of uptime: the mode 2 replay, with every
+// output edge clocking counters 0 and 1, freezes emulated time.
+#define MAME_SGI_PIT_ELAPSED_64BIT_FIX
 #ifdef MAME_SGI_PIT_BULK_CATCHUP_FIX
 namespace {
 	int s_mame_sgi_pit_bulk_catchup_depth = 0;
@@ -875,7 +889,18 @@ void pit_counter_device::update()
 
 			LOG2("update(): %d elapsed_cycles\n", elapsed_cycles);
 
+#ifdef MAME_SGI_PIT_ELAPSED_64BIT_FIX
+			// attotime * u32: split the 64-bit count so a counter left idle
+			// for 2^32 or more input cycles is brought fully up to date
+			for (int64_t left = elapsed_cycles; left > 0; )
+			{
+				u32 const chunk = u32(std::min<int64_t>(left, 0xffffffff));
+				m_last_updated += m_clock_period * chunk;
+				left -= chunk;
+			}
+#else
 			m_last_updated += elapsed_cycles * m_clock_period;
+#endif
 		}
 	}
 	else
