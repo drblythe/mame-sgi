@@ -206,28 +206,13 @@
 #define MAME_SGI_DISPATCH_MODE_ASID_FIX 2
 
 
-// TEMPORARY diagnostic (2026-09-03): checksum-mismatch is
-// ruled out (5/5 forced reproductions, zero hits from the diagnostic
-// above) - this instead tracks, per watched PC, how many times
-// code_compile_block() has been called for it this process's whole
-// lifetime, plus the raw (pre-override) mode argument and the live
-// dispatch_page_writable(pc) result at each call. Goal: confirm/refute
-// whether the in-run duplicate-compile pattern observed via an external
-// host-gdb watcher (df44/decc/de40 each compiling twice within one
-// forced-trigger run, same mode both times) correlates with
-// writable_now flipping for the same pc between calls - which would
-// point at VTLB-slot contention (a different process's mapping
-// temporarily occupying cc1's own code page's VTLB slot) rather than
-// anything about cc1's code itself.
-// Reverted 2026-09-09: found still active by accident (unconditional
-// stdout spam on every compile, discovered while chasing an unrelated
-// boot failure) - stale debris from a much earlier sub-investigation,
-// never touched by anything this session, but a real, previously-
-// unnoticed confound (real per-compile overhead) sitting underneath
-// every experiment run today. Should have been caught by a full
-// `grep '^#define MAME_SGI_TASK84'` sweep earlier - only specific known
-// macros were checked, not an exhaustive pass.
-// #define MAME_SGI_RECOMPILE_TRACKING_TASK84
+// Diagnostic (off): for each PC in a watched range, log how many times
+// code_compile_block() has compiled it in this process, with the raw mode
+// argument and dispatch_page_writable(pc) at each call, to see whether
+// repeat compiles of one PC coincide with its page's writable state
+// changing between calls (another process's mapping temporarily in the
+// same VTLB slot). Writes a stderr line on every watched compile.
+// #define MAME_SGI_RECOMPILE_TRACKING
 
 
 #include "emu.h"
@@ -1191,13 +1176,13 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 		// this site alone - reverted back to the original single-page check
 		// pending that.
 		bool const writable_now = dispatch_page_writable(pc);
-#ifdef MAME_SGI_RECOMPILE_TRACKING_TASK84
+#ifdef MAME_SGI_RECOMPILE_TRACKING
 		if (pc >= 0x1007de00 && pc <= 0x1007e100)
 		{
 			static std::unordered_map<uint32_t, uint32_t> s_recompile_counts;
 			uint32_t const count = ++s_recompile_counts[pc];
 			fprintf(stderr,
-				"[RECOMPILE_TRACKING_TASK84] pc=%08x raw_mode=%u writable_now=%d final_mode=%u count=%u%s\n",
+				"[RECOMPILE_TRACKING] pc=%08x raw_mode=%u writable_now=%d final_mode=%u count=%u%s\n",
 				pc, mode, writable_now, writable_now ? mode : m_core->mode, count,
 				(count > 1) ? " DUPLICATE" : "");
 			fflush(stderr);
@@ -3343,7 +3328,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			UML_JMPc(block, COND_NE, skip = compiler.labelnum++);                  // jmp     skip,NE
 			generate_delay_slot_and_branch(block, compiler, desc, 0);        // <next instruction + hashjmp>
 			UML_LABEL(block, skip);                                             // skip:
-			generate_likely_branch_skip_fixup(block, compiler, desc);          // TASK84 FIX (2026-09-10)
+			generate_likely_branch_skip_fixup(block, compiler, desc);          // likely branch: not-taken fixup
 			return true;
 
 		case 0x05:  /* BNE - MIPS I */
@@ -3352,7 +3337,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			UML_JMPc(block, COND_E, skip = compiler.labelnum++);                       // jmp     skip,E
 			generate_delay_slot_and_branch(block, compiler, desc, 0);        // <next instruction + hashjmp>
 			UML_LABEL(block, skip);                                             // skip:
-			generate_likely_branch_skip_fixup(block, compiler, desc);          // TASK84 FIX (2026-09-10)
+			generate_likely_branch_skip_fixup(block, compiler, desc);          // likely branch: not-taken fixup
 			return true;
 
 		case 0x06:  /* BLEZ - MIPS I */
@@ -3363,7 +3348,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 				UML_JMPc(block, COND_G, skip = compiler.labelnum++);                   // jmp     skip,G
 				generate_delay_slot_and_branch(block, compiler, desc, 0);    // <next instruction + hashjmp>
 				UML_LABEL(block, skip);                                         // skip:
-				generate_likely_branch_skip_fixup(block, compiler, desc);      // TASK84 FIX (2026-09-10)
+				generate_likely_branch_skip_fixup(block, compiler, desc);      // likely branch: not-taken fixup
 			}
 			else
 				generate_delay_slot_and_branch(block, compiler, desc, 0);    // <next instruction + hashjmp>
@@ -3375,7 +3360,7 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			UML_JMPc(block, COND_LE, skip = compiler.labelnum++);                  // jmp     skip,LE
 			generate_delay_slot_and_branch(block, compiler, desc, 0);        // <next instruction + hashjmp>
 			UML_LABEL(block, skip);                                             // skip:
-			generate_likely_branch_skip_fixup(block, compiler, desc);          // TASK84 FIX (2026-09-10)
+			generate_likely_branch_skip_fixup(block, compiler, desc);          // likely branch: not-taken fixup
 			return true;
 
 

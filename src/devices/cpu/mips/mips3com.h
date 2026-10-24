@@ -38,9 +38,8 @@
 // recompile - this flag removes the fast-mapping entirely as the most
 // direct possible confirmation. CONFIRMED (2026-09-04): 260/260 clean
 // runs of cc1_null_loop.sh with this set to (1), vs a ~10% natural
-// failure rate normally - full decisive confirmation. Reverted back to
-// (0) here so the follow-up "poison store" test (mips3drc.cpp's
-// MAME_SGI_TASK84_POISON_R2) exercises the fast-register path for real.
+// failure rate normally - full decisive confirmation. Left at (0) so the
+// fast-register path stays in use.
 #define DISABLE_FAST_REGISTERS          (0)
 #define SINGLE_INSTRUCTION_MODE         (0)
 
