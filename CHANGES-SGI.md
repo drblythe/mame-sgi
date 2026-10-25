@@ -7,6 +7,13 @@ built binaries.
 
 ## Not yet released
 
+### Fixed
+
+- **Virtual TLB** (shared MAME code): unmapping a TLB entry counted it as a
+  mapping of virtual page 0, so a real mapping of page 0 survived being
+  unmapped. IRIX never maps page 0; SGI's field diagnostics (IDE) do, and
+  their TLB pid and UTLB-miss tests now pass.
+
 ### Changed
 
 - **bgfx renderer** (the default on Windows): the screen texture is

@@ -240,6 +240,16 @@ void device_vtlb_interface::vtlb_load(int entrynum, int numpages, offs_t address
 		}
 	}
 
+	// no pages: the entry is just unmapped. Claiming it would count it as a
+	// mapping of page 0, which then keeps a real mapping of page 0 from
+	// being cleared when that one is unmapped.
+	if (numpages == 0)
+	{
+		m_live[liveindex] = 0;
+		m_fixedpages[entrynum] = 0;
+		return;
+	}
+
 	// claim this new entry
 	m_live[liveindex] = tableindex + 1;
 	m_refcnt[tableindex]++;
