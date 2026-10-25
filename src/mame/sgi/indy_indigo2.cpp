@@ -511,8 +511,12 @@ void ip24_state::scsi_devices(device_slot_interface &device)
 	//device.set_option_machine_config("cdrom", cdrom_config);
 }
 
+// Indigo2: three banks visible (as in stock), bank A "4x32M" = 128MB by
+// default as on the Indy (see ip24_mc below for the rules); 384MB is all
+// three banks at "4x32M" in the Machine Configuration menu.
 static DEVICE_INPUT_DEFAULTS_START(ip22_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x07)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e) // bank A, "4x32M" (dual-rank), 128MB
 DEVICE_INPUT_DEFAULTS_END
 
 // Guest DRAM for the ip24 (Indy) memory controller. Stock MAME already makes
