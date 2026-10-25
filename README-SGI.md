@@ -104,11 +104,11 @@ LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
   on, the keys also reach the emulated keyboard.
 - On a monitor the same size as the emulated screen, `-nowindow` (full
   screen) is more practical than a window.
-- On Windows, MAME uses the bgfx renderer (normally on Direct3D 11) by
-  default. It needs the `bgfx` directory next to the binary; without it
-  MAME falls back to OpenGL. The fork's faster display updates (only the
-  changed parts of the screen are uploaded) are so far only in the OpenGL
-  renderer, so `-video opengl` is suggested.
+- On Windows, MAME uses the bgfx renderer by default (Direct3D 11 where
+  available; it needs the `bgfx` directory next to the binary, and
+  without it MAME falls back to OpenGL). Both renderers upload only the
+  changed parts of the screen: bgfx renders slightly faster, OpenGL uses
+  a little less CPU. `-video bgfx` or `-video opengl` picks one.
 
 Options and settings added by this fork:
 
