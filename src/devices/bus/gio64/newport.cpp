@@ -878,7 +878,7 @@ void vc2_device::write(uint32_t offset, uint32_t data, uint32_t mem_mask)
 			// treat any RAM write as cursor-relevant when the cursor is
 			// currently enabled.
 			cursor_relevant = m_enable_cursor;
-			m_ram[m_ram_addr] = (uint16_t)data;
+			m_ram[m_ram_addr & RAM_MASK] = (uint16_t)data;
 			m_ram_addr++;
 			if (m_ram_addr >= RAM_SIZE)
 			{
@@ -1091,8 +1091,8 @@ uint32_t vc2_device::read(uint32_t offset)
 		break;
 	case 0x03: /* RAM Read */
 	{
-		LOGMASKED(LOG_VC2, "RAM Read: %04x = %08x\n", m_ram_addr, m_ram[m_ram_addr]);
-		uint16_t ret = m_ram[m_ram_addr];
+		LOGMASKED(LOG_VC2, "RAM Read: %04x = %08x\n", m_ram_addr, m_ram[m_ram_addr & RAM_MASK]);
+		uint16_t ret = m_ram[m_ram_addr & RAM_MASK];
 		m_ram_addr++;
 		if (m_ram_addr >= RAM_SIZE)
 		{
@@ -1109,33 +1109,40 @@ uint32_t vc2_device::read(uint32_t offset)
 uint16_t vc2_device::begin_did_line(int y)
 {
 	m_did_frame_ptr = m_did_entry + (uint16_t)y;
-	m_did_line_ptr = m_ram[m_did_frame_ptr];
-	return m_ram[m_did_line_ptr];
+	m_did_line_ptr = m_ram[m_did_frame_ptr & RAM_MASK];
+	return m_ram[m_did_line_ptr & RAM_MASK];
 }
 
 uint16_t vc2_device::next_did_line_entry()
 {
 	m_did_line_ptr++;
-	return m_ram[m_did_line_ptr];
+	return m_ram[m_did_line_ptr & RAM_MASK];
 }
 
+// The timing tables live in the VC2's RAM, whose addresses wrap at its size.
+// A line holds at most 2048 pixels and the table at most 2048 lines, and
+// each walk stops after one pass over the RAM, so a table the guest has not
+// set up (the IRIX diagnostics write test patterns into the pointers) can
+// neither overrun the decoded table nor loop forever.
 void vc2_device::decode_vt_line(uint32_t line, uint32_t line_seq_ptr)
 {
 	bool eol_sa = false;
 	bool eol_sb = false;
 	uint32_t vt_entry = 0;
 	uint32_t i = 0;
-	do
+	for (size_t steps = 0; !(eol_sa && eol_sb) && steps < RAM_SIZE; steps++)
 	{
+		const uint16_t w0 = m_ram[line_seq_ptr & RAM_MASK];
 		vt_entry &= ~(0x7f << 14);
-		vt_entry |= (m_ram[line_seq_ptr] & 0x7f) << 14;
-		eol_sa = BIT(m_ram[line_seq_ptr], 15);
-		if (!BIT(m_ram[line_seq_ptr], 7))
+		vt_entry |= (w0 & 0x7f) << 14;
+		eol_sa = BIT(w0, 15);
+		if (!BIT(w0, 7))
 		{
-			eol_sb = BIT(m_ram[line_seq_ptr + 1], 15);
+			const uint16_t w1 = m_ram[(line_seq_ptr + 1) & RAM_MASK];
+			eol_sb = BIT(w1, 15);
 			vt_entry &= (0x7f << 14);
-			vt_entry |= (m_ram[line_seq_ptr + 1] & 0x7f00) >> 1;
-			vt_entry |= m_ram[line_seq_ptr + 1] & 0x7f;
+			vt_entry |= (w1 & 0x7f00) >> 1;
+			vt_entry |= w1 & 0x7f;
 			line_seq_ptr += 2;
 		}
 		else
@@ -1143,14 +1150,15 @@ void vc2_device::decode_vt_line(uint32_t line, uint32_t line_seq_ptr)
 			eol_sb = true;
 			line_seq_ptr++;
 		}
-		for (uint32_t j = 0; j < ((m_ram[line_seq_ptr] & 0x7f00) >> 7); i++, j++)
+		const uint32_t run = (m_ram[line_seq_ptr & RAM_MASK] & 0x7f00) >> 7;
+		for (uint32_t j = 0; j < run && i < 2048; i++, j++)
 		{
 			const uint8_t sa = ((vt_entry >> 14) & 0x7f) << 1;
 			const uint8_t sb = ((vt_entry >> 7) & 0x7f) << 1;
 			const uint8_t sc = ((vt_entry >> 0) & 0x7f) << 1;
 			m_vt_table[line * 2048 + i] = 0xff000000 | (sa << 16) | (sb << 8) | sc;
 		}
-	} while (!(eol_sa && eol_sb));
+	}
 }
 
 void vc2_device::decode_vt_table()
@@ -1158,20 +1166,16 @@ void vc2_device::decode_vt_table()
 	memset(&m_vt_table[0], 0, sizeof(uint32_t) * 2048 * 2048);
 	uint32_t curr_vt_entry = m_vid_entry;
 	uint32_t line_counter = 0;
-	uint32_t line_seq_len = 0;
-	do
+	for (size_t steps = 0; steps < RAM_SIZE / 2 && line_counter < 2048; steps++)
 	{
-		const uint32_t line_seq_ptr = m_ram[curr_vt_entry];
-		line_seq_len = m_ram[curr_vt_entry + 1];
-		if (line_seq_len)
-		{
-			for (uint32_t i = 0; i < line_seq_len; i++, line_counter++)
-			{
-				decode_vt_line(line_counter, line_seq_ptr);
-			}
-		}
+		const uint32_t line_seq_ptr = m_ram[curr_vt_entry & RAM_MASK];
+		const uint32_t line_seq_len = m_ram[(curr_vt_entry + 1) & RAM_MASK];
+		if (!line_seq_len)
+			break;
+		for (uint32_t i = 0; i < line_seq_len && line_counter < 2048; i++, line_counter++)
+			decode_vt_line(line_counter, line_seq_ptr);
 		curr_vt_entry += 2;
-	} while (line_seq_len != 0);
+	}
 }
 
 void vc2_device::update_screen_size()
@@ -1254,14 +1258,14 @@ uint8_t vc2_device::get_cursor_pixel(int x, int y)
 	if (monochrome_cursor)
 	{
 		const int address = y * 4 + (x / 16);
-		const uint16_t word = m_ram[m_cursor_entry + address];
+		const uint16_t word = m_ram[(m_cursor_entry + address) & RAM_MASK];
 		return BIT(word, shift);
 	}
 	else
 	{
 		const int address = y * 2 + (x / 16);
-		const uint16_t word0 = m_ram[m_cursor_entry + address];
-		const uint16_t word1 = m_ram[m_cursor_entry + address + 64];
+		const uint16_t word0 = m_ram[(m_cursor_entry + address) & RAM_MASK];
+		const uint16_t word1 = m_ram[(m_cursor_entry + address + 64) & RAM_MASK];
 		return BIT(word0, shift) | (BIT(word1, shift) << 1);
 	}
 }
@@ -3488,6 +3492,11 @@ void newport_base_device::update_screen_size(int state)
 	const int x_end = m_vc2->readout_x1();
 	const int y_end = m_vc2->readout_y1();
 
+	// A timing table that encodes no picture (the IRIX diagnostics load test
+	// patterns into the VC2) leaves the screen as it was: a zero-sized
+	// screen cannot be timed.
+	if (x_end <= x_start || y_end <= y_start)
+		return;
 
 	m_screen->set_size((uint16_t)(x_end - x_start), (uint16_t)(y_end - y_start));
 	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the VC2 readout spans 8 columns more

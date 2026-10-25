@@ -19,6 +19,10 @@ built binaries.
 - **Newport colour map (CMAP)**: the palette address wraps after its 8K
   entries, as on the hardware. SGI's diagnostics rely on it when they read
   the palette back.
+- **Newport VC2 timing tables**: a guest that writes test patterns into
+  the VC2's table pointers (SGI's diagnostics do) no longer crashes MAME.
+  Decoding stays within the VC2's RAM and the decoded table, and a timing
+  table that describes no picture leaves the screen as it was.
 
 ### Changed
 

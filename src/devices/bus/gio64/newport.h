@@ -496,6 +496,7 @@ private:
 	devcb_write_line m_screen_timing_changed;
 
 	static const size_t RAM_SIZE;
+	static constexpr uint32_t RAM_MASK = 0x7fff; // RAM_SIZE - 1
 };
 
 DECLARE_DEVICE_TYPE(VC2, vc2_device)
