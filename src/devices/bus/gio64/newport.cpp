@@ -6465,6 +6465,16 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 
 			m_rex3.m_host_shift = 64 - s_host_shifts[m_rex3.m_hostdepth];
 
+			// COLORRED is the red/CI full state: a flat colour index draw
+			// uses its integer part at the depth it draws with, whatever
+			// mode it was written in (SGI's diagnostics set the colour
+			// while DRAWMODE1 is still in RGB mode, then switch to CI).
+			// m_color_i holds that index for the flat draws. 12-bit CI is
+			// left as written: there COLORRED's format depends on the mode
+			// it was written in.
+			if (!BIT(m_rex3.m_draw_mode1, 15) && m_rex3.m_plane_depth < 2)
+				m_rex3.m_color_i = (m_rex3.m_color_red >> 11) & (m_rex3.m_plane_depth == 0 ? 0xf : 0xff);
+
 			update_draw_flags();
 		}
 		if (ACCESSING_BITS_0_31)
@@ -6915,6 +6925,12 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 				m_rex3.m_curr_color_red = m_rex3.m_color_red;
 				m_rex3.m_curr_color_green = m_rex3.m_color_green;
 				m_rex3.m_curr_color_blue = m_rex3.m_color_blue;
+			}
+			else if (m_rex3.m_plane_depth < 2)
+			{
+				// a colour index goes into COLORRED with a zero fraction
+				m_rex3.m_color_red = (data & 0xff) << 11;
+				m_rex3.m_curr_color_red = m_rex3.m_color_red;
 			}
 		}
 		break;

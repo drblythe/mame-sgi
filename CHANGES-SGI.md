@@ -29,6 +29,8 @@ built binaries.
 - **Newport frame buffer reads** below the last row read the row the
   hardware wraps to, and reads outside the frame buffer no longer read past
   MAME's copy of it. SGI's diagnostics read just below a full-screen fill.
+- **Newport colour index drawing** uses the colour set in COLORRED even
+  when it was written while the drawing mode was RGB, as the hardware does.
 
 ### Changed
 
