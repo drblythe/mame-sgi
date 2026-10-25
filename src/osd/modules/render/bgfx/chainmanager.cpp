@@ -44,6 +44,159 @@
 #include <algorithm>
 #include <locale>
 
+// Upload a direct-colour screen texture only when its contents changed, and
+// then only the regions the render core reports as changed when the texture
+// holds the contents those regions are relative to.
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+#define MAME_SGI_BGFX_DIRTY_RECTS
+#endif
+// Diagnostic: keep a CPU copy of each such texture, apply every upload to it
+// as sent, and compare it with the source bitmap on every frame; logs
+// mismatching rows and upload statistics to stderr.
+//#define MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS
+#include <cstring>
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+#include <cstdio>
+#include <unordered_map>
+#include <vector>
+#endif
+
+namespace {
+
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+std::unordered_map<const bgfx_texture *, std::vector<uint32_t>> s_v_shadow;
+uint64_t s_v_uploads, s_v_full, s_v_partial, s_v_skipped, s_v_pixels_sent, s_v_pixels_total, s_v_bad_rows;
+
+// the texture's pixels, as uploaded; texture column x is source column
+// x - width_margin
+std::vector<uint32_t> &verify_shadow(const bgfx_texture &texture, int rowpixels, int height)
+{
+	std::vector<uint32_t> &shadow = s_v_shadow[&texture];
+	shadow.resize(size_t(rowpixels) * height);
+	return shadow;
+}
+
+void verify_full(const bgfx_texture &texture, const render_texinfo &texinfo, int rowpixels, int height)
+{
+	std::vector<uint32_t> &shadow = verify_shadow(texture, rowpixels, height);
+	std::memcpy(shadow.data(), reinterpret_cast<const uint32_t *>(texinfo.base) - texinfo.width_margin, shadow.size() * sizeof(uint32_t));
+	s_v_full++;
+	s_v_pixels_sent += uint64_t(texinfo.width) * height;
+}
+
+void verify_check(const bgfx_texture &texture, const render_texinfo &texinfo, int rowpixels, int height)
+{
+	const std::vector<uint32_t> &shadow = verify_shadow(texture, rowpixels, height);
+	const uint32_t *src = reinterpret_cast<const uint32_t *>(texinfo.base);
+	for (int y = 0; y < height; y++)
+		if (std::memcmp(&shadow[size_t(y) * rowpixels + texinfo.width_margin], src + size_t(y) * rowpixels, size_t(texinfo.width) * sizeof(uint32_t)) != 0)
+			s_v_bad_rows++;
+	s_v_uploads++;
+	s_v_pixels_total += uint64_t(texinfo.width) * height;
+	if ((s_v_uploads % 100) == 0)
+		std::fprintf(stderr, "BGFX_DIRTY_RECTS uploads=%llu full=%llu partial=%llu skipped=%llu pixels_sent=%.1f%% bad_rows=%llu src=%dx%d\n",
+				(unsigned long long)s_v_uploads, (unsigned long long)s_v_full, (unsigned long long)s_v_partial,
+				(unsigned long long)s_v_skipped, 100.0 * s_v_pixels_sent / s_v_pixels_total,
+				(unsigned long long)s_v_bad_rows, texinfo.width, height);
+}
+#endif
+
+bool is_direct32(uint32_t src_format)
+{
+	return src_format == TEXFORMAT_RGB32 || src_format == TEXFORMAT_ARGB32;
+}
+
+// called once a screen texture has been created from the current contents
+void note_new_screen_texture(bgfx_texture &texture, const render_texinfo &texinfo, uint32_t src_format, int rowpixels, int height)
+{
+	texture.set_content_seq(is_direct32(src_format) ? texinfo.content_seq : 0);
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+	if (is_direct32(src_format))
+	{
+		verify_full(texture, texinfo, rowpixels, height);
+		verify_check(texture, texinfo, rowpixels, height);
+	}
+#endif
+}
+
+// Uploads the current contents to an existing screen texture of the right
+// size: nothing when it already holds them, only the changed regions when
+// it holds the contents they are relative to, otherwise everything.
+void upload_screen_texture(bgfx_texture &texture, const render_texinfo &texinfo, uint32_t src_format, uint32_t prim_format, int rowpixels, int height)
+{
+	const bool tracked = is_direct32(src_format) && texinfo.content_seq != 0
+			&& texture.rowpixels() == rowpixels && texture.width_margin() == texinfo.width_margin;
+	if (tracked && texture.content_seq() == texinfo.content_seq)
+	{
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+		s_v_skipped++;
+		verify_check(texture, texinfo, rowpixels, height);
+#endif
+		return;
+	}
+
+	// The regions cover every change since the contents they are relative
+	// to (the screen bitmap's previous contents). The screen alternates
+	// between two bitmaps, and this one texture shows both, so the texture
+	// usually holds the other bitmap's later contents; outside the regions
+	// nothing changed since the base, so those match too. Contents numbers
+	// increase over time, which makes "no older than the base" a comparison.
+	const bool holds_base_or_later = texture.content_seq() != 0 && texinfo.dirty_base_seq != 0
+			&& int32_t(texture.content_seq() - texinfo.dirty_base_seq) >= 0;
+	if (tracked && holds_base_or_later)
+	{
+		const uint32_t *const src = reinterpret_cast<const uint32_t *>(texinfo.base);
+		for (int i = 0; i < texinfo.dirty.count; i++)
+		{
+			rectangle r = texinfo.dirty.rect[i];
+			r &= rectangle(0, texinfo.width - 1, 0, height - 1);
+			if (r.empty())
+				continue;
+
+			// bgfx uploads later, on its render thread, so it gets a copy
+			const uint32_t row_bytes = uint32_t(r.width()) * sizeof(uint32_t);
+			const bgfx::Memory *mem = bgfx::alloc(row_bytes * r.height());
+			for (int y = 0; y < r.height(); y++)
+				std::memcpy(mem->data + size_t(y) * row_bytes, src + size_t(r.top() + y) * rowpixels + r.left(), row_bytes);
+			bgfx::updateTexture2D(texture.texture(), 0, 0, uint16_t(r.left() + texinfo.width_margin), uint16_t(r.top()),
+					uint16_t(r.width()), uint16_t(r.height()), mem, uint16_t(row_bytes));
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+			std::vector<uint32_t> &shadow = verify_shadow(texture, rowpixels, height);
+			for (int y = 0; y < r.height(); y++)
+				std::memcpy(&shadow[size_t(r.top() + y) * rowpixels + r.left() + texinfo.width_margin], mem->data + size_t(y) * row_bytes, row_bytes);
+			s_v_pixels_sent += uint64_t(r.width()) * r.height();
+#endif
+		}
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+		s_v_partial++;
+#endif
+	}
+	else
+	{
+		bgfx::TextureFormat::Enum dst_format = bgfx::TextureFormat::BGRA8;
+		uint16_t pitch = rowpixels;
+		int width_div_factor = 1;
+		int width_mul_factor = 1;
+		const bgfx::Memory *mem = bgfx_util::mame_texture_data_to_bgfx_texture_data(dst_format, prim_format,
+				rowpixels, texinfo.width_margin, height, texinfo.palette, texinfo.base, pitch, width_div_factor, width_mul_factor);
+		texture.update(mem, pitch, texinfo.width_margin);
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+		if (is_direct32(src_format))
+			verify_full(texture, texinfo, rowpixels, height);
+#endif
+	}
+	texture.set_content_seq(tracked ? texinfo.content_seq : 0);
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS_VERIFY
+	if (is_direct32(src_format))
+		verify_check(texture, texinfo, rowpixels, height);
+#endif
+}
+
+} // anonymous namespace
+#endif
+
 
 using namespace rapidjson;
 
@@ -557,8 +710,14 @@ uint32_t chain_manager::update_screen_textures(uint32_t view, render_primitive *
 		uint16_t pitch = prim.m_rowpixels;
 		int width_div_factor = 1;
 		int width_mul_factor = 1;
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS
+		// an existing texture is uploaded by upload_screen_texture()
+		const bgfx::Memory* mem = texture ? nullptr : bgfx_util::mame_texture_data_to_bgfx_texture_data(dst_format, prim.m_flags & PRIMFLAG_TEXFORMAT_MASK,
+			prim.m_rowpixels, prim.m_prim->texture.width_margin, tex_height, prim.m_prim->texture.palette, prim.m_prim->texture.base, pitch, width_div_factor, width_mul_factor);
+#else
 		const bgfx::Memory* mem = bgfx_util::mame_texture_data_to_bgfx_texture_data(dst_format, prim.m_flags & PRIMFLAG_TEXFORMAT_MASK,
 			prim.m_rowpixels, prim.m_prim->texture.width_margin, tex_height, prim.m_prim->texture.palette, prim.m_prim->texture.base, pitch, width_div_factor, width_mul_factor);
+#endif
 
 		if (!texture)
 		{
@@ -568,6 +727,9 @@ uint32_t chain_manager::update_screen_textures(uint32_t view, render_primitive *
 			auto newtex = std::make_unique<bgfx_texture>(full_name, dst_format, tex_width, prim.m_prim->texture.width_margin, tex_height, mem, flags, pitch, prim.m_rowpixels, width_div_factor, width_mul_factor);
 			texture = newtex.get();
 			m_textures.add_provider(full_name, std::move(newtex));
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS
+			note_new_screen_texture(*texture, prim.m_prim->texture, src_format, prim.m_rowpixels, tex_height);
+#endif
 
 			if (prim.m_prim->texture.palette)
 			{
@@ -598,7 +760,11 @@ uint32_t chain_manager::update_screen_textures(uint32_t view, render_primitive *
 		}
 		else
 		{
+#ifdef MAME_SGI_BGFX_DIRTY_RECTS
+			upload_screen_texture(*texture, prim.m_prim->texture, src_format, prim.m_flags & PRIMFLAG_TEXFORMAT_MASK, prim.m_rowpixels, tex_height);
+#else
 			texture->update(mem, pitch, prim.m_prim->texture.width_margin);
+#endif
 
 			if (prim.m_prim->texture.palette)
 			{

@@ -7,7 +7,14 @@ built binaries.
 
 ## Not yet released
 
-(Nothing yet.)
+### Changed
+
+- **bgfx renderer** (the default on Windows): the screen texture is
+  uploaded only when the screen changed, and then only the changed
+  regions, as the OpenGL renderer already did. On the idle desktop host
+  CPU fell by a third (0.091 to 0.060 cores, on Linux with bgfx's OpenGL
+  back end); in a graphics benchmark bgfx now renders slightly faster than
+  OpenGL, its uploads running on bgfx's own render thread.
 
 ## mame0289-sgi001 (2026-10-24)
 

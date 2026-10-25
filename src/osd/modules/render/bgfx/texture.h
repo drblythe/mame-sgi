@@ -17,6 +17,9 @@
 
 #include "texturehandleprovider.h"
 
+#include "emucore.h"
+#include "rendertypes.h"
+
 class bgfx_texture : public bgfx_texture_handle_provider
 {
 public:
@@ -39,6 +42,12 @@ public:
 	virtual int width_mul_factor() const override { return m_width_mul_factor; }
 
 	void update(const bgfx::Memory *data, uint16_t pitch = UINT16_MAX, uint16_t width_margin = 0);
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	// contents identifier (render_texinfo::content_seq) of the data last
+	// uploaded to a screen texture, 0 if unknown; kept by the chain manager
+	uint32_t content_seq() const { return m_content_seq; }
+	void set_content_seq(uint32_t seq) { m_content_seq = seq; }
+#endif
 
 protected:
 	std::string                 m_name;
@@ -50,6 +59,9 @@ protected:
 	int                         m_width_div_factor;
 	int                         m_width_mul_factor;
 	bgfx::TextureHandle         m_texture;
+#ifdef MAME_SGI_RENDER_DIRTY_RECTS
+	uint32_t                    m_content_seq = 0;
+#endif
 };
 
 #endif // __DRAWBGFX_TEXTURE__
