@@ -3457,9 +3457,11 @@ void newport_base_device::ramdac_write(uint32_t data)
 		m_ramdac_lut_index = (uint8_t)data;
 		break;
 	case 1:
-		m_ramdac_lut_r[m_ramdac_lut_index] = (uint8_t)(data >>  8) << 16;
+		// a palette entry is one 3-byte transfer, sent most significant
+		// byte first: red in bits 31..24, then green, then blue
+		m_ramdac_lut_r[m_ramdac_lut_index] = (uint8_t)(data >> 24) << 16;
 		m_ramdac_lut_g[m_ramdac_lut_index] = (uint8_t)(data >> 16) << 8;
-		m_ramdac_lut_b[m_ramdac_lut_index] = (uint8_t)(data >> 24) << 0;
+		m_ramdac_lut_b[m_ramdac_lut_index] = (uint8_t)(data >>  8) << 0;
 		m_ramdac_lut_index++;
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 		lut_fold_invalidate();
@@ -3471,6 +3473,28 @@ void newport_base_device::ramdac_write(uint32_t data)
 	default:
 		LOGMASKED(LOG_RAMDAC | LOG_UNKNOWN, "Unknown RAMDAC register %02x write: %08x\n", m_rex3.m_dcb_reg_select, data);
 		break;
+	}
+}
+
+// Reads of the address register and of the palette, which the IRIX
+// diagnostics check by writing and reading back. A palette read returns the
+// entry laid out like a palette write and steps the address like a write.
+uint32_t newport_base_device::ramdac_read()
+{
+	switch (m_rex3.m_dcb_reg_select)
+	{
+	case 0:
+		return m_ramdac_lut_index;
+	case 1:
+	{
+		const uint8_t i = m_ramdac_lut_index;
+		if (!machine().side_effects_disabled())
+			m_ramdac_lut_index++;
+		return ((m_ramdac_lut_r[i] >> 16) << 24) | ((m_ramdac_lut_g[i] >> 8) << 16) | (m_ramdac_lut_b[i] << 8);
+	}
+	default:
+		LOGMASKED(LOG_RAMDAC | LOG_UNKNOWN, "Unknown RAMDAC register %02x read\n", m_rex3.m_dcb_reg_select);
+		return 0;
 	}
 }
 
@@ -3848,7 +3872,7 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 				ret |= (uint64_t)m_xmap[1]->read(m_rex3.m_dcb_reg_select) << 32;
 				break;
 			case DCB_ADDR_RAMDAC:
-				LOGMASKED(LOG_REX3, "REX3 Display Control Bus Data MSW Read from RAMDAC (not yet implemented)\n");
+				ret |= (uint64_t)ramdac_read() << 32;
 				break;
 			case DCB_ADDR_CC1:
 				LOGMASKED(LOG_REX3, "REX3 Display Control Bus Data MSW Read from CC1 (not yet implemented)\n");

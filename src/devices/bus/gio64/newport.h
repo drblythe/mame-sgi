@@ -783,6 +783,7 @@ protected:
 	};
 
 	void ramdac_write(uint32_t data);
+	uint32_t ramdac_read();
 
 	void write_x_start(int32_t val);
 	void write_y_start(int32_t val);

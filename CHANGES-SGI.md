@@ -23,6 +23,9 @@ built binaries.
   the VC2's table pointers (SGI's diagnostics do) no longer crashes MAME.
   Decoding stays within the VC2's RAM and the decoded table, and a timing
   table that describes no picture leaves the screen as it was.
+- **Newport RAMDAC (BT445)**: its address register and gamma palette read
+  back what was written, and palette writes no longer swap red and blue
+  (visible only with a different gamma per channel).
 
 ### Changed
 
