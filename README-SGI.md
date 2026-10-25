@@ -1,7 +1,8 @@
-# SGI Indy and Challenge S: a fork of MAME 0.289
+# SGI Indy, Indigo2 and Challenge S: a fork of MAME 0.289
 
 This is a fork of [MAME](https://github.com/mamedev/mame) 0.289 that makes
-the SGI Indy and Challenge S (IP24) run IRIX 6.5 well enough for regular use:
+the SGI Indy and Challenge S (IP24) and the Indigo2 (IP22) run IRIX 6.5
+well enough for regular use:
 boot to the desktop, run the window system, OpenGL and IRIS GL programs,
 networking, audio, SCSI disks, CD-ROMs and DAT tape, and save and restore
 state. On a modern x86-64 Linux host an Indy boots IRIX to the login prompt
@@ -35,6 +36,7 @@ The tree builds two ways:
 | `indy_4613` | Indy, R4600 133 MHz |
 | `indy_5015` | Indy, R5000 150 MHz |
 | `challenge_s` | Challenge S, R5000SC 180 MHz (new; no graphics, serial console) |
+| `indigo2_4415` | Indigo2, R4400 150 MHz, XL graphics (see [Indigo2](#indigo2)) |
 
 The Indy with IRIX 6.5 is what is tested most.
 
@@ -51,8 +53,10 @@ Not included, and not available from this project:
 
 - **ROM sets.** For example `indy_4610.zip`, containing
   `ip24prom.070-9101-011.bin` and the keyboard controller ROM
-  `72x8455.zm82`. Put the zip in a `roms` directory below the directory
-  you run MAME from, or point `-rompath` at it.
+  `72x8455.zm82`; for the Indigo2, `indigo2_4415.zip` with
+  `ip22prom.070-1367-012.bin` and the same keyboard controller ROM. Put
+  the zip in a `roms` directory below the directory you run MAME from, or
+  point `-rompath` at it.
 - **IRIX.** An IRIX 6.5 installation on a hard disk image (CHD), made from
   your own install media, or the prebuilt IRIX 6.5 CHD described in
   [this IRIXNet forum thread](https://forums.irixnet.org/thread-4081.html),
@@ -160,6 +164,18 @@ socat -,raw,echo=0 TCP-LISTEN:2323,reuseaddr      # in another terminal
 ```
 
 Once IRIX is up you can also log in over the network.
+
+### Indigo2
+
+The Indigo2 boots the same IRIX 6.5 disk as the Indy: IRIX rebuilds its
+kernel for the Indigo2 on the first boot. It passes the same tests as the
+Indy. Its PROM keeps its settings in a serial EEPROM, which starts out with
+the PROM's defaults: the Ethernet address is `ff:ff:ff:ff:ff:ff`, which
+IRIX's networking can't use. Set it, and a serial console if wanted, from
+the PROM's Command Monitor (`setenv -f eaddr 08:00:69:xx:yy:zz`, exactly in
+that form; `setenv console d1`), then leave MAME normally so the EEPROM is
+saved. The machine has three RAM banks (Machine Configuration), 128 MB by
+default, and a second SCSI bus.
 
 ### Save states
 

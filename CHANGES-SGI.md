@@ -7,6 +7,15 @@ built binaries.
 
 ## Not yet released
 
+### Added
+
+- **Indigo2** (`indigo2_4415`, R4400 150 MHz, XL graphics) runs IRIX 6.5:
+  it boots the Indy's disk to the desktop and passes the same tests as the
+  Indy (graphics, disks, tape, network, audio, save states). 128 MB by
+  default, up to 384 MB. No longer marked as not working, so MAME no
+  longer shows its warning screen at start-up. See README-SGI.md for the
+  ROM set and the NVRAM settings it needs on first boot.
+
 ### Fixed
 
 - **Virtual TLB** (shared MAME code): unmapping a TLB entry counted it as a
