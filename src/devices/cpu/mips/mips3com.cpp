@@ -384,8 +384,19 @@ uint32_t mips3_device::compute_prid_register()
 
 uint32_t mips3_device::compute_fpu_prid_register()
 {
-	/* For most CPUs they are same */
-	return compute_prid_register();
+	switch (m_flavor)
+	{
+		// the R4000 and R4400 floating point unit reports its own
+		// implementation number (5), not the CPU's (4, which identifies
+		// the R6000's separate R6010 FPU)
+		case MIPS3_TYPE_R4000:
+		case MIPS3_TYPE_R4400:
+			return 0x0500;
+
+		/* For most CPUs they are same */
+		default:
+			return compute_prid_register();
+	}
 }
 
 /*-------------------------------------------------

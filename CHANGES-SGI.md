@@ -31,6 +31,9 @@ built binaries.
   MAME's copy of it. SGI's diagnostics read just below a full-screen fill.
 - **Newport colour index drawing** uses the colour set in COLORRED even
   when it was written while the drawing mode was RGB, as the hardware does.
+- **MIPS R4000/R4400 floating point unit** (shared MAME code) reports the
+  R4000-family implementation number, so IRIX names it correctly ("MIPS
+  R4000 Floating Point Coprocessor", not "R6010").
 
 ### Changed
 
