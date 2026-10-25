@@ -1233,7 +1233,8 @@ void vc2_device::update_screen_size()
 
 bool vc2_device::is_cursor_active(int x, int y)
 {
-	return x >= (m_cursor_x - 31) && x <= m_cursor_x && y >= (m_cursor_y - 31) && y <= m_cursor_y && m_enable_cursor;
+	const int cx = (int)m_cursor_x + cursor_x_shift();
+	return x >= (cx - 31) && x <= cx && y >= (m_cursor_y - 31) && y <= m_cursor_y && m_enable_cursor;
 }
 
 uint8_t vc2_device::get_cursor_pixel(int x, int y)
@@ -1241,7 +1242,7 @@ uint8_t vc2_device::get_cursor_pixel(int x, int y)
 	if (!is_cursor_active(x, y))
 		return 0;
 
-	x -= (int)m_cursor_x - 31;
+	x -= (int)m_cursor_x + cursor_x_shift() - 31;
 	y -= (int)m_cursor_y - 31;
 
 	if (x < 0 || y < 0)
@@ -3523,15 +3524,17 @@ void newport_base_device::update_screen_size(int state)
 		return;
 
 	m_screen->set_size((uint16_t)(x_end - x_start), (uint16_t)(y_end - y_start));
-	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the VC2 readout spans 8 columns more
-	// than the displayed picture (1288 for 1280x1024, 1032 for 1024x768).
-	// IRIX keeps the leading columns black and draws through an x window
-	// offset, so the picture starts 2 columns in; the rest is overscan.
-	// Showing only the picture also avoids scaling it to fit the window.
-	constexpr int READOUT_EXTRA = 8, PICTURE_X0 = 2;
+	// MAME_SGI_DISPLAY_GEOMETRY_FIX: the VC2 readout spans more columns
+	// than the displayed picture. IRIX keeps the leading columns black and
+	// draws through an x window offset; the rest is overscan. Showing only
+	// the picture also avoids scaling it to fit the window. See
+	// vc2_device::picture_x0() for the offset (the X server's XYWIN x is
+	// 0x1002 on the Indy, 0x1008 on the Indigo2 in its default format).
 	const int width = x_end - x_start;
-	if (width > READOUT_EXTRA)
-		m_screen->set_visarea(PICTURE_X0, PICTURE_X0 + width - READOUT_EXTRA - 1, 0, y_end - y_start - 1);
+	const int picture_x0 = vc2_device::picture_x0(width);
+	const int readout_extra = picture_x0 + (width == 1298 ? 10 : 6);
+	if (width > readout_extra)
+		m_screen->set_visarea(picture_x0, picture_x0 + width - readout_extra - 1, 0, y_end - y_start - 1);
 	else
 		m_screen->set_visarea_full();
 }

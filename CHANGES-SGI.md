@@ -37,6 +37,9 @@ built binaries.
 - **Indigo2 vertical retrace interrupt** reaches IRIX where its graphics
   driver expects it, so OpenGL programs no longer hang waiting for a buffer
   swap and save states resume.
+- **Newport picture and cursor framing** follow the video timing IRIX
+  loads: on the Indigo2 the picture was off by six columns, with extra
+  border, and the hardware cursor six columns left of the pointer.
 
 ### Changed
 

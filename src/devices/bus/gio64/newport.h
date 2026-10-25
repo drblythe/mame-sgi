@@ -388,6 +388,17 @@ public:
 
 	// Getters
 	int readout_x0() const { return m_readout_x0; }
+	// First column of the picture within the readout. IRIX draws through
+	// an x window offset of its own choosing and keeps the columns before
+	// it black. The Indy always uses 2, with readouts 8 columns wider than
+	// the picture. The Indigo2 uses 8 with its 1298-column 1280x1024
+	// timings (its default, and 72/76 Hz); in other formats it can choose
+	// differently for the same timing (2 with 1280x1024 at 60 Hz set by
+	// setmon; 8 with its 1042- and 1030-column 1024x768 timings), which
+	// this does not follow.
+	static int picture_x0(int readout_width) { return readout_width == 1298 ? 8 : 2; }
+	// IRIX places the cursor relative to the picture, so it moves with it
+	int cursor_x_shift() const { return picture_x0(m_readout_x1 - m_readout_x0) - 2; }
 	int readout_y0() const { return m_readout_y0; }
 	int readout_x1() const { return m_readout_x1; }
 	int readout_y1() const { return m_readout_y1; }
@@ -405,7 +416,7 @@ public:
 	{
 		const bool size64 = BIT(m_display_ctrl, CURSOR_SIZE_BIT) == CURSOR_SIZE_64;
 		const int size = size64 ? 64 : 32;
-		x0 = (int)m_cursor_x - 31;
+		x0 = (int)m_cursor_x + cursor_x_shift() - 31;
 		y0 = (int)m_cursor_y - 31;
 		x1 = x0 + size - 1;
 		y1 = y0 + size - 1;
