@@ -13,6 +13,9 @@ built binaries.
   mapping of virtual page 0, so a real mapping of page 0 survived being
   unmapped. IRIX never maps page 0; SGI's field diagnostics (IDE) do, and
   their TLB pid and UTLB-miss tests now pass.
+- **HPC3 FIFO memories** read back what was written: an entry's upper and
+  lower words no longer overwrite each other, and PBUS FIFO writes use
+  the chip's 16-byte stride. SGI's diagnostics test these memories.
 
 ### Changed
 

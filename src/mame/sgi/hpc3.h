@@ -123,6 +123,7 @@ protected:
 	void hd_enet_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	template <uint32_t index> uint32_t hd_r(offs_t offset, uint32_t mem_mask = ~0);
 	template <uint32_t index> void hd_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+	template <fifo_type_t Type> uint32_t *fifo_word(offs_t offset);
 	template <fifo_type_t Type> uint32_t fifo_r(offs_t offset);
 	template <fifo_type_t Type> void fifo_w(offs_t offset, uint32_t data);
 	uint32_t intstat_r();

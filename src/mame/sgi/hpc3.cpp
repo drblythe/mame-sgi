@@ -768,38 +768,45 @@ void hpc3_device::enet_intr_in_w(int state)
 	}
 }
 
+// The FIFO RAMs as the CPU sees them: an entry is two words, upper then
+// lower, as SGI's diagnostics write and read them back. Entries are read
+// at an 8-byte stride (storage word = window word); the PBUS and Ethernet
+// FIFOs are written at a 16-byte stride, the SCSI FIFOs at 8 bytes. Words
+// past the end of a FIFO read as 0 and ignore writes.
+template<hpc3_device::fifo_type_t Type>
+uint32_t *hpc3_device::fifo_word(offs_t offset)
+{
+	uint32_t *base = nullptr;
+	offs_t words = 0;
+	if (Type == FIFO_PBUS)
+		base = m_pbus_fifo.get(), words = 96;
+	else if (Type == FIFO_SCSI0)
+		base = m_scsi_fifo[0].get(), words = 96;
+	else if (Type == FIFO_SCSI1)
+		base = m_scsi_fifo[1].get(), words = 96;
+	else if (Type == FIFO_ENET_RECV)
+		base = m_enet_fifo[ENET_RECV].get(), words = 32;
+	else if (Type == FIFO_ENET_XMIT)
+		base = m_enet_fifo[ENET_XMIT].get(), words = 40;
+	return (offset < words) ? &base[offset] : nullptr;
+}
+
 template<hpc3_device::fifo_type_t Type>
 uint32_t hpc3_device::fifo_r(offs_t offset)
 {
-	uint32_t ret = 0;
-	if (Type == FIFO_PBUS)
-		ret = m_pbus_fifo[offset >> 1];
-	else if (Type == FIFO_SCSI0)
-		ret = m_scsi_fifo[0][offset >> 1];
-	else if (Type == FIFO_SCSI1)
-		ret = m_scsi_fifo[1][offset >> 1];
-	else if (Type == FIFO_ENET_RECV)
-		ret = m_enet_fifo[ENET_RECV][offset >> 1];
-	else if (Type == FIFO_ENET_XMIT)
-		ret = m_enet_fifo[ENET_XMIT][offset >> 1];
-	logerror("Reading %08x from %d FIFO offset %08x (%08x)\n", ret, Type, offset, offset >> 1);
+	uint32_t *const word = fifo_word<Type>(offset);
+	const uint32_t ret = word ? *word : 0;
+	logerror("Reading %08x from %d FIFO offset %08x\n", ret, Type, offset);
 	return ret;
 }
 
 template<hpc3_device::fifo_type_t Type>
 void hpc3_device::fifo_w(offs_t offset, uint32_t data)
 {
-	logerror("Writing %08x to %d FIFO offset %08x (%08x)\n", data, Type, offset, offset >> 2);
-	if (Type == FIFO_PBUS)
-		m_pbus_fifo[offset >> 2] = data;
-	else if (Type == FIFO_SCSI0)
-		m_scsi_fifo[0][offset >> 1] = data;
-	else if (Type == FIFO_SCSI1)
-		m_scsi_fifo[1][offset >> 1] = data;
-	else if (Type == FIFO_ENET_RECV)
-		m_enet_fifo[ENET_RECV][offset >> 2] = data;
-	else if (Type == FIFO_ENET_XMIT)
-		m_enet_fifo[ENET_XMIT][offset >> 2] = data;
+	logerror("Writing %08x to %d FIFO offset %08x\n", data, Type, offset);
+	const bool wide = Type == FIFO_PBUS || Type == FIFO_ENET_RECV || Type == FIFO_ENET_XMIT;
+	if (uint32_t *const word = fifo_word<Type>(wide ? (((offset >> 2) << 1) | (offset & 1)) : offset))
+		*word = data;
 }
 
 template uint32_t hpc3_device::fifo_r<hpc3_device::FIFO_PBUS>(offs_t offset);
