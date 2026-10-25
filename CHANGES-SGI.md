@@ -26,6 +26,9 @@ built binaries.
 - **Newport RAMDAC (BT445)**: its address register and gamma palette read
   back what was written, and palette writes no longer swap red and blue
   (visible only with a different gamma per channel).
+- **Newport frame buffer reads** below the last row read the row the
+  hardware wraps to, and reads outside the frame buffer no longer read past
+  MAME's copy of it. SGI's diagnostics read just below a full-screen fill.
 
 ### Changed
 

@@ -5188,11 +5188,7 @@ uint32_t newport_base_device::do_pixel_read()
 	const int16_t src_x = m_rex3.m_x_start_i + m_rex3.m_x_window - 0x1000;
 	const int16_t src_y = m_rex3.m_y_start_i + m_rex3.m_y_window - 0x1000;
 	uint32_t ret = 0;
-#ifdef MAME_SGI_RB2_XY_ADDRESS
-	set_address_xy(src_x, src_y);
-#else
-	set_address(src_y * (1280 + 64) + src_x);
-#endif
+	set_read_address_xy(src_x, src_y);
 	ret = read_pixel();
 	if ((m_rex3.m_plane_enable == 1 || m_rex3.m_plane_enable == 2) && BIT(m_rex3.m_draw_mode1, 15)) // RGB or RGBA planes, RGB mode (MAME_SGI_CI_HOSTDEPTH_FIX)
 	{
@@ -6195,11 +6191,7 @@ void newport_base_device::do_rex3_command()
 				{
 					do
 					{
-#ifdef MAME_SGI_RB2_XY_ADDRESS
-						set_address_xy(start_x + m_rex3.m_x_window - 0x1000, start_y + m_rex3.m_y_window - 0x1000);
-#else
-						set_address((start_y + m_rex3.m_y_window - 0x1000) * (1280 + 64) + (start_x + m_rex3.m_x_window - 0x1000));
-#endif
+						set_read_address_xy(start_x + m_rex3.m_x_window - 0x1000, start_y + m_rex3.m_y_window - 0x1000);
 						uint32_t src = read_pixel();
 
 						output_pixel(start_x + m_rex3.m_x_move, start_y + m_rex3.m_y_move, src);

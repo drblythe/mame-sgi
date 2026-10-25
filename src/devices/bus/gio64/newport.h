@@ -536,6 +536,23 @@ public:
 		m_cur_y = y;
 	}
 #endif
+	// Reads are not clipped. VRAM is 1344 x 1024 and its row address has
+	// 10 bits, so a read below the last row reads the row it aliases (SGI's
+	// diagnostics read row 1024 right after filling the screen); columns
+	// outside VRAM read 0.
+	void set_read_address_xy(int x, int y)
+	{
+		if ((unsigned)x >= 1280 + 64)
+		{
+			m_null_pixel = 0;
+			m_buf_ptr = &m_null_pixel;
+			return;
+		}
+		y &= 0x3ff;
+		m_buf_ptr = &m_dest_buf[y * (1280 + 64) + x];
+		m_cur_x = x;
+		m_cur_y = y;
+	}
 	uint32_t read_pixel();
 	void write_pixel(uint32_t data);
 #ifdef MAME_SGI_REX3_FAST_PIXEL
@@ -591,6 +608,7 @@ private:
 
 	uint32_t *m_dest_buf;
 	uint32_t *m_buf_ptr;
+	uint32_t m_null_pixel = 0; // what a read outside VRAM points at
 
 	// x/y derived from the flat address in set_address() (every call
 	// site computes it as y * 1344 + x, matching rgbci()/cidaux()'s own
@@ -975,6 +993,7 @@ protected:
 	void set_address(uint32_t data) { m_rb2->set_address(data); }
 #ifdef MAME_SGI_RB2_XY_ADDRESS
 	void set_address_xy(int x, int y) { m_rb2->set_address_xy(x, y); }
+	void set_read_address_xy(int x, int y) { m_rb2->set_read_address_xy(x, y); }
 #endif
 	void write_pixel(uint32_t data) { m_rb2->write_pixel(data); }
 	uint32_t read_pixel() { return m_rb2->read_pixel(); }
