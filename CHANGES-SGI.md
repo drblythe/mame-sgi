@@ -34,6 +34,9 @@ built binaries.
 - **MIPS R4000/R4400 floating point unit** (shared MAME code) reports the
   R4000-family implementation number, so IRIX names it correctly ("MIPS
   R4000 Floating Point Coprocessor", not "R6010").
+- **Indigo2 vertical retrace interrupt** reaches IRIX where its graphics
+  driver expects it, so OpenGL programs no longer hang waiting for a buffer
+  swap and save states resume.
 
 ### Changed
 

@@ -228,14 +228,24 @@ public:
 
 	void indigo2_4415(machine_config &config);
 
+protected:
+	virtual void machine_start() override ATTR_COLD;
+
 private:
 	uint32_t eisa_io_r();
+
+	void gio_int1_w(int state);
+	void gio_vv_int_w(int state);
 
 	void ip22_map(address_map &map) ATTR_COLD;
 	void pio4_map(address_map &map) ATTR_COLD;
 	void pio6_map(address_map &map) ATTR_COLD;
 
 	required_device<wd33c93b_device> m_scsi_ctrl2;
+
+	// GIO interrupt 1 and the graphics board's VV_INT, which share it
+	int m_gio_int1 = 0;
+	int m_vv_int = 0;
 };
 
 template <uint32_t addr_base>
@@ -258,6 +268,30 @@ void ip24_state::bus_error_w(offs_t offset, uint64_t data, uint64_t mem_mask)
 uint32_t ip22_state::eisa_io_r()
 {
 	return 0xffffffff;
+}
+
+void ip22_state::machine_start()
+{
+	ip24_state::machine_start();
+	save_item(NAME(m_gio_int1));
+	save_item(NAME(m_vv_int));
+}
+
+// On the Indigo2 the Newport's VV_INT (REX3's latched vertical retrace and
+// video option interrupt) reaches the CPU as GIO interrupt 1 (local 0
+// "GIO_1"): IRIX's Newport driver registers its interrupt handler only for
+// GIO levels 0 and 1 on Full House and reads REX3's STATUS there to find a
+// retrace. On the Indy it is GIO interrupt 2 (local 1 "retrace").
+void ip22_state::gio_int1_w(int state)
+{
+	m_gio_int1 = state;
+	m_ioc2->gio_int1_w((m_gio_int1 || m_vv_int) ? ASSERT_LINE : CLEAR_LINE);
+}
+
+void ip22_state::gio_vv_int_w(int state)
+{
+	m_vv_int = state;
+	m_ioc2->gio_int1_w((m_gio_int1 || m_vv_int) ? ASSERT_LINE : CLEAR_LINE);
 }
 
 uint8_t ip24_state::volume_r(offs_t offset)
@@ -830,6 +864,8 @@ void ip22_state::indigo2_4415(machine_config &config)
 
 	ip24_base(config, system_clock);
 	m_mem_ctrl->set_input_default(DEVICE_INPUT_DEFAULTS_NAME(ip22_mc));
+	m_gio64->interrupt_cb<1>().set(FUNC(ip22_state::gio_int1_w));
+	m_gio64->interrupt_cb<2>().set(FUNC(ip22_state::gio_vv_int_w));
 
 	auto &scsibus2(NSCSI_BUS(config, "scsibus2"));
 
