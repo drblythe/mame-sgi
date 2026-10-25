@@ -575,7 +575,8 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 	{
 	case 0x00:
 		LOGMASKED(LOG_CMAP, "Palette Index Write: %04x\n", data & 0xffff);
-		m_palette_idx = (uint16_t)data;
+		// the address is 13 bits and wraps after the last of the 8K entries
+		m_palette_idx = data & 0x1fff;
 		break;
 	case 0x02:
 #ifdef MAME_SGI_CMAP_WRITE_TRACE
@@ -595,7 +596,7 @@ void cmap_device::write(uint32_t offset, uint32_t data)
 		// write carries all three) increments the address register, so a
 		// run of entries can follow one address write: the X server loads
 		// DirectColor maps (RGB Map1) that way
-		m_palette_idx++;
+		m_palette_idx = (m_palette_idx + 1) & 0x1fff;
 		break;
 	case 0x01:
 		// MAME_SGI_CMAP_READS: address register high (5 bits of the 13-bit
@@ -638,7 +639,7 @@ uint32_t cmap_device::read(uint32_t offset)
 	{
 		const uint32_t entry = m_palette[m_palette_idx];
 		if (!machine().side_effects_disabled())
-			m_palette_idx++;
+			m_palette_idx = (m_palette_idx + 1) & 0x1fff;
 		return entry << 8;
 	}
 	case 0x03:

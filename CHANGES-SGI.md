@@ -16,6 +16,9 @@ built binaries.
 - **HPC3 FIFO memories** read back what was written: an entry's upper and
   lower words no longer overwrite each other, and PBUS FIFO writes use
   the chip's 16-byte stride. SGI's diagnostics test these memories.
+- **Newport colour map (CMAP)**: the palette address wraps after its 8K
+  entries, as on the hardware. SGI's diagnostics rely on it when they read
+  the palette back.
 
 ### Changed
 
