@@ -5839,10 +5839,10 @@ struct rex3_trace_config
 	const char *flag = nullptr;
 	bool flag_on = true;
 	uint32_t flag_count = 0;
-	// whether to trace now: the flag file, if any, is rechecked every 65536 calls
+	// whether to trace now: the flag file, if any, is rechecked every 256 calls
 	bool active()
 	{
-		if (flag && (flag_count++ & 0xffff) == 0)
+		if (flag && (flag_count++ & 0xff) == 0)
 			flag_on = access(flag, F_OK) == 0;
 		return flag_on;
 	}
@@ -5880,7 +5880,11 @@ void newport_base_device::do_rex3_command()
 				&& (!s_rex3_trace.m0_mask || (m_rex3.m_draw_mode0 & s_rex3_trace.m0_mask)))
 		{
 			s_rex3_trace.remaining--;
-			fprintf(stderr, "REX3_TRACE m0=%08x m1=%08x start=%d,%d end=%d,%d win=%d,%d ci=%08x vram=%08x rgba=%08x/%08x/%08x/%08x back=%08x wmask=%08x zpat=%08x bres=%08x/%08x/%08x/%08x startf=%08x,%08x\n",
+			fprintf(stderr, "REX3_TRACE t=%.6f smask=%08x,%08x/%08x,%08x/%08x,%08x/%08x,%08x/%08x,%08x m0=%08x m1=%08x start=%d,%d end=%d,%d win=%d,%d ci=%08x vram=%08x rgba=%08x/%08x/%08x/%08x back=%08x wmask=%08x zpat=%08x bres=%08x/%08x/%08x/%08x startf=%08x,%08x\n",
+					machine().time().as_double(),
+					m_rex3.m_smask_x[0], m_rex3.m_smask_y[0], m_rex3.m_smask_x[1], m_rex3.m_smask_y[1],
+					m_rex3.m_smask_x[2], m_rex3.m_smask_y[2], m_rex3.m_smask_x[3], m_rex3.m_smask_y[3],
+					m_rex3.m_smask_x[4], m_rex3.m_smask_y[4],
 					m_rex3.m_draw_mode0, m_rex3.m_draw_mode1, m_rex3.m_x_start_i, m_rex3.m_y_start_i,
 					m_rex3.m_x_end_i, m_rex3.m_y_end_i, int(m_rex3.m_x_window) - 0x1000, int(m_rex3.m_y_window) - 0x1000,
 					m_rex3.m_color_i, m_rex3.m_color_vram, m_rex3.m_color_red, m_rex3.m_color_green, m_rex3.m_color_blue,
@@ -6956,6 +6960,16 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		{
 			const uint32_t data32 = (uint32_t)(data >> 32);
 			m_rex3.m_dcb_data_msw = data32;
+#ifdef MAME_SGI_REX3_CMD_TRACE
+			// display-bus writes (VC2 DID tables, XMAP modes, CMAPs) aren't
+			// tied to a screen position: logged whenever the trace is on
+			if (s_rex3_trace.on && s_rex3_trace.remaining > 0 && s_rex3_trace.active())
+			{
+				s_rex3_trace.remaining--;
+				fprintf(stderr, "DCB_TRACE t=%.6f slave=%u reg=%u mask=%08x data=%08x\n", machine().time().as_double(),
+						unsigned(m_rex3.m_dcb_slave_select), unsigned(m_rex3.m_dcb_reg_select), m_rex3.m_dcb_mask, data32);
+			}
+#endif
 			switch (m_rex3.m_dcb_slave_select)
 			{
 			case DCB_ADDR_VC2:
