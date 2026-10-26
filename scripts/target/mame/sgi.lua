@@ -27,6 +27,7 @@
 --CPUS["TMS9900"] = true
 --CPUS["Z80"] = true
 CPUS["ARM"] = true
+CPUS["DSP56000"] = true  -- ip20.cpp
 CPUS["M6800"] = true
 CPUS["M6805"] = true
 CPUS["MCS48"] = true
@@ -61,6 +62,7 @@ SOUNDS["DAC"] = true
 --------------------------------------------------
 
 --VIDEOS["MC6845"] = true
+VIDEOS["BT47X"] = true  -- light.cpp (ip20.cpp)
 VIDEOS["MC6845"] = true
 VIDEOS["PS2GIF"] = true
 VIDEOS["PS2GS"] = true
@@ -97,6 +99,7 @@ MACHINES["ACIA6850"] = true
 MACHINES["AT_KEYBC"] = true
 MACHINES["BANKDEV"] = true
 MACHINES["CHESSMACHINE"] = true
+MACHINES["DP8573A"] = true  -- ip20.cpp
 MACHINES["DS1386"] = true
 MACHINES["EDLC"] = true
 MACHINES["EEPROMDEV"] = true
@@ -256,6 +259,8 @@ files{
 	MAME_DIR .. "src/devices/bus/nscsi/hd.h",
 	MAME_DIR .. "src/devices/bus/nscsi/tape.cpp",
 	MAME_DIR .. "src/devices/bus/nscsi/tape.h",
+	MAME_DIR .. "src/devices/bus/rs232/hlemouse.cpp",
+	MAME_DIR .. "src/devices/bus/rs232/hlemouse.h",
 	MAME_DIR .. "src/devices/bus/rs232/rs232.cpp",
 	MAME_DIR .. "src/devices/bus/rs232/rs232.h",
 	MAME_DIR .. "src/devices/bus/rs232/loopback.cpp",
@@ -280,6 +285,17 @@ files{
 	MAME_DIR .. "src/mame/sgi/mc.h",
 	MAME_DIR .. "src/mame/sgi/vino.cpp",
 	MAME_DIR .. "src/mame/sgi/vino.h",
+	MAME_DIR .. "src/mame/sgi/ip20.cpp",
+	MAME_DIR .. "src/mame/sgi/hpc1.cpp",
+	MAME_DIR .. "src/mame/sgi/hpc1.h",
+	MAME_DIR .. "src/mame/sgi/int2.cpp",
+	MAME_DIR .. "src/mame/sgi/int2.h",
+	MAME_DIR .. "src/mame/sgi/kbd.cpp",
+	MAME_DIR .. "src/mame/sgi/kbd.h",
+	MAME_DIR .. "src/mame/sgi/light.cpp",
+	MAME_DIR .. "src/mame/sgi/light.h",
+	MAME_DIR .. "src/mame/sgi/vc1.cpp",
+	MAME_DIR .. "src/mame/sgi/vc1.h",
 }
 end
 
