@@ -426,6 +426,10 @@ protected:
 	unsigned const m_hilo_cycles[4];
 	unsigned m_hilo_delay;
 
+	// pipeline and bus timing
+	unsigned m_branch_penalty;        // extra cycles for a taken branch or jump
+	unsigned m_uncached_fetch_cycles; // extra cycles for an uncached instruction fetch
+
 	// cpu state
 	u64 m_pc;
 	u64 m_r[32];

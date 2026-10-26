@@ -117,6 +117,17 @@ void r4000_base_device::device_start()
 {
 	// TODO: save state
 
+	// The R4000 and R4400 (implementation 0x04) are superpipelined: a taken
+	// branch or jump costs two cycles on top of its delay slot. The
+	// five-stage R4600 and R5000 have no such penalty.
+	m_branch_penalty = ((m_cp0[CP0_PRId] >> 8) == 0x04) ? 2 : 0;
+
+	// An uncached instruction fetch goes out over the system bus, taking
+	// about 273ns more than a cached one (an Indigo R4000 runs a 1024
+	// instruction delay loop in 20us cached and 300us uncached, from its
+	// PROM), independent of the pipeline clock.
+	m_uncached_fetch_cycles = unsigned(double(execute_clocks_to_cycles(clock())) * 273e-9 + 0.5);
+
 	state_add(STATE_GENPC,     "GENPC", m_pc).noshow();
 	state_add(STATE_GENPCBASE, "CURPC", m_pc).noshow();
 	state_add(MIPS3_PC,        "PC", m_pc).formatstr("%016X");
@@ -319,6 +330,7 @@ void r4000_base_device::execute_run()
 		case BRANCH:
 			m_pc = m_branch_state & TARGET;
 			m_branch_state = NONE;
+			m_icount -= m_branch_penalty;
 			break;
 
 		case DELAY:
@@ -3941,6 +3953,9 @@ bool r4000_base_device::fetch(u64 address, std::function<void(u32)> &&apply)
 	// tlb miss
 	if (t == MISS)
 		return false;
+
+	if (t == UNCACHED)
+		m_icount -= m_uncached_fetch_cycles;
 
 	if (ICACHE)
 	{
