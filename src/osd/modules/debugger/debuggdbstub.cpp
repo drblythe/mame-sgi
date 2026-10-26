@@ -653,7 +653,10 @@ static const gdb_register_map gdb_register_map_psxcpu =
 static const std::map<std::string, const gdb_register_map &> gdb_register_maps = {
 	{ "i486",       gdb_register_map_i486 },
 	{ "arm7_le",    gdb_register_map_arm7 },
+	{ "r4000",      gdb_register_map_r4600 },
+	{ "r4400",      gdb_register_map_r4600 },
 	{ "r4600",      gdb_register_map_r4600 },
+	{ "r5000",      gdb_register_map_r4600 },
 	{ "r4600be",    gdb_register_map_r4600 },
 	{ "r4600le",    gdb_register_map_r4600 },
 	{ "ppc601",     gdb_register_map_ppc601 },
