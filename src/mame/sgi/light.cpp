@@ -28,6 +28,10 @@
 static constexpr uint32_t x_res = 1024;
 static constexpr uint32_t y_res = 768;
 
+// VC1 cursor position of the screen's top left pixel
+static constexpr int CURSOR_X_OFFSET = 140;
+static constexpr int CURSOR_Y_OFFSET = 39;
+
 enum
 {
 	REX15_OP_NOP                = 0x00000000,
@@ -139,11 +143,47 @@ void sgi_lg1_device::map(address_map &map)
 
 u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, rectangle const &cliprect)
 {
+	// the PROM and IRIX blank the screen through the VC1
+	if (!m_vc1->video_enabled())
+	{
+		bitmap.fill(rgb_t::black(), cliprect);
+		return 0;
+	}
+
 	u8 const *src = &m_vram[0];
 
 	for (unsigned y = screen.visible_area().min_y; y <= screen.visible_area().max_y; y++)
 		for (unsigned x = screen.visible_area().min_x; x <= screen.visible_area().max_x; x++)
 			bitmap.pix(y, x) = m_lut1->palette_lookup(*src++);
+
+	// VC1 cursor: 32x32, two planes of 4 bytes per row (most significant
+	// bit leftmost) in the VC1's SRAM at CUR_EP and CUR_EP + 0x80; the
+	// planes form an index into cursor colour map 3 (0 is transparent)
+	{
+		u16 const ep = m_vc1->cursor_ep();
+		int const cx = int(m_vc1->cursor_x()) - CURSOR_X_OFFSET;
+		int const cy = int(m_vc1->cursor_y()) - CURSOR_Y_OFFSET;
+
+		for (int row = 0; row < 32; row++)
+		{
+			int const y = cy + row;
+			if (y < cliprect.min_y || y > cliprect.max_y)
+				continue;
+
+			u32 const p0 = u32(m_vc1->ram(ep + row * 4 + 0)) << 24 | u32(m_vc1->ram(ep + row * 4 + 1)) << 16 | u32(m_vc1->ram(ep + row * 4 + 2)) << 8 | m_vc1->ram(ep + row * 4 + 3);
+			u32 const p1 = u32(m_vc1->ram(ep + 0x80 + row * 4 + 0)) << 24 | u32(m_vc1->ram(ep + 0x80 + row * 4 + 1)) << 16 | u32(m_vc1->ram(ep + 0x80 + row * 4 + 2)) << 8 | m_vc1->ram(ep + 0x80 + row * 4 + 3);
+			if (!(p0 | p1))
+				continue;
+
+			for (int col = 0; col < 32; col++)
+			{
+				int const x = cx + col;
+				unsigned const index = BIT(p1, 31 - col) << 1 | BIT(p0, 31 - col);
+				if (index && x >= cliprect.min_x && x <= cliprect.max_x)
+					bitmap.pix(y, x) = m_lut1->pen_color(0x300 + index);
+			}
+		}
+	}
 
 	return 0;
 }

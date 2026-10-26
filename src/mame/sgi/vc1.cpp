@@ -29,6 +29,7 @@ void sgi_vc1_device::device_start()
 	save_item(NAME(m_addr));
 	save_item(NAME(m_reg));
 	save_item(NAME(m_xmap));
+	save_item(NAME(m_sysctl));
 
 	save_pointer(NAME(m_ram), 0x8000);
 }
@@ -36,6 +37,7 @@ void sgi_vc1_device::device_start()
 void sgi_vc1_device::device_reset()
 {
 	m_addr = 0;
+	m_sysctl = 0;
 }
 
 enum vc1_cmd : unsigned
@@ -65,6 +67,8 @@ u8 sgi_vc1_device::read(offs_t offset)
 		return u8(m_addr);
 	case ADDR_HI:
 		return m_addr >> 8;
+	case SYS_CTRL:
+		return m_sysctl;
 	default:
 		LOG("read offset %d\n", offset);
 		return 0;
@@ -198,6 +202,11 @@ void sgi_vc1_device::write(offs_t offset, u8 data)
 		break;
 	case ADDR_HI:
 		m_addr = (m_addr & 0x00ffU) | (data << 8);
+		break;
+	case SYS_CTRL:
+		if (data != m_sysctl)
+			LOG("sysctl 0x%02x\n", data);
+		m_sysctl = data;
 		break;
 	default:
 		LOG("write offset %d data 0x%02x\n", offset, data);

@@ -15,6 +15,15 @@ public:
 	u8 read(offs_t offset);
 	void write(offs_t offset, u8 data);
 
+	// cursor generator state, for the board's screen update
+	u8 sysctl() const { return m_sysctl; }
+	bool video_enabled() const { return m_sysctl & 0x04; } // cleared to blank the screen
+	u16 cursor_ep() const { return u16(m_reg[0x20]) << 8 | m_reg[0x21]; }
+	u16 cursor_x() const { return u16(m_reg[0x22]) << 8 | m_reg[0x23]; }
+	u16 cursor_y() const { return u16(m_reg[0x24]) << 8 | m_reg[0x25]; }
+	u16 cursor_mode() const { return u16(m_reg[0x26]) << 8 | m_reg[0x27]; }
+	u8 ram(u16 address) const { return m_ram[address & 0x7fffU]; }
+
 protected:
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
@@ -23,6 +32,7 @@ private:
 	u16 m_addr;
 	u8 m_reg[128];
 	u8 m_xmap[128];
+	u8 m_sysctl;
 
 	std::unique_ptr<u8[]> m_ram;
 };
