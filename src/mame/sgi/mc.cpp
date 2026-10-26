@@ -380,6 +380,11 @@ void sgi_mc_device::set_cpu_buserr(uint32_t address, uint64_t mem_mask)
 
 uint32_t sgi_mc_device::dma_translate(uint32_t address)
 {
+	// DMA control bit 8 enables virtual address translation; without it the
+	// memory address is physical
+	if (!BIT(m_dma_control, 8))
+		return address;
+
 	for (int entry = 0; entry < 4; entry++)
 	{
 		if ((address & 0xffc00000) == (m_dma_tlb_entry_hi[entry] & 0xffc00000))
