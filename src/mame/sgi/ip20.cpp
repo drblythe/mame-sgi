@@ -18,6 +18,7 @@
   */
 
 #include "emu.h"
+#include "cpu/mips/mips3.h"
 #include "cpu/mips/r4000.h"
 #include "cpu/dsp56000/dsp56000.h"
 
@@ -67,6 +68,7 @@ public:
 
 	void indigo_r4000(machine_config &config);
 	void indigo_r4400(machine_config &config);
+	void indigo_r4400m(machine_config &config);
 
 protected:
 	void ip20(machine_config &config);
@@ -80,7 +82,7 @@ protected:
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
 	void dsp_miscsr_w(u32 data);
 
-	required_device<r4000_base_device> m_cpu;
+	required_device<cpu_device> m_cpu;
 	required_device<eeprom_serial_93cxx_device> m_eerom;
 	required_device<sgi_mc_device> m_mc;
 	required_device<hpc1_device> m_hpc;
@@ -140,7 +142,10 @@ template <u32 Base> u64 ip20_state::bus_error_r(offs_t offset, u64 mem_mask)
 	if (!machine().side_effects_disabled())
 	{
 		m_mc->set_cpu_buserr(Base + (offset << 3), mem_mask);
-		m_cpu->bus_error();
+		if (auto *const mips3 = dynamic_cast<mips3_device *>(m_cpu.target()))
+			mips3->bus_error();
+		else
+			downcast<r4000_base_device &>(*m_cpu).bus_error();
 	}
 	return 0;
 }
@@ -222,6 +227,23 @@ void ip20_state::indigo_r4000(machine_config &config)
 void ip20_state::indigo_r4400(machine_config &config)
 {
 	R4400(config, m_cpu, 75'000'000);
+
+	ip20(config);
+}
+
+// the same R4400 on MAME's MIPS III core, which has a recompiler
+void ip20_state::indigo_r4400m(machine_config &config)
+{
+	r4400be_device &cpu = R4400BE(config, m_cpu, 150'000'000);
+	cpu.set_system_clock(50'000'000);
+	cpu.set_icache_size(0x4000);
+	cpu.set_dcache_size(0x4000);
+	cpu.set_drc_hash32(true);
+	cpu.set_drc_asid_dispatch(true); // IRIX runs many processes at the same virtual addresses
+	cpu.set_drc_cache_mb(128);
+	// an uncached instruction fetch takes about 273ns: the boot PROM's
+	// delay calibration counts timer ticks over loops run from the PROM
+	cpu.set_uncached_fetch_cycles(41);
 
 	ip20(config);
 }
@@ -359,6 +381,7 @@ ROM_START(indigo_r4000)
 ROM_END
 
 #define rom_indigo_r4400 rom_indigo_r4000
+#define rom_indigo_r4400m rom_indigo_r4000
 } // anonymous namespace
 
 // The Indigo has no sound (the DSP56001 is not connected) and imperfect LG1
@@ -368,3 +391,4 @@ ROM_END
 //   YEAR  NAME          PARENT  COMPAT  MACHINE       INPUT  CLASS       INIT        COMPANY             FULLNAME             FLAGS
 COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", 0)
 COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", 0)
+COMP(1991, indigo_r4400m, indigo_r4400, 0, indigo_r4400m, 0,  ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400 (MIPS III recompiler)", 0)
