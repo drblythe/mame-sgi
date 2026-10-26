@@ -78,6 +78,7 @@ protected:
 
 	template <u32 Base> u64 bus_error_r(offs_t offset, u64 mem_mask);
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
+	void dsp_miscsr_w(u32 data);
 
 	required_device<r4000_base_device> m_cpu;
 	required_device<eeprom_serial_93cxx_device> m_eerom;
@@ -91,14 +92,43 @@ protected:
 	required_device_array<scc85c30_device, 3> m_scc;
 	required_device<dsp56001_device> m_dsp;
 	required_device<sgi_lg1_device> m_gfx;
+
+	u32 m_dsp_miscsr = 0;
 };
 
 void ip20_state::machine_start()
 {
+	save_item(NAME(m_dsp_miscsr));
 }
 
 void ip20_state::machine_reset()
 {
+	m_dsp_miscsr = 0;
+}
+
+// HPC1 miscellaneous control and status: bit 0 holds the DSP56001 in reset.
+// The DSP56001 isn't emulated. The boot PROM decides whether the audio board
+// is present by loading a short program into the DSP's SRAM, writing
+// 0xffffffff to the mailbox word at the start of the SRAM and releasing
+// reset; within 50us the program sets the mailbox to 1 (then 2 once the boot
+// tune has played) and stores the audio board's revision key in the next
+// word, bit 7 clear when the board is present. Without that answer the PROM
+// lists no audio controller and IRIX treats the machine as a VME-based V50.
+// Answer that one probe as the program would; other DSP loads are left alone.
+void ip20_state::dsp_miscsr_w(u32 data)
+{
+	bool const start = BIT(m_dsp_miscsr, 0) && !BIT(data, 0);
+	m_dsp_miscsr = data;
+
+	if (start)
+	{
+		address_space &space = m_cpu->space(AS_PROGRAM);
+		if ((space.read_dword(0x1fbe'0000) & 0x00ff'ffff) == 0x00ff'ffff)
+		{
+			space.write_dword(0x1fbe'0000, 2);
+			space.write_dword(0x1fbe'0004, 0x0a);
+		}
+	}
 }
 
 // Nothing answers in these ranges: the MC times out, records the address
@@ -150,6 +180,9 @@ void ip20_state::cpu_map(address_map &map)
 	map(0x1fa0'0000, 0x1fa1'ffff).rw(m_mc, FUNC(sgi_mc_device::read), FUNC(sgi_mc_device::write));
 
 	map(0x1fb8'0000, 0x1fb8'ffff).m(m_hpc, FUNC(hpc1_device::map));
+	map(0x1fb8'01b0, 0x1fb8'01b3).lrw32(
+		NAME([this]() { return m_dsp_miscsr; }),
+		NAME([this](u32 data) { dsp_miscsr_w(data); }));
 	map(0x1fb8'0100, 0x1fb8'011f).m(m_eth, FUNC(seeq8003_device::map)).umask32(0xff);
 	map(0x1fb8'0120, 0x1fb8'0127).rw(m_scsi, FUNC(wd33c93a_device::indir_r), FUNC(wd33c93a_device::indir_w)).umask32(0xff00);
 	map(0x1fb8'01c0, 0x1fb8'01ff).m(m_int, FUNC(sgi_int2_device::map)).umask32(0xff);
