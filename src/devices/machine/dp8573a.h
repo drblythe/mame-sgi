@@ -20,6 +20,10 @@ public:
 	auto intr() { return m_intr_cb.bind(); }
 	auto mfo() { return m_mfo_cb.bind(); }
 
+	// the year register holds years since this base (its last two digits
+	// are used): software decides what the chip's year means
+	void set_year_base(int base) { m_year_base = base % 100; }
+
 protected:
 	dp8573a_device(const machine_config &mconfig, device_type type, const char *tag, device_t *owner, uint32_t clock);
 
@@ -48,6 +52,7 @@ protected:
 	uint8_t m_tscr;
 	uint8_t m_pfr;
 	uint8_t m_millis;
+	int m_year_base = 0;
 
 	emu_timer *m_timer;
 

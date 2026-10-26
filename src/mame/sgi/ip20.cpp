@@ -270,6 +270,7 @@ void ip20_state::ip20(machine_config &config)
 	EEPROM_93C56_16BIT(config, m_nvram);
 
 	DP8572A(config, m_rtc, 32.768_kHz_XTAL).set_use_utc(true);
+	m_rtc->set_year_base(1970); // IRIX stores years since 1970
 
 	auto &scsi(NSCSI_BUS(config, "scsi"));
 

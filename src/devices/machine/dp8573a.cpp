@@ -170,13 +170,14 @@ void dp8573a_device::rtc_clock_updated(int year, int month, int day, int day_of_
 	m_ram[REG_HOUR] = time_helper::make_bcd(hour);
 	m_ram[REG_DAY] = time_helper::make_bcd(day);
 	m_ram[REG_MONTH] = time_helper::make_bcd(month);
-	m_ram[REG_YEAR] = time_helper::make_bcd(year);
+	m_ram[REG_YEAR] = time_helper::make_bcd((year - m_year_base + 100) % 100);
 	m_ram[REG_DAYOFWEEK] = time_helper::make_bcd(day_of_week);
 
 	m_pfr = 0;
 
 	// FIXME: should probably rely on nvram start/stop state
-	m_ram[REG_RTMR] = RTMR_CSS;
+	// the leap year counter is zero in a leap year
+	m_ram[REG_RTMR] = RTMR_CSS | (year % 4);
 }
 
 void dp8573a_device::save_registers()
