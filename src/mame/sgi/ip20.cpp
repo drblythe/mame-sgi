@@ -234,6 +234,7 @@ void ip20_state::ip20(machine_config &config)
 
 	SGI_MC(config, m_mc, m_cpu, m_eerom, 50'000'000);
 	m_mc->eisa_present().set_constant(0);
+	m_mc->int_dma_done_cb().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_GDMA>));
 	m_mc->set_input_default(DEVICE_INPUT_DEFAULTS_NAME(ip20_mc));
 
 	SGI_HPC1(config, m_hpc);
