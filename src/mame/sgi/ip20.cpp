@@ -294,6 +294,10 @@ ROM_END
 #define rom_indigo_r4400 rom_indigo_r4000
 } // anonymous namespace
 
+// The Indigo has no sound (the DSP56001 is not connected) and imperfect LG1
+// graphics, but MACHINE_NO_SOUND and MACHINE_IMPERFECT_GRAPHICS are left off
+// for now: their startup warning needs a keypress on every boot, which stops
+// unattended test runs.
 //   YEAR  NAME          PARENT  COMPAT  MACHINE       INPUT  CLASS       INIT        COMPANY             FULLNAME             FLAGS
-COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", MACHINE_NO_SOUND | MACHINE_IMPERFECT_GRAPHICS)
-COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", MACHINE_NO_SOUND | MACHINE_IMPERFECT_GRAPHICS)
+COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", 0)
+COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", 0)
