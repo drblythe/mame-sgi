@@ -310,6 +310,10 @@ void ip20_state::ip20(machine_config &config)
 
 	// duart 1
 	SCC85C30(config, m_scc[1], 10_MHz_XTAL);
+	// channel B is the serial console (null_modem to a host socket): IRIX
+	// writes bursts faster than 9600 baud drains, so keep the bytes the
+	// real FIFOs would drop on overrun
+	m_scc[1]->set_overflow_queue(1, true);
 	m_scc[1]->configure_channels(3'686'400, 0, 3'686'400, 0);
 	m_scc[1]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<1>));
 
