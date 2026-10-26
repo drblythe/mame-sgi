@@ -347,6 +347,10 @@ public:
 	TIMER_CALLBACK_MEMBER(compare_int_callback);
 
 	void add_fastram(offs_t start, offs_t end, uint8_t readonly, void *base);
+	// called from a memory handler: the access in progress takes a bus
+	// error exception (reads: data or instruction bus error; writes are
+	// left to the system's own bus error interrupt)
+	void bus_error() { m_core->bus_error = 1; }
 	void clear_fastram(uint32_t select_start);
 	// Public wrapper for the otherwise-private code_flush_cache(), added
 	// for sgi/mc.cpp's use. Only ever called from a genuine
@@ -641,6 +645,7 @@ protected:
 		uint32_t        arg0;                       /* print_debug argument 1 */
 		uint32_t        arg1;                       /* print_debug argument 2 */
 		uint64_t        fp_convert_src;             /* source of a float to integer conversion (MAME_SGI_FP_CONVERT_FIX) */
+		uint32_t        bus_error;                  /* set by bus_error() during a memory access */
 
 		uint64_t        count_zero_time;
 		uint32_t        compare_armed;
@@ -875,7 +880,7 @@ protected:
 
 	void static_generate_memory_mode_checks(drcuml_block &block, uml::code_handle &exception_addrerr, int &label, int mode);
 	void static_generate_fastram_accessor(drcuml_block &block, int &label, int size, bool iswrite, bool ismasked);
-	void static_generate_memory_rw(drcuml_block &block, int size, bool iswrite, bool ismasked);
+	void static_generate_memory_rw(drcuml_block &block, int &label, int size, bool iswrite, bool ismasked);
 	virtual void static_generate_memory_accessor(drcuml_block &block, int &label, int mode, int size, bool iswrite, bool ismasked, const char *name, uml::code_handle *&handleptr);
 
 	virtual void check_irqs();

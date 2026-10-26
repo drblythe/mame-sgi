@@ -1507,7 +1507,15 @@ inline bool mips3_device::RBYTE(offs_t address, uint32_t *result)
 			*result = m_fastram[ramnum].offset_base8[tlbaddress ^ m_byte_xor];
 			return true;
 		}
+		m_core->bus_error = 0;
 		*result = m_program->read_byte(tlbaddress);
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{
@@ -1540,7 +1548,15 @@ inline bool mips3_device::RHALF(offs_t address, uint32_t *result)
 			*result = m_fastram[ramnum].offset_base16[(tlbaddress ^ m_word_xor) >> 1];
 			return true;
 		}
+		m_core->bus_error = 0;
 		*result = m_program->read_word(tlbaddress);
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{
@@ -1573,7 +1589,15 @@ inline bool mips3_device::RWORD(offs_t address, uint32_t *result, bool insn)
 			*result = m_fastram[ramnum].offset_base32[(tlbaddress ^ m_dword_xor) >> 2];
 			return true;
 		}
+		m_core->bus_error = 0;
 		*result = m_program->read_dword(tlbaddress);
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(insn ? EXCEPTION_BUSINST : EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{
@@ -1596,7 +1620,15 @@ inline bool mips3_device::RWORD_MASKED(offs_t address, uint32_t *result, uint32_
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
+		m_core->bus_error = 0;
 		*result = m_program->read_dword((tlbval & ~0xfff) | (address & 0xfff), mem_mask);
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{
@@ -1619,7 +1651,15 @@ inline bool mips3_device::RDOUBLE(offs_t address, uint64_t *result)
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
+		m_core->bus_error = 0;
 		*result = m_program->read_qword((tlbval & ~0xfff) | (address & 0xfff));
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{
@@ -1642,7 +1682,15 @@ inline bool mips3_device::RDOUBLE_MASKED(offs_t address, uint64_t *result, uint6
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
+		m_core->bus_error = 0;
 		*result = m_program->read_qword((tlbval & ~0xfff) | (address & 0xfff), mem_mask);
+		if (m_core->bus_error)
+		{
+			m_core->bus_error = 0;
+			generate_exception(EXCEPTION_BUSDATA, 1);
+			*result = 0;
+			return false;
+		}
 	}
 	else
 	{

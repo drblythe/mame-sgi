@@ -589,6 +589,7 @@ void mips3_device::code_flush_cache()
 			static_generate_exception(block, label, EXCEPTION_TLBSTORE_FILL, true,  "exception_tlbstore_fill");
 			static_generate_exception(block, label, EXCEPTION_ADDRLOAD,      true,  "exception_addrload");
 			static_generate_exception(block, label, EXCEPTION_ADDRSTORE,     true,  "exception_addrstore");
+			static_generate_exception(block, label, EXCEPTION_BUSDATA,       true,  "exception_busdata");
 			static_generate_exception(block, label, EXCEPTION_SYSCALL,       true,  "exception_syscall");
 			static_generate_exception(block, label, EXCEPTION_BREAK,         true,  "exception_break");
 			static_generate_exception(block, label, EXCEPTION_INVALIDOP,     true,  "exception_invalidop");
@@ -2353,8 +2354,13 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
     static_generate_memory_rw
 ------------------------------------------------------------------*/
 
-void mips3_device::static_generate_memory_rw(drcuml_block &block, int size, bool iswrite, bool ismasked)
+void mips3_device::static_generate_memory_rw(drcuml_block &block, int &label, int size, bool iswrite, bool ismasked)
 {
+	// a read handler may call bus_error(): the read then takes a data bus
+	// error exception instead of returning
+	if (!iswrite)
+		UML_MOV(block, mem(&m_core->bus_error), 0);                             // mov     [bus_error],0
+
 	switch (size)
 	{
 		case 1:
@@ -2405,6 +2411,15 @@ void mips3_device::static_generate_memory_rw(drcuml_block &block, int size, bool
 			}
 			break;
 	}
+	if (!iswrite)
+	{
+		uml::code_label const ok = label++;
+		UML_TEST(block, mem(&m_core->bus_error), 1);                            // test    [bus_error],1
+		UML_JMPc(block, COND_Z, ok);                                            // jz      ok
+		UML_MOV(block, mem(&m_core->bus_error), 0);                             // mov     [bus_error],0
+		UML_EXH(block, *m_exception[EXCEPTION_BUSDATA], 0);                     // exh     busdata,0
+		UML_LABEL(block, ok);                                                   // ok:
+	}
 	UML_RET(block);                                                                 // ret
 }
 
@@ -2438,7 +2453,7 @@ void mips3_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	UML_ROLINS(block, I0, I3, 0, 0xfffff000);                                       // rolins  i0,i3,0,0xfffff000
 
 	static_generate_fastram_accessor(block, label, size, iswrite, ismasked);
-	static_generate_memory_rw(block, size, iswrite, ismasked);
+	static_generate_memory_rw(block, label, size, iswrite, ismasked);
 
 
 	UML_LABEL(block, tlbmiss);                                                      // tlbmiss:
@@ -2476,7 +2491,7 @@ void r4650_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	}
 
 	static_generate_fastram_accessor(block, label, size, iswrite, ismasked);
-	static_generate_memory_rw(block, size, iswrite, ismasked);
+	static_generate_memory_rw(block, label, size, iswrite, ismasked);
 }
 
 
