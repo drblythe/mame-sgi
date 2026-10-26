@@ -65,7 +65,11 @@ protected:
 
 	virtual void interface_pre_start() override;
 
+	// drive this card's GIO interrupt line N
+	template <int N> void gio_interrupt(int state);
+
 	gio64_device *m_gio64;
+	gio64_slot_device::slot_type_t m_slot_type;
 };
 
 
@@ -104,7 +108,12 @@ public:
 		}
 	}
 
-	template <int N> void interrupt(int state) { m_interrupt_cb[N](state); }
+	// a card in slot_type drives its interrupt line N; each bus line is
+	// the OR of that line across the slots
+	void slot_interrupt(gio64_slot_device::slot_type_t slot_type, int n, int state);
+
+	// interrupt lines a slot's card is asserting, bit N for line N
+	u8 slot_interrupts(gio64_slot_device::slot_type_t slot_type) const { return m_slot_irq[slot_type]; }
 
 	u64 read(offs_t offset, u64 mem_mask);
 	void write(offs_t offset, u64 data, u64 mem_mask);
@@ -120,7 +129,13 @@ protected:
 
 private:
 	devcb_write_line::array<3> m_interrupt_cb;
+	u8 m_slot_irq[3];
 };
+
+template <int N> void device_gio64_card_interface::gio_interrupt(int state)
+{
+	m_gio64->slot_interrupt(m_slot_type, N, state);
+}
 
 DECLARE_DEVICE_TYPE(GIO64, gio64_device)
 

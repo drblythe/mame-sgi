@@ -233,6 +233,7 @@ protected:
 
 private:
 	uint32_t eisa_io_r();
+	uint16_t extio_r();
 
 	void gio_int1_w(int state);
 	void gio_vv_int_w(int state);
@@ -389,6 +390,41 @@ void ip22_state::pio4_map(address_map &map)
 void ip22_state::pio6_map(address_map &map)
 {
 	map(0x00, 0x1f).m("ioc2", FUNC(ioc2_full_house_device::map)).umask16(0x00ff);
+	map(0x40, 0x40).r(FUNC(ip22_state::extio_r));
+}
+
+// Full House's EXTIO register (PIO6 0x40, 0x1fbd9900). GIO interrupts from
+// all slots share the CPU's GIO lines; on an interrupt IRIX reads this
+// register and calls a slot's handler only if that slot's bit for the
+// line is low. Line 0 is reported in the IRQ_2 bits and line 1 in the IRQ_1
+// bits; the boards' VV_INT shares line 1 here (see gio_vv_int_w), so it
+// shows in IRQ_1 too. Nothing drives line 2 or the vsync bits. The low byte
+// reads 0: GIO at 25MHz, no HPC3, MC or EISA bus error, and the slot status
+// bits clear, which a third-slot board's handler also reads as pending.
+uint16_t ip22_state::extio_r()
+{
+	enum : uint16_t
+	{
+		EXTIO_S0_IRQ_1 = 0x2000,
+		EXTIO_S0_IRQ_2 = 0x4000,
+		EXTIO_SG_IRQ_1 = 0x0200,
+		EXTIO_SG_IRQ_2 = 0x0400
+	};
+
+	uint16_t data = 0xff00;
+	u8 const gfx = m_gio64->slot_interrupts(gio64_slot_device::GIO64_SLOT_GFX);
+	u8 const exp0 = m_gio64->slot_interrupts(gio64_slot_device::GIO64_SLOT_EXP0);
+
+	if (BIT(gfx, 0))
+		data &= ~EXTIO_SG_IRQ_2;
+	if (gfx & 6)
+		data &= ~EXTIO_SG_IRQ_1;
+	if (BIT(exp0, 0))
+		data &= ~EXTIO_S0_IRQ_2;
+	if (exp0 & 6)
+		data &= ~EXTIO_S0_IRQ_1;
+
+	return data;
 }
 
 void ip24_state::machine_start()

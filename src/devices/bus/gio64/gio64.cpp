@@ -76,6 +76,24 @@ gio64_device::gio64_device(const machine_config &mconfig, device_type type, cons
 void gio64_device::device_start()
 {
 	std::fill(std::begin(m_device_list), std::end(m_device_list), nullptr);
+	std::fill(std::begin(m_slot_irq), std::end(m_slot_irq), 0);
+
+	save_item(NAME(m_slot_irq));
+}
+
+void gio64_device::slot_interrupt(gio64_slot_device::slot_type_t slot_type, int n, int state)
+{
+	u8 const bit = 1U << n;
+	bool const was = (m_slot_irq[0] | m_slot_irq[1] | m_slot_irq[2]) & bit;
+
+	if (state)
+		m_slot_irq[slot_type] |= bit;
+	else
+		m_slot_irq[slot_type] &= ~bit;
+
+	bool const now = (m_slot_irq[0] | m_slot_irq[1] | m_slot_irq[2]) & bit;
+	if (now != was)
+		m_interrupt_cb[n](now ? ASSERT_LINE : CLEAR_LINE);
 }
 
 u64 gio64_device::read(offs_t offset, u64 mem_mask)
@@ -107,6 +125,7 @@ device_gio64_card_interface *gio64_device::get_gio64_card(int slot)
 device_gio64_card_interface::device_gio64_card_interface(const machine_config &mconfig, device_t &device)
 	: device_interface(device, "sgigio64")
 	, m_gio64(nullptr)
+	, m_slot_type(gio64_slot_device::GIO64_SLOT_GFX)
 {
 }
 
@@ -128,6 +147,7 @@ void device_gio64_card_interface::interface_pre_start()
 void device_gio64_card_interface::set_gio64(gio64_device *gio64, gio64_slot_device::slot_type_t slot_type)
 {
 	m_gio64 = gio64;
+	m_slot_type = slot_type;
 
 	m_gio64->install_card(slot_type, *this, &device_gio64_card_interface::mem_map);
 }

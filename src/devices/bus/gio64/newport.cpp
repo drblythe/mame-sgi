@@ -3505,7 +3505,7 @@ void newport_base_device::vrint_w(int state)
 	{
 		g_mame_sgi_stat_vrint_asserts++;
 		m_rex3.m_status |= STATUS_VRINT;
-		m_gio64->interrupt<2>(ASSERT_LINE);
+		gio_interrupt<2>(ASSERT_LINE);
 	}
 }
 
@@ -3986,7 +3986,7 @@ uint64_t newport_base_device::rex3_r(offs_t offset, uint64_t mem_mask)
 			LOGMASKED(LOG_REX3, "REX3 Status Read: %08x\n", m_rex3.m_status);
 			uint32_t old_status = m_rex3.m_status;
 			m_rex3.m_status &= ~STATUS_VRINT;
-			m_gio64->interrupt<2>(CLEAR_LINE);
+			gio_interrupt<2>(CLEAR_LINE);
 			ret |= (uint64_t)(old_status | 3) << 32;
 		}
 		if (ACCESSING_BITS_0_31)
