@@ -184,6 +184,7 @@ void ip20_state::ip20(machine_config &config)
 	m_hpc->int_w().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_ETHERNET>));
 	m_hpc->dma_r_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_r));
 	m_hpc->dma_w_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_w));
+	m_hpc->scsi_reset_w().set(m_scsi, FUNC(wd33c93a_device::reset_w));
 	m_hpc->eeprom_dati().set(m_nvram, FUNC(eeprom_serial_93cxx_device::do_read));
 	m_hpc->eeprom_out().set(
 		[this](u8 data)

@@ -62,6 +62,7 @@ hpc1_device::hpc1_device(const machine_config &mconfig, const char *tag, device_
 	, m_gio(*this, finder_base::DUMMY_TAG, -1)
 	, m_enet(*this, finder_base::DUMMY_TAG)
 	, m_int_w(*this)
+	, m_scsi_reset_w(*this)
 	, m_eeprom_dati(*this, 0)
 	, m_dma_r(*this, 0)
 	, m_dma_w(*this)
@@ -244,6 +245,9 @@ void hpc1_device::scsi_nbdp_w(u32 data)
 
 void hpc1_device::scsi_ctrl_w(u32 data)
 {
+	// the reset bit drives the SCSI controller's reset input
+	m_scsi_reset_w(BIT(data, 0));
+
 	m_scsi_ctrl = data & ~(SCSI_FLUSH | SCSI_RESET);
 
 	if (BIT(m_drq, 0) && (m_scsi_ctrl & SCSI_STARTDMA))

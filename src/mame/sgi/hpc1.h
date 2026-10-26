@@ -24,6 +24,7 @@ public:
 	template <typename T> void set_enet(T &&tag) { m_enet.set_tag(std::forward<T>(tag)); }
 
 	auto int_w() { return m_int_w.bind(); }
+	auto scsi_reset_w() { return m_scsi_reset_w.bind(); }
 	template <unsigned N> auto dma_r_cb() { return m_dma_r[N].bind(); }
 	template <unsigned N> auto dma_w_cb() { return m_dma_w[N].bind(); }
 	auto eeprom_dati() { return m_eeprom_dati.bind(); }
@@ -106,6 +107,7 @@ private:
 	optional_device<seeq8003_device> m_enet;
 
 	devcb_write_line m_int_w;
+	devcb_write_line m_scsi_reset_w;
 	devcb_read_line m_eeprom_dati;
 	devcb_read8::array<2> m_dma_r;
 	devcb_write8::array<2> m_dma_w;
