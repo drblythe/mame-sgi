@@ -657,6 +657,8 @@ static const std::map<std::string, const gdb_register_map &> gdb_register_maps =
 	{ "r4400",      gdb_register_map_r4600 },
 	{ "r4600",      gdb_register_map_r4600 },
 	{ "r5000",      gdb_register_map_r4600 },
+	{ "r4400be",    gdb_register_map_r4600 },
+	{ "r4400le",    gdb_register_map_r4600 },
 	{ "r4600be",    gdb_register_map_r4600 },
 	{ "r4600le",    gdb_register_map_r4600 },
 	{ "ppc601",     gdb_register_map_ppc601 },
