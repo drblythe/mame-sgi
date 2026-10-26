@@ -97,7 +97,9 @@ protected:
 	u32 aux2_r() { return m_aux2; }
 	u32 diagvram_r() { return m_diagvram; }
 	u32 diagcid_r() { return m_diagcid; }
-	u32 wclock_r() { return m_configsel == 4 ? 0 : m_wclock; } // board revision?
+	// with configsel 4 this reads the board id: bits 0-2 board revision,
+	// bits 3-5 monitor type, bit 6 set when no video option is fitted
+	u32 wclock_r() { return m_configsel == 4 ? 0x40 : m_wclock; }
 	u32 dac_r(offs_t offset);
 	u32 configsel_r() { return m_configsel; }
 	u32 vc1_r(offs_t offset);
