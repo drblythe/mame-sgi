@@ -76,6 +76,9 @@ protected:
 
 	void cpu_map(address_map &map) ATTR_COLD;
 
+	template <u32 Base> u64 bus_error_r(offs_t offset, u64 mem_mask);
+	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
+
 	required_device<r4000_base_device> m_cpu;
 	required_device<eeprom_serial_93cxx_device> m_eerom;
 	required_device<sgi_mc_device> m_mc;
@@ -98,6 +101,26 @@ void ip20_state::machine_reset()
 {
 }
 
+// Nothing answers in these ranges: the MC times out, records the address
+// and raises a bus error. Reads take a data bus error exception, which is
+// how the PROM and IRIX probe for optional boards (GIO cards, additional
+// HPCs); writes only record the error.
+template <u32 Base> u64 ip20_state::bus_error_r(offs_t offset, u64 mem_mask)
+{
+	if (!machine().side_effects_disabled())
+	{
+		m_mc->set_cpu_buserr(Base + (offset << 3), mem_mask);
+		m_cpu->bus_error();
+	}
+	return 0;
+}
+
+template <u32 Base> void ip20_state::bus_error_w(offs_t offset, u64 data, u64 mem_mask)
+{
+	if (!machine().side_effects_disabled())
+		m_mc->set_cpu_buserr(Base + (offset << 3), mem_mask);
+}
+
 void ip20_state::cpu_map(address_map &map)
 {
 	//map(0x1fbd9000, 0x1fbd903f).rw(FUNC(indigo_state::int_r), FUNC(indigo_state::int_w));
@@ -118,7 +141,9 @@ void ip20_state::cpu_map(address_map &map)
 	//map(0x3000'0000, 0x7fff'ffff); // reserved (1.25G)
 	//map(0x8000'0000, 0xffff'ffff); // EISA memory (2G)
 
-	//map(0x1000'0000, 0x1eff'ffff).lr32([this]() { m_cpu->berr_w(1); return 0; }, "buserror"); // vme
+	map(0x1800'0000, 0x1eff'ffff).rw(FUNC(ip20_state::bus_error_r<0x1800'0000>), FUNC(ip20_state::bus_error_w<0x1800'0000>)); // reserved, vme
+	map(0x1f40'0000, 0x1f9f'ffff).rw(FUNC(ip20_state::bus_error_r<0x1f40'0000>), FUNC(ip20_state::bus_error_w<0x1f40'0000>)); // gio slots 0 and 1
+	map(0x1fb0'0000, 0x1fb7'ffff).rw(FUNC(ip20_state::bus_error_r<0x1fb0'0000>), FUNC(ip20_state::bus_error_w<0x1fb0'0000>)); // second hpc
 
 	map(0x1f3f'0000, 0x1f3f'7fff).m(m_gfx, FUNC(sgi_lg1_device::map));
 
