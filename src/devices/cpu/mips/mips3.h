@@ -351,6 +351,9 @@ public:
 	// error exception (reads: data or instruction bus error; writes are
 	// left to the system's own bus error interrupt)
 	void bus_error() { m_core->bus_error = 1; }
+	// extra cycles charged for each instruction fetched uncached (kseg1),
+	// for boot code that calibrates delays against a timer (default 0)
+	void set_uncached_fetch_cycles(int cycles) { m_uncached_fetch_cycles = cycles; }
 	void clear_fastram(uint32_t select_start);
 	// Public wrapper for the otherwise-private code_flush_cache(), added
 	// for sgi/mc.cpp's use. Only ever called from a genuine
@@ -740,6 +743,7 @@ protected:
 	drc_cache       m_drc_cache;                /* pointer to the DRC code cache */
 	std::unique_ptr<drcuml_state>  m_drcuml;    /* DRC UML generator state */
 	std::unique_ptr<frontend>      m_drcfe;     /* pointer to the DRC front-end state */
+	int                            m_uncached_fetch_cycles = 0;
 	uint32_t        m_drcoptions;               /* configurable DRC options */
 
 												/* internal stuff */

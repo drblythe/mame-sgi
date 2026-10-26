@@ -85,6 +85,8 @@ bool mips3_device::frontend::describe(opcode_desc &desc, const opcode_desc *prev
 	// all instructions are 4 bytes and default to a single cycle each
 	desc.length = 4;
 	desc.cycles = 1;
+	if ((desc.pc & 0xe0000000) == 0xa0000000)
+		desc.cycles += m_mips3->m_uncached_fetch_cycles;
 
 	// parse the instruction
 	const uint32_t opswitch = op >> 26;

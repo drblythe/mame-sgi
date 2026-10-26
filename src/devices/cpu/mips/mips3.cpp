@@ -5841,6 +5841,8 @@ void mips3_device::execute_run()
 		/* Clear this flag once instruction execution is finished, will interfere with interrupt exceptions otherwise */
 		m_delayslot = false;
 		m_core->icount--;
+		if ((m_ppc & 0xe0000000) == 0xa0000000)
+			m_core->icount -= m_uncached_fetch_cycles;
 
 		if (ENABLE_O2_DPRINTF && m_core->pc == 0xbfc04d74)
 		{
