@@ -147,6 +147,7 @@ void sgi_mc_device::device_start()
 #ifdef MAME_SGI_RAM_FASTRAM
 	m_fastram_settle_timer = timer_alloc(FUNC(sgi_mc_device::check_fastram_settle), this);
 	m_fastram_committed = false;
+	m_fastram_cpu = dynamic_cast<mips3_device *>(m_maincpu.target());
 #endif
 	m_dma_timer->adjust(attotime::never);
 
@@ -965,7 +966,8 @@ void sgi_mc_device::memcfg_w(offs_t offset, u32 data)
 	// now - see check_fastram_settle()'s own header comment for why the
 	// real registration+flush happens there, not here.
 	m_fastram_committed = false;
-	m_fastram_settle_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
+	if (m_fastram_cpu)
+		m_fastram_settle_timer->adjust(attotime::from_msec(1), 0, attotime::from_msec(1));
 #endif
 
 	LOGMASKED(LOG_MEMCFG, "memcfg%d 0x%08x\n", offset, data);
@@ -1057,7 +1059,7 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::check_fastram_settle)
 // fastram accessor bug described at the top of this file.
 void sgi_mc_device::rebuild_fastram()
 {
-	mips3_device &cpu = downcast<mips3_device &>(*m_maincpu);
+	mips3_device &cpu = *m_fastram_cpu;
 	cpu.clear_fastram(0);
 
 	u16 const simms = m_simms->read();

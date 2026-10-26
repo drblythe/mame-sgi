@@ -17,6 +17,8 @@
 
 #include <cstdlib>
 
+class mips3_device;
+
 class sgi_mc_device : public device_t
 {
 public:
@@ -83,6 +85,7 @@ private:
 	emu_timer *m_dma_timer;
 	emu_timer *m_fastram_settle_timer;
 	bool m_fastram_committed;
+	mips3_device *m_fastram_cpu; // null when the CPU isn't a MIPS3 (no fastram)
 
 	attotime m_last_update_time;
 
