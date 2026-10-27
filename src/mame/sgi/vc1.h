@@ -17,6 +17,20 @@ public:
 
 	// cursor generator state, for the board's screen update
 	u8 sysctl() const { return m_sysctl; }
+	// display id: the frame table at DID_EP holds one line table pointer
+	// per scan line; the line's first entry gives its display id, and the
+	// display id's mode (two bytes each in the xmap table) selects the
+	// RAMDAC palette in bits 2-3 of its second byte
+	u16 did_ep() const { return u16(m_reg[0x40]) << 8 | m_reg[0x41]; }
+	int line_palette(unsigned line) const
+	{
+		u16 const ep = did_ep();
+		if (!ep)
+			return -1;
+		u16 const lp = u16(ram(ep + line * 2)) << 8 | ram(ep + line * 2 + 1);
+		unsigned const did = ram(lp + 3) & 0x1f;
+		return BIT(m_xmap[did * 2 + 1], 2, 2);
+	}
 	bool video_enabled() const { return m_sysctl & 0x04; } // cleared to blank the screen
 	u16 cursor_ep() const { return u16(m_reg[0x20]) << 8 | m_reg[0x21]; }
 	u16 cursor_x() const { return u16(m_reg[0x22]) << 8 | m_reg[0x23]; }

@@ -25,6 +25,8 @@ sgi_vc1_device::sgi_vc1_device(machine_config const &mconfig, char const *tag, d
 void sgi_vc1_device::device_start()
 {
 	m_ram = std::make_unique<u8[]>(0x8000); // TC55328J-35 32,768x8 CMOS STATIC RAM
+	std::fill(std::begin(m_reg), std::end(m_reg), 0);
+	std::fill(std::begin(m_xmap), std::end(m_xmap), 0);
 
 	save_item(NAME(m_addr));
 	save_item(NAME(m_reg));
@@ -60,7 +62,13 @@ u8 sgi_vc1_device::read(offs_t offset)
 	case XMAP_MODE:
 		return m_xmap[m_addr++];
 	case EXT_RAM:
-		return m_ram[m_addr & 0x7fffU];
+		// reads step through the RAM like writes
+		{
+			u8 const data = m_ram[m_addr & 0x7fffU];
+			if (!machine().side_effects_disabled())
+				m_addr++;
+			return data;
+		}
 	case TEST:
 		return 0; // vc1 revision?
 	case ADDR_LO:
