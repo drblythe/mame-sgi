@@ -33,9 +33,18 @@ protected:
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap, rectangle const &cliprect);
 
 	void do_rex_command();
+	void plot(int x, int y, u8 src);
+	u8 vram_r(int x, int y) const;
+	// window origin: coordinates are offset by xywin, where 0x800 is none
+	int xywin_x() const { return int((m_xywin >> 16) & 0x0fff) - 0x800; }
+	int xywin_y() const { return int(m_xywin & 0x0fff) - 0x800; }
+	void rex_reg_w(unsigned reg, u32 data);
+	u32 rex_reg_r(unsigned reg);
+	void go_w(offs_t offset, u32 data);
+	u32 go_r(offs_t offset);
 
 	// rex register read handlers
-	u32 command_r(offs_t offset) { if (offset & 0x0200) do_rex_command(); return m_command; }
+	u32 command_r() { return m_command; }
 	u32 aux1_r() { return m_aux1; }
 	u32 xstate_r() { return m_xstate; }
 	u32 xstart_r() { return m_xstart; }
@@ -64,9 +73,12 @@ protected:
 	u32 yendi_r() { return m_yend >> 15; }
 
 	// rex register write handlers
-	void command_w(offs_t offset, u32 data) { m_command = data; if (offset & 0x0200) do_rex_command(); }
+	void command_w(offs_t offset, u32 data) { m_command = data; m_logicop = data >> 28; }
 	void aux1_w(u32 data) { m_aux1 = data & 0x03ffU; }
-	void xstate_w(u32 data) { m_xstate = data; }
+	// the drawing state: color index (bits 0-7), write mask (16-23) and
+	// logic operation (24-27), also set through colorredi, rwmask and the
+	// command
+	void xstate_w(u32 data) { m_xstate = data; m_color[0] = (data & 0xffU) << 11; m_wrmask = u8(data >> 16); m_logicop = (data >> 24) & 15; }
 	void xstarti_w(u32 data) { m_xstart = (data & 0x0fffU) << 15; m_xcurri = data & 0x0fffU; }
 	void xstartf_w(u32 data) { m_xstart = (data & 0x007fffffU) << 4; m_xcurri = (data >> 11) & 0x0fffU; }
 	void xstart_w(u32 data) { m_xstart = data & 0x07ffffffU; }
@@ -77,18 +89,18 @@ protected:
 	void yendf_w(u32 data) { m_yend = (data & 0x007ff800U) << 4; }
 	void xsave_w(u32 data) { m_xsave = data & 0x0fffU; }
 	void minorslope_w(u32 data);
-	void xymove_w(offs_t offset, u32 data) { m_xymove = data; if (offset & 0x0200) do_rex_command(); }
-	template <unsigned Color> void colori_w(offs_t offset, u32 data) { m_color[Color] = (data & 0xffU) << 11; if (offset & 0x0200) do_rex_command(); }
+	void xymove_w(offs_t offset, u32 data) { m_xymove = data & 0x07ff07ffU; }
+	template <unsigned Color> void colori_w(offs_t offset, u32 data) { m_color[Color] = (data & 0xffU) << 11; }
 	template <unsigned Color> void colorf_w(u32 data) { m_color[Color] = data & 0x000fffffU; }
 	template <unsigned Color> void slopecolor_w(u32 data);
 	void colorback_w(u32 data) { m_colorback = data & 0xffU; }
-	void zpattern_w(offs_t offset, u32 data) { m_zpattern = data; if (offset & 0x0200) do_rex_command(); }
+	void zpattern_w(offs_t offset, u32 data) { m_zpattern = data; }
 	void lspattern_w(u32 data) { m_lspattern = data; }
 	void lsmode_w(u32 data) { m_lsmode = data & 0x000fffffU; }
 	void aweight_w(u32 data) { m_aweight = data; }
 	void rwaux1_w(u32 data) { m_rwaux1 = data; }
 	void rwaux2_w(u32 data) { m_rwaux2 = data; }
-	void rwmask_w(u32 data) { m_rwmask = data & 0xffffU; }
+	void rwmask_w(u32 data) { m_rwmask = data & 0xffffU; m_wrmask = u8(data); }
 	void xendi_w(offs_t offset, u32 data) { m_xend = (data & 0x0fffU) << 15; }
 	void yendi_w(offs_t offset, u32 data) { m_yend = (data & 0x0fffU) << 15; }
 
@@ -147,6 +159,9 @@ private:
 	u32 m_yend;
 	u32 m_xsave;
 	u32 m_minorslope;
+	u8 m_wrmask;
+	u8 m_logicop;
+	bool m_aux2_source;
 
 	// configuration registers
 	u32 m_smask[8];

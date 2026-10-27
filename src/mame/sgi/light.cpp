@@ -10,11 +10,13 @@
  *  - devicify rex
  *  - slotify
  *  - later board revisions and LG2X2 dual-head variant
+ *  - popup planes, VC1 display id modes beyond the palette select,
+ *    command bit 11, color compare modes other than aux1 bit 8
  *
  * WIP:
- *  - passes power-on diagnostic tests
+ *  - passes power-on and field diagnostic graphics tests
  *  - usable for firmware graphic output
- *  - fails badly for IRIX graphic output
+ *  - runs the IRIX desktop, with drawing errors
  */
 
 #include "emu.h"
@@ -36,6 +38,7 @@ enum
 {
 	REX15_OP_NOP                = 0x00000000,
 	REX15_OP_DRAW               = 0x00000001,
+	REX15_OP_LDPIXEL            = 0x00000003,
 	REX15_OP_FLAG_BLOCK         = 0x00000008,
 	REX15_OP_FLAG_LENGTH32      = 0x00000010,
 	REX15_OP_FLAG_QUADMODE      = 0x00000020,
@@ -43,7 +46,11 @@ enum
 	REX15_OP_FLAG_STOPONX       = 0x00000100,
 	REX15_OP_FLAG_STOPONY       = 0x00000200,
 	REX15_OP_FLAG_ENZPATTERN    = 0x00000400,
+	REX15_OP_FLAG_RGBMODE       = 0x00004000,
+	REX15_OP_FLAG_COLORCOMP     = 0x00010000,
 	REX15_OP_FLAG_LOGICSRC      = 0x00080000,
+	REX15_OP_FLAG_COLORAUX      = 0x00200000,
+	REX15_OP_FLAG_ENLSPATTERN   = 0x00400000,
 	REX15_OP_FLAG_ZOPAQUE       = 0x00800000,
 	REX15_OP_FLAG_ZCONTINUE     = 0x01000000,
 };
@@ -80,6 +87,10 @@ void sgi_lg1_device::device_start()
 
 void sgi_lg1_device::device_reset()
 {
+	m_wrmask = 0xff;
+	m_logicop = 3; // source
+	m_xywin = 0x0800'0800; // window origin 0x800, 0x800: no offset
+	m_aux2_source = false;
 }
 
 void sgi_lg1_device::map(address_map &map)
@@ -120,6 +131,9 @@ void sgi_lg1_device::map(address_map &map)
 	map(0x0084, 0x0087).select(0x0800).rw(FUNC(sgi_lg1_device::xendi_r), FUNC(sgi_lg1_device::xendi_w));
 	map(0x0088, 0x008b).select(0x0800).rw(FUNC(sgi_lg1_device::yendi_r), FUNC(sgi_lg1_device::yendi_w));
 
+	// any access to a register through the GO page also starts the command
+	map(0x0800, 0x088b).rw(FUNC(sgi_lg1_device::go_r), FUNC(sgi_lg1_device::go_w));
+
 	// configuration registers
 	map(0x4790, 0x4793).select(0x0800).rw(FUNC(sgi_lg1_device::smask_r<2>), FUNC(sgi_lg1_device::smask_w<2>));
 	map(0x4794, 0x4797).select(0x0800).rw(FUNC(sgi_lg1_device::smask_r<3>), FUNC(sgi_lg1_device::smask_w<3>));
@@ -153,8 +167,16 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 	u8 const *src = &m_vram[0];
 
 	for (unsigned y = screen.visible_area().min_y; y <= screen.visible_area().max_y; y++)
+	{
+		// the VC1 selects each line's palette through its display id;
+		// without display id tables, use the palette the RAMDAC selects
+		int const palette = m_vc1->line_palette(y);
+		pen_t const *const pens = m_lut1->palette_pens(palette);
+		u8 const mask = m_lut1->read_mask();
+		u32 *dst = &bitmap.pix(y, screen.visible_area().min_x);
 		for (unsigned x = screen.visible_area().min_x; x <= screen.visible_area().max_x; x++)
-			bitmap.pix(y, x) = m_lut1->palette_lookup(*src++);
+			*dst++ = pens[*src++ & mask];
+	}
 
 	// VC1 cursor: 32x32, two planes of 4 bytes per row (most significant
 	// bit leftmost) in the VC1's SRAM at CUR_EP and CUR_EP + 0x80; the
@@ -244,80 +266,291 @@ void sgi_lg1_device::vc1_w(offs_t offset, u32 data)
 		m_vc1->write(m_configsel, m_data);
 }
 
+void sgi_lg1_device::rex_reg_w(unsigned reg, u32 data)
+{
+	switch (reg)
+	{
+	case 0x00: command_w(0, data); break;
+	case 0x04: aux1_w(data); break;
+	case 0x08: xstate_w(data); break;
+	case 0x0c: xstarti_w(data); break;
+	case 0x10: xstartf_w(data); break;
+	case 0x14: xstart_w(data); break;
+	case 0x18: xendf_w(data); break;
+	case 0x1c: ystarti_w(data); break;
+	case 0x20: ystartf_w(data); break;
+	case 0x24: ystart_w(data); break;
+	case 0x28: yendf_w(data); break;
+	case 0x2c: xsave_w(data); break;
+	case 0x30: minorslope_w(data); break;
+	case 0x34: xymove_w(0, data); break;
+	case 0x38: colori_w<0>(0, data); break;
+	case 0x3c: colorf_w<0>(data); break;
+	case 0x40: colori_w<1>(0, data); break;
+	case 0x44: colorf_w<1>(data); break;
+	case 0x48: colori_w<2>(0, data); break;
+	case 0x4c: colorf_w<2>(data); break;
+	case 0x50: slopecolor_w<0>(data); break;
+	case 0x54: slopecolor_w<1>(data); break;
+	case 0x58: slopecolor_w<2>(data); break;
+	case 0x5c: colorback_w(data); break;
+	case 0x60: zpattern_w(0, data); break;
+	case 0x64: lspattern_w(data); break;
+	case 0x68: lsmode_w(data); break;
+	case 0x6c: aweight_w(data); break;
+	case 0x70: rwaux1_w(data); break;
+	case 0x74: rwaux2_w(data); break;
+	case 0x78: rwmask_w(data); break;
+	case 0x7c: smask_w<0>(data); break;
+	case 0x80: smask_w<1>(data); break;
+	case 0x84: xendi_w(0, data); break;
+	case 0x88: yendi_w(0, data); break;
+	}
+}
+
+u32 sgi_lg1_device::rex_reg_r(unsigned reg)
+{
+	switch (reg)
+	{
+	case 0x00: return m_command;
+	case 0x04: return aux1_r();
+	case 0x08: return xstate_r();
+	case 0x0c: return xstarti_r();
+	case 0x10: return xstartf_r();
+	case 0x14: return xstart_r();
+	case 0x18: return xendf_r();
+	case 0x1c: return ystarti_r();
+	case 0x20: return ystartf_r();
+	case 0x24: return ystart_r();
+	case 0x28: return yendf_r();
+	case 0x2c: return xsave_r();
+	case 0x30: return minorslope_r();
+	case 0x34: return xymove_r();
+	case 0x38: return colori_r<0>();
+	case 0x3c: return colorf_r<0>();
+	case 0x40: return colori_r<1>();
+	case 0x44: return colorf_r<1>();
+	case 0x48: return colori_r<2>();
+	case 0x4c: return colorf_r<2>();
+	case 0x50: return slopecolor_r<0>();
+	case 0x54: return slopecolor_r<1>();
+	case 0x58: return slopecolor_r<2>();
+	case 0x5c: return colorback_r();
+	case 0x60: return zpattern_r();
+	case 0x64: return lspattern_r();
+	case 0x68: return lsmode_r();
+	case 0x6c: return aweight_r();
+	case 0x70: return rwaux1_r();
+	case 0x74: return rwaux2_r();
+	case 0x78: return rwmask_r();
+	case 0x7c: return smask_r<0>();
+	case 0x80: return smask_r<1>();
+	case 0x84: return xendi_r();
+	case 0x88: return yendi_r();
+	}
+	return 0;
+}
+
+void sgi_lg1_device::go_w(offs_t offset, u32 data)
+{
+	rex_reg_w(offset << 2, data);
+	if (!machine().side_effects_disabled())
+	{
+		// pixel data written through rwaux2 (the second half of a 64-bit
+		// DMA word) supplies the next four pixels
+		m_aux2_source = (offset << 2) == 0x74;
+		do_rex_command();
+		m_aux2_source = false;
+	}
+}
+
+u32 sgi_lg1_device::go_r(offs_t offset)
+{
+	if (!machine().side_effects_disabled())
+		do_rex_command();
+	return rex_reg_r(offset << 2);
+}
+
+// read one pixel, in window coordinates
+u8 sgi_lg1_device::vram_r(int x, int y) const
+{
+	x += xywin_x();
+	y += xywin_y();
+	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? m_vram[y * x_res + x] : 0;
+}
+
+// write one pixel through the logic operation and the write mask
+void sgi_lg1_device::plot(int x, int y, u8 src)
+{
+	x += xywin_x();
+	y += xywin_y();
+	if (x < 0 || x >= int(x_res) || y < 0 || y >= 1024)
+		return;
+
+	u8 &pixel = m_vram[y * x_res + x];
+	u8 const dst = pixel;
+	u8 result;
+	switch (m_logicop & 15)
+	{
+	case 0:  result = 0; break;
+	case 1:  result = src & dst; break;
+	case 2:  result = src & ~dst; break;
+	default: result = src; break;
+	case 4:  result = ~src & dst; break;
+	case 5:  result = dst; break;
+	case 6:  result = src ^ dst; break;
+	case 7:  result = src | dst; break;
+	case 8:  result = ~(src | dst); break;
+	case 9:  result = ~(src ^ dst); break;
+	case 10: result = ~dst; break;
+	case 11: result = src | ~dst; break;
+	case 12: result = ~src; break;
+	case 13: result = ~src | dst; break;
+	case 14: result = ~(src & dst); break;
+	case 15: result = 0xff; break;
+	}
+	pixel = (dst & ~m_wrmask) | (result & m_wrmask);
+}
+
+/*
+ * The command register holds the opcode, mode flags and logic operation;
+ * any access through the GO page runs it. Drawing steps from the start
+ * towards the end coordinates in each axis (software orders them for the
+ * direction it needs). Without BLOCK and STOPONX a draw writes one pixel;
+ * with STOPONX it runs to the end of the span, and with BLOCK it then
+ * wraps to the next row until the end row. Pattern draws use one 32-bit
+ * zpattern word per GO (most significant bit first) and stop at the end of
+ * a row; XYCONTINUE carries on from where the previous GO stopped.
+ */
 void sgi_lg1_device::do_rex_command()
 {
-	if (m_command == 0)
+	u32 const cmd = m_command;
+
+	switch (cmd & 3)
 	{
+	case REX15_OP_NOP:
+		m_xcurri = xstarti_r();
+		m_ycurri = ystarti_r();
+		return;
+
+	case REX15_OP_LDPIXEL:
+		{
+			// pixels are returned leftmost in the high byte: four in quad
+			// mode, otherwise one in bits 24-31
+			int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : int(xstarti_r());
+			int const y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ystarti_r());
+			unsigned const count = (cmd & REX15_OP_FLAG_QUADMODE) ? 4 : 1;
+			u32 data = 0;
+			for (unsigned n = 0; n < count; n++, x++)
+				data = (data << 8) | vram_r(x, y);
+			m_rwaux1 = data << (8 * (4 - count));
+			m_xcurri = x;
+			m_ycurri = y;
+		}
+		return;
+
+	case REX15_OP_DRAW:
+		break;
+
+	default:
+		LOGMASKED(LOG_REX, "%s: unknown command: %08x\n", machine().describe_context(), cmd);
 		return;
 	}
-	if (m_command == 0x30080329)
+
+	int const x0 = int(xstarti_r());
+	int const y0 = int(ystarti_r());
+	int const x1 = int(xendi_r());
+	int const y1 = int(yendi_r());
+	int const dx = (x1 >= x0) ? 1 : -1;
+	int const dy = (y1 >= y0) ? 1 : -1;
+
+	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
+	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
+	bool const block = cmd & REX15_OP_FLAG_BLOCK;
+	bool const span = block || (cmd & REX15_OP_FLAG_STOPONX);
+	// host pixel data: each GO with XYCONTINUE supplies the next four
+	// pixels; without it, the four repeat to the end of the span
+	bool const hostdata = (cmd & REX15_OP_FLAG_COLORAUX) && (cmd & REX15_OP_FLAG_XYCONTINUE);
+	u32 const auxdata = m_aux2_source ? m_rwaux2 : m_rwaux1;
+	unsigned const limit = (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : hostdata ? ((cmd & REX15_OP_FLAG_QUADMODE) ? 4 : 1) : (x_res * 1024);
+
+	// block move offset: signed 11-bit x in bits 16-26 and y in bits 0-10
+	int const mx = util::sext(m_xymove >> 16, 11);
+	int const my = util::sext(m_xymove, 11);
+	// RGB mode packs the red, green and blue integer parts into a 3-3-2
+	// pixel: red in bits 5-7, blue in 3-4 and green in 0-2
+	u8 const color = (cmd & REX15_OP_FLAG_RGBMODE)
+		? u8((colori_r<0>() & 0xe0) | ((colori_r<2>() >> 3) & 0x18) | ((colori_r<1>() >> 5) & 0x07))
+		: u8(colori_r<0>());
+
+	int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : x0;
+	int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : y0;
+
+	// a block that has finished its last row draws nothing more
+	if (block && (cmd & REX15_OP_FLAG_XYCONTINUE) && (dy > 0 ? y > y1 : y < y1))
+		return;
+
+	LOGMASKED(LOG_REX, "command %08x: %d,%d to %d,%d from %d,%d\n", cmd, x0, y0, x1, y1, x, y);
+
+	for (unsigned n = 0; n < limit; n++)
 	{
-		bool xycontinue = (m_command & REX15_OP_FLAG_XYCONTINUE);
-		bool copy = (m_command & REX15_OP_FLAG_LOGICSRC);
-		const uint32_t start_x = xycontinue ? m_xcurri : xstarti_r();
-		const uint32_t start_y = xycontinue ? m_ycurri : ystarti_r();
-
-		const uint32_t src_start_x = start_x + (m_xymove >> 16);
-		const uint32_t src_start_y = start_y + u16(m_xymove);
-
-		LOGMASKED(LOG_REX, "command %08x: Block copy from %d,%d-%d,%d inclusive.\n", m_command, start_x, start_y, xendi_r(), yendi_r());
-		if (copy)
+		bool draw = true;
+		u8 src = color;
+		if (stipple && !BIT(m_lspattern, 31 - ((x - x0) * dx & 31)))
+			draw = false;
+		else if (pattern)
 		{
-			for (uint32_t y = start_y, src_y = src_start_y; y <= yendi_r(); y++, src_y++)
-				for (uint32_t x = start_x, src_x = src_start_x; x <= xendi_r(); x++, src_x++)
-					m_vram[y*x_res + x] = m_vram[src_y*x_res + src_x];
-		}
-		else
-		{
-			for (uint32_t y = start_y; y <= yendi_r(); y++)
-				for (uint32_t x = start_x; x <= xendi_r(); x++)
-					m_vram[y*x_res + x] = colori_r<0>();
-		}
-	}
-	else if (m_command == 0x30000329)
-	{
-		bool xycontinue = (m_command & REX15_OP_FLAG_XYCONTINUE);
-		uint32_t start_x = xycontinue ? m_xcurri : xstarti_r();
-		uint32_t start_y = xycontinue ? m_ycurri : ystarti_r();
-
-		LOGMASKED(LOG_REX, "command %08x: Block draw from %d,%d-%d,%d inclusive.\n", m_command, start_x, start_y, xendi_r(), yendi_r());
-		for (uint32_t y = start_y; y <= yendi_r(); y++)
-		{
-			for (uint32_t x = start_x; x <= xendi_r(); x++)
+			if (!BIT(m_zpattern, 31 - n))
 			{
-				m_vram[y*x_res + x] = colori_r<0>();
+				if (cmd & REX15_OP_FLAG_ZOPAQUE)
+					src = u8(m_colorback);
+				else
+					draw = false;
 			}
 		}
-	}
-	else if (m_command == 0x300005a1 ||
-		m_command == 0x300005a9 ||
-		m_command == 0x300005b9)
-	{
-		bool xycontinue = (m_command & REX15_OP_FLAG_XYCONTINUE);
-		uint32_t start_x = xycontinue ? m_xcurri : xstarti_r();
-		uint32_t start_y = xycontinue ? m_ycurri : ystarti_r();
-
-		LOGMASKED(LOG_REX, "command %08x: Pattern draw from %d-%d at %d\n", m_command, start_x, xendi_r(), start_y);
-		for (uint32_t x = start_x; x <= xendi_r() && x < (start_x + 32); x++)
+		else if (cmd & REX15_OP_FLAG_COLORAUX)
+			src = (cmd & REX15_OP_FLAG_QUADMODE) ? u8(auxdata >> (24 - 8 * (n & 3))) : u8(auxdata >> 24);
+		else if (cmd & REX15_OP_FLAG_LOGICSRC)
 		{
-			if (BIT(m_zpattern, 31 - (x - start_x)))
-			{
-				m_vram[start_y*x_res + x] = colori_r<0>();
-			}
-			m_xcurri++;
+			src = vram_r(x - mx, y - my);
 		}
 
-		if (m_command & REX15_OP_FLAG_BLOCK)
+		// colour compare: with aux1 bit 8 set, only pixels below the
+		// source colour are written (the behaviour the firmware's REX
+		// revision check identifies as revision 1)
+		if (draw && (cmd & REX15_OP_FLAG_COLORCOMP) && BIT(m_aux1, 8) && vram_r(x, y) >= src)
+			draw = false;
+
+		if (draw)
+			plot(x, y, src);
+
+		if (!span)
 		{
-			if (m_xcurri > xendi_r())
-			{
-				m_ycurri--;
-				m_xcurri = xstarti_r();
-			}
+			// a single pixel
+			x += dx;
+			break;
 		}
+
+		if (x != x1)
+		{
+			x += dx;
+			continue;
+		}
+
+		// end of the span
+		if (!block || y == y1)
+		{
+			// past the end, so a following XYCONTINUE draws nothing
+			x = x0;
+			y += dy;
+			break;
+		}
+		x = x0;
+		y += dy;
+		if (pattern || stipple)
+			break;
 	}
-	else
-	{
-		LOGMASKED(LOG_REX, "%s: unknown command: %08x\n", machine().describe_context(), m_command);
-	}
+
+	m_xcurri = x;
+	m_ycurri = y;
 }
