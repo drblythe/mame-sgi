@@ -81,6 +81,8 @@ protected:
 	template <u32 Base> u64 bus_error_r(offs_t offset, u64 mem_mask);
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
 	void dsp_miscsr_w(u32 data);
+	void vblank_w(int state);
+	void clearvri_w(int state);
 
 	required_device<cpu_device> m_cpu;
 	required_device<eeprom_serial_93cxx_device> m_eerom;
@@ -96,16 +98,47 @@ protected:
 	required_device<sgi_lg1_device> m_gfx;
 
 	u32 m_dsp_miscsr = 0;
+	bool m_vblank = false;
+	bool m_vr_enable = false;
+	bool m_vr_latch = false;
 };
 
 void ip20_state::machine_start()
 {
 	save_item(NAME(m_dsp_miscsr));
+	save_item(NAME(m_vblank));
+	save_item(NAME(m_vr_enable));
+	save_item(NAME(m_vr_latch));
 }
 
 void ip20_state::machine_reset()
 {
 	m_dsp_miscsr = 0;
+}
+
+// The vertical retrace interrupt (local I/O 1, GIO2) is latched at the
+// start of each retrace. Bit 3 of the port configuration register
+// (PCON_CLEARVRI) gates it: clearing the bit clears and disables the latch,
+// setting it enables the next retrace, which IRIX's graphics interrupt
+// handler does after each one.
+void ip20_state::vblank_w(int state)
+{
+	if (state && !m_vblank && m_vr_enable && !m_vr_latch)
+	{
+		m_vr_latch = true;
+		m_int->lio1_w<sgi_int2_device::LIO1_GIO2>(1);
+	}
+	m_vblank = state;
+}
+
+void ip20_state::clearvri_w(int state)
+{
+	m_vr_enable = state;
+	if (!state && m_vr_latch)
+	{
+		m_vr_latch = false;
+		m_int->lio1_w<sgi_int2_device::LIO1_GIO2>(0);
+	}
 }
 
 // HPC1 miscellaneous control and status: bit 0 holds the DSP56001 in reset.
@@ -282,12 +315,13 @@ void ip20_state::ip20(machine_config &config)
 	m_int->write_intr<3>().set_inputline(m_cpu, INPUT_LINE_IRQ2); // timer 0
 	m_int->write_intr<4>().set_inputline(m_cpu, INPUT_LINE_IRQ3); // timer 1
 	m_int->write_intr<5>().set_inputline(m_cpu, INPUT_LINE_IRQ4); // bus error
+	m_int->write_led<3>().set(FUNC(ip20_state::clearvri_w));
 	// TODO: write_led and write_poweroff outputs
 	//
 	//  0   cache parity error?
 	//  1   1Hz heartbeat
 	//  2   off when cpu is idle
-	//  3   graphics
+	//  3   vertical retrace interrupt enable (PCON_CLEARVRI)
 	//  4   poweroff?
 
 	EEPROM_93C56_16BIT(config, m_nvram);
@@ -364,7 +398,7 @@ void ip20_state::ip20(machine_config &config)
 	DSP56001(config, m_dsp, 20_MHz_XTAL);
 
 	SGI_LG1(config, m_gfx);
-	m_gfx->write_vblank().set(m_int, FUNC(sgi_int2_device::lio1_w<sgi_int2_device::LIO1_GIO2>));
+	m_gfx->write_vblank().set(FUNC(ip20_state::vblank_w));
 }
 
 ROM_START(indigo_r4000)
