@@ -606,12 +606,12 @@ void sgi_lg1_device::do_rex_command()
 					draw = false;
 			}
 		}
+		// a framebuffer source (block copy) takes precedence over aux
+		// data: IRIS GL's rectcopy sets both
+		else if (cmd & REX15_OP_FLAG_LOGICSRC)
+			src = vram_r(x + mx, y + my);
 		else if (cmd & REX15_OP_FLAG_COLORAUX)
 			src = (cmd & REX15_OP_FLAG_QUADMODE) ? u8(auxdata >> (24 - 8 * (n & 3))) : u8(auxdata >> 24);
-		else if (cmd & REX15_OP_FLAG_LOGICSRC)
-		{
-			src = vram_r(x + mx, y + my);
-		}
 
 		// colour compare: with aux1 bit 8 set, only pixels below the
 		// source colour are written (the behaviour the firmware's REX
