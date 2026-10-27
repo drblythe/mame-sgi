@@ -516,7 +516,8 @@ void sgi_lg1_device::do_rex_command()
 	u32 const auxdata = m_aux2_source ? m_rwaux2 : m_rwaux1;
 	unsigned const limit = (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : hostdata ? ((cmd & REX15_OP_FLAG_QUADMODE) ? 4 : 1) : (x_res * 1024);
 
-	// block move offset: signed 11-bit x in bits 16-26 and y in bits 0-10
+	// block move offset from the destination to the source: signed 11-bit
+	// x in bits 16-26 and y in bits 0-10
 	int const mx = util::sext(m_xymove >> 16, 11);
 	int const my = util::sext(m_xymove, 11);
 	// RGB mode packs the red, green and blue integer parts into a 3-3-2
@@ -554,7 +555,7 @@ void sgi_lg1_device::do_rex_command()
 			src = (cmd & REX15_OP_FLAG_QUADMODE) ? u8(auxdata >> (24 - 8 * (n & 3))) : u8(auxdata >> 24);
 		else if (cmd & REX15_OP_FLAG_LOGICSRC)
 		{
-			src = vram_r(x - mx, y - my);
+			src = vram_r(x + mx, y + my);
 		}
 
 		// colour compare: with aux1 bit 8 set, only pixels below the
