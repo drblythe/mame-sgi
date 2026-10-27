@@ -100,13 +100,13 @@ protected:
 	// logic operation (24-27), also set through colorredi, rwmask and the
 	// command
 	void xstate_w(u32 data) { m_xstate = data; m_color[0] = (data & 0xffU) << 11; m_wrmask = u8(data >> 16); m_logicop = (data >> 24) & 15; }
-	void xstarti_w(u32 data) { m_xstart = (data & 0x0fffU) << 15; m_xcurri = data & 0x0fffU; }
-	void xstartf_w(u32 data) { m_xstart = (data & 0x007fffffU) << 4; m_xcurri = (data >> 11) & 0x0fffU; }
-	void xstart_w(u32 data) { m_xstart = data & 0x07ffffffU; }
+	void xstarti_w(u32 data) { m_xstart = m_xcurf = (data & 0x0fffU) << 15; m_xcurri = data & 0x0fffU; }
+	void xstartf_w(u32 data) { m_xstart = m_xcurf = (data & 0x007fffffU) << 4; m_xcurri = (data >> 11) & 0x0fffU; }
+	void xstart_w(u32 data) { m_xstart = m_xcurf = data & 0x07ffffffU; }
 	void xendf_w(u32 data) { m_xend = (data & 0x007ff800U) << 4; }
-	void ystarti_w(u32 data) { m_ystart = (data & 0x0fffU) << 15; m_ycurri = data & 0x0fffU; }
-	void ystartf_w(u32 data) { m_ystart = (data & 0x007fffffU) << 4; m_ycurri = (data >> 11) & 0x0fffU; }
-	void ystart_w(u32 data) { m_ystart = data & 0x07ffffffU; }
+	void ystarti_w(u32 data) { m_ystart = m_ycurf = (data & 0x0fffU) << 15; m_ycurri = data & 0x0fffU; }
+	void ystartf_w(u32 data) { m_ystart = m_ycurf = (data & 0x007fffffU) << 4; m_ycurri = (data >> 11) & 0x0fffU; }
+	void ystart_w(u32 data) { m_ystart = m_ycurf = data & 0x07ffffffU; }
 	void yendf_w(u32 data) { m_yend = (data & 0x007ff800U) << 4; }
 	void xsave_w(u32 data) { m_xsave = data & 0x0fffU; }
 	void minorslope_w(u32 data);
@@ -184,6 +184,10 @@ private:
 	u32 m_xsave;
 	u32 m_minorslope;
 	u8 m_aamask; // index bits that take the antialiasing weight
+	// a line's current position (15 fraction bits): set by writing the
+	// start registers, carried from one piece of a line to the next
+	u32 m_xcurf;
+	u32 m_ycurf;
 	u8 m_wrmask;
 	u8 m_logicop;
 	bool m_aux2_source;
