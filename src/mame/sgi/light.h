@@ -116,7 +116,8 @@ protected:
 	u32 configsel_r() { return m_configsel; }
 	u32 vc1_r(offs_t offset);
 	u32 togglectxt_r() { return m_togglectxt; }
-	u32 configmode_r() { return m_configmode; }
+	// bit 0 is the busy flag; commands complete at once, so never busy
+	u32 configmode_r() { return m_configmode & ~1U; }
 	u32 xywin_r() { return m_xywin; }
 
 	// configuration register write handlers

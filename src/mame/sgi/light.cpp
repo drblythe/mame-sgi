@@ -82,6 +82,17 @@ void sgi_lg1_device::device_start()
 {
 	m_vram = std::make_unique<u8[]>(0x10'0000); // 8xTC524256BJ-10 262,144x4 multiport dram
 
+	m_command = m_aux1 = m_xstate = m_xstart = m_ystart = m_xymove = 0;
+	std::fill(std::begin(m_color), std::end(m_color), 0);
+	std::fill(std::begin(m_slopecolor), std::end(m_slopecolor), 0);
+	m_colorback = m_zpattern = m_lspattern = m_lsmode = m_aweight = 0;
+	m_rwaux1 = m_rwaux2 = m_rwmask = m_xend = m_yend = m_xsave = m_minorslope = 0;
+	std::fill(std::begin(m_smask), std::end(m_smask), 0);
+	m_aux2 = m_diagvram = m_diagcid = m_wclock = m_configsel = 0;
+	m_togglectxt = m_configmode = 0;
+	m_xcurri = m_ycurri = 0;
+	m_data = 0;
+
 	save_pointer(NAME(m_vram), 0x10'0000);
 }
 
