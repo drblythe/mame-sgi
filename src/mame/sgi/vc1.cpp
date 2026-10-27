@@ -70,7 +70,7 @@ u8 sgi_vc1_device::read(offs_t offset)
 			return data;
 		}
 	case TEST:
-		return 0; // vc1 revision?
+		return 2; // revision 1 (firmware reads revision + 1 in bits 0-2)
 	case ADDR_LO:
 		return u8(m_addr);
 	case ADDR_HI:
