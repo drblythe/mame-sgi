@@ -81,6 +81,8 @@ void sgi_lg1_device::device_add_mconfig(machine_config &config)
 void sgi_lg1_device::device_start()
 {
 	m_vram = std::make_unique<u8[]>(0x10'0000); // 8xTC524256BJ-10 262,144x4 multiport dram
+	m_pup = std::make_unique<u8[]>(0x10'0000);
+	m_cid = std::make_unique<u8[]>(0x10'0000);
 
 	m_command = m_aux1 = m_xstate = m_xstart = m_ystart = m_xymove = 0;
 	std::fill(std::begin(m_color), std::end(m_color), 0);
@@ -94,6 +96,8 @@ void sgi_lg1_device::device_start()
 	m_data = 0;
 
 	save_pointer(NAME(m_vram), 0x10'0000);
+	save_pointer(NAME(m_pup), 0x10'0000);
+	save_pointer(NAME(m_cid), 0x10'0000);
 }
 
 void sgi_lg1_device::device_reset()
@@ -176,6 +180,10 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 	}
 
 	u8 const *src = &m_vram[0];
+	u8 const *pup = &m_pup[0];
+	// pop-up plane values 1-3 show the colours of the VC1's aux video map;
+	// 0 is transparent
+	pen_t const *const pup_pens = m_lut1->palette_pens(BIT(m_vc1->auxvideo_map(), 4, 2)) + BIT(m_vc1->auxvideo_map(), 0, 4) * 0x10;
 
 	for (unsigned y = screen.visible_area().min_y; y <= screen.visible_area().max_y; y++)
 	{
@@ -185,8 +193,8 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 		pen_t const *const pens = m_lut1->palette_pens(palette);
 		u8 const mask = m_lut1->read_mask();
 		u32 *dst = &bitmap.pix(y, screen.visible_area().min_x);
-		for (unsigned x = screen.visible_area().min_x; x <= screen.visible_area().max_x; x++)
-			*dst++ = pens[*src++ & mask];
+		for (unsigned x = screen.visible_area().min_x; x <= screen.visible_area().max_x; x++, src++, pup++)
+			*dst++ = *pup ? pup_pens[*pup] : pens[*src & mask];
 	}
 
 	// VC1 cursor: 32x32, two planes of 4 bytes per row (most significant
@@ -387,7 +395,7 @@ u8 sgi_lg1_device::vram_r(int x, int y) const
 {
 	x += xywin_x();
 	y += xywin_y();
-	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? m_vram[y * x_res + x] : 0;
+	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? plane_buffer()[y * x_res + x] : 0;
 }
 
 // write one pixel through the logic operation and the write mask
@@ -398,7 +406,7 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 	if (x < 0 || x >= int(x_res) || y < 0 || y >= 1024)
 		return;
 
-	u8 &pixel = m_vram[y * x_res + x];
+	u8 &pixel = plane_buffer()[y * x_res + x];
 	u8 const dst = pixel;
 	u8 result;
 	switch (m_logicop & 15)
@@ -420,7 +428,8 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 	case 14: result = ~(src & dst); break;
 	case 15: result = 0xff; break;
 	}
-	pixel = (dst & ~m_wrmask) | (result & m_wrmask);
+	u8 const wrmask = m_wrmask & plane_mask();
+	pixel = (dst & ~wrmask) | (result & wrmask);
 }
 
 /*

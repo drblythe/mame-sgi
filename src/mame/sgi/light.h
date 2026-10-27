@@ -35,6 +35,12 @@ protected:
 	void do_rex_command();
 	void plot(int x, int y, u8 src);
 	u8 vram_r(int x, int y) const;
+	// aux2 bits 29-30 select the planes drawing and pixel reads use: the 8
+	// colour planes (1), the 2 pop-up planes (2) or the 2 clip id planes
+	// (3), each a separate memory
+	unsigned plane_select() const { return BIT(m_aux2, 29, 2); }
+	u8 *plane_buffer() const { return (plane_select() == 2) ? m_pup.get() : (plane_select() == 3) ? m_cid.get() : m_vram.get(); }
+	u8 plane_mask() const { return (plane_select() >= 2) ? 0x03 : 0xff; }
 	// window origin: coordinates are offset by xywin, where 0x800 is none
 	int xywin_x() const { return int((m_xywin >> 16) & 0x0fff) - 0x800; }
 	int xywin_y() const { return int(m_xywin & 0x0fff) - 0x800; }
@@ -138,6 +144,8 @@ private:
 	required_device<bt479_device> m_lut1;
 	required_device<screen_device> m_screen;
 	std::unique_ptr<u8[]> m_vram;
+	std::unique_ptr<u8[]> m_pup;
+	std::unique_ptr<u8[]> m_cid;
 
 	// rex registers
 	u32 m_command;

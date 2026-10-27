@@ -32,6 +32,9 @@ public:
 		return BIT(m_xmap[did * 2 + 1], 2, 2);
 	}
 	bool video_enabled() const { return m_sysctl & 0x04; } // cleared to blank the screen
+	// xmap control: the colour map (bits 4-5) and submap (bits 0-3) the
+	// pop-up planes display through
+	u8 auxvideo_map() const { return m_reg[0x62]; }
 	u16 cursor_ep() const { return u16(m_reg[0x20]) << 8 | m_reg[0x21]; }
 	u16 cursor_x() const { return u16(m_reg[0x22]) << 8 | m_reg[0x23]; }
 	u16 cursor_y() const { return u16(m_reg[0x24]) << 8 | m_reg[0x25]; }
