@@ -489,6 +489,18 @@ u8 sgi_lg1_device::logic_op(u8 src, u8 dst) const
 	return result;
 }
 
+// RGB mode packs the top bits of red, green and blue into a 3-3-2 pixel:
+// red in bits 5-7, blue in 3-4 and green in 0-2; in 4-bit double-buffered
+// mode a 1-2-1 pixel: red in bit 3, green in 1-2 and blue in 0. The colour
+// comes from the colour registers or, with COLORAUX, from the aux data as
+// a 32-bit 0xAABBGGRR pixel (IRIS GL's cpack format)
+u8 sgi_lg1_device::pack_rgb(u8 r, u8 g, u8 b) const
+{
+	return dbl4()
+		? u8(((r >> 4) & 0x08) | ((g >> 5) & 0x06) | ((b >> 7) & 0x01))
+		: u8((r & 0xe0) | ((b >> 3) & 0x18) | ((g >> 5) & 0x07));
+}
+
 // colour compare: aux1 bits 6-8 hold the function (IRIS GL's zfunction
 // values), passing when the new colour compares with the one in the
 // frame buffer; IRIS GL uses it for zsource(ZSRC_COLOR), and the firmware's
@@ -656,13 +668,8 @@ void sgi_lg1_device::do_rex_command()
 	// x in bits 16-26 and y in bits 0-10
 	int const mx = util::sext(m_xymove >> 16, 11);
 	int const my = util::sext(m_xymove, 11);
-	// RGB mode packs the red, green and blue integer parts into a 3-3-2
-	// pixel: red in bits 5-7, blue in 3-4 and green in 0-2; in 4-bit
-	// double-buffered mode a 1-2-1 pixel: red in bit 3, green in 1-2 and
-	// blue in 0
-	u8 const color = !(cmd & REX15_OP_FLAG_RGBMODE) ? u8(colori_r<0>())
-		: dbl4() ? u8(((colori_r<0>() >> 4) & 0x08) | ((colori_r<1>() >> 5) & 0x06) | ((colori_r<2>() >> 7) & 0x01))
-		: u8((colori_r<0>() & 0xe0) | ((colori_r<2>() >> 3) & 0x18) | ((colori_r<1>() >> 5) & 0x07));
+	bool const rgb = cmd & REX15_OP_FLAG_RGBMODE;
+	u8 const color = rgb ? pack_rgb(colori_r<0>(), colori_r<1>(), colori_r<2>()) : u8(colori_r<0>());
 
 	if ((cmd & REX15_OP_FLAG_LINE) || aa >= 0)
 	{
@@ -699,6 +706,8 @@ void sgi_lg1_device::do_rex_command()
 		// data: IRIS GL's rectcopy sets both
 		else if (cmd & REX15_OP_FLAG_LOGICSRC)
 			src = vram_r(x + mx, y + my);
+		else if ((cmd & REX15_OP_FLAG_COLORAUX) && rgb)
+			src = pack_rgb(u8(auxdata), u8(auxdata >> 8), u8(auxdata >> 16));
 		else if (cmd & REX15_OP_FLAG_COLORAUX)
 			src = (cmd & REX15_OP_FLAG_QUADMODE) ? u8(auxdata >> (24 - 8 * (n & 3))) : u8(auxdata >> 24);
 

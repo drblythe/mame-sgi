@@ -36,6 +36,7 @@ protected:
 	void plot(int x, int y, u8 src);
 	void draw_line(u32 cmd, u8 color, int aa);
 	bool compare_pass(u8 src, u8 dst) const;
+	u8 pack_rgb(u8 r, u8 g, u8 b) const;
 	u8 logic_op(u8 src, u8 dst) const;
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
