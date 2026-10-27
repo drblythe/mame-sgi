@@ -11,7 +11,7 @@
  *  - slotify
  *  - later board revisions and LG2X2 dual-head variant
  *  - popup planes, VC1 display id modes beyond the palette select,
- *    command bit 11, color compare modes other than aux1 bit 8
+ *    command bit 11
  *
  * WIP:
  *  - passes power-on and field diagnostic graphics tests
@@ -486,6 +486,25 @@ u8 sgi_lg1_device::logic_op(u8 src, u8 dst) const
 	return result;
 }
 
+// colour compare: aux1 bits 6-8 hold the function (IRIS GL's zfunction
+// values), passing when the new colour compares with the one in the
+// frame buffer; IRIS GL uses it for zsource(ZSRC_COLOR), and the firmware's
+// REX revision check uses greater (aux1 0x100)
+bool sgi_lg1_device::compare_pass(u8 src, u8 dst) const
+{
+	switch (BIT(m_aux1, 6, 3))
+	{
+	case 0: return false;
+	case 1: return src < dst;
+	case 2: return src == dst;
+	case 3: return src <= dst;
+	case 4: return src > dst;
+	case 5: return src != dst;
+	case 6: return src >= dst;
+	default: return true;
+	}
+}
+
 /*
  * The command register holds the opcode, mode flags and logic operation;
  * any access through the GO page runs it. Drawing steps from the start
@@ -613,10 +632,7 @@ void sgi_lg1_device::do_rex_command()
 		else if (cmd & REX15_OP_FLAG_COLORAUX)
 			src = (cmd & REX15_OP_FLAG_QUADMODE) ? u8(auxdata >> (24 - 8 * (n & 3))) : u8(auxdata >> 24);
 
-		// colour compare: with aux1 bit 8 set, only pixels below the
-		// source colour are written (the behaviour the firmware's REX
-		// revision check identifies as revision 1)
-		if (draw && (cmd & REX15_OP_FLAG_COLORCOMP) && BIT(m_aux1, 8) && vram_r(x, y) >= src)
+		if (draw && (cmd & REX15_OP_FLAG_COLORCOMP) && !compare_pass(src, vram_r(x, y)))
 			draw = false;
 
 		if (draw)
