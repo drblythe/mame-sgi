@@ -429,6 +429,15 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::perform_dma)
 		while (zoomcount > 0)
 		{
 			zoomcount--;
+			// lines to the GIO bus start at the 32-bit word holding the
+			// first byte: the bytes before it in that word come first
+			// (graphics drivers offset the destination to match)
+			if (!(m_dma_mode & MODE_TO_HOST) && (m_dma_mode & MODE_DIR) && bytecount == linewidth)
+			{
+				uint32_t const skew = memory_addr & 3;
+				memory_addr -= skew;
+				bytecount += skew;
+			}
 			while (bytecount > 0)
 			{
 				if (m_dma_mode & MODE_TO_HOST)
@@ -481,7 +490,9 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::perform_dma)
 						shift -= 8;
 					}
 
-					m_space->write_qword(gio_addr, data);
+					// a partial last word writes only its valid bytes, so a
+					// 32-bit device sees just the half that carries data
+					m_space->write_qword(gio_addr, data, ~u64(0) << (64 - 8 * length));
 					bytecount -= length;
 				}
 			}
