@@ -385,11 +385,15 @@ void sgi_lg1_device::go_w(offs_t offset, u32 data)
 	}
 }
 
+// the REX is pipelined: a GO read returns the register as it was and then
+// starts the command, so software reads a command's result with the next
+// read (pixel reads prime with a first GO read, or follow with a plain one)
 u32 sgi_lg1_device::go_r(offs_t offset)
 {
+	u32 const data = rex_reg_r(offset << 2);
 	if (!machine().side_effects_disabled())
 		do_rex_command();
-	return rex_reg_r(offset << 2);
+	return data;
 }
 
 // read one pixel, in window coordinates
@@ -485,14 +489,34 @@ void sgi_lg1_device::do_rex_command()
 	case REX15_OP_LDPIXEL:
 		{
 			// pixels are returned leftmost in the high byte: four in quad
-			// mode, otherwise one in bits 24-31
+			// mode, otherwise one in bits 24-31; in rwaux2 as well, so a
+			// 64-bit DMA read (rwaux1 then rwaux2, each a GO) gets eight.
+			// A BLOCK read steps through a rectangle like a host data
+			// draw: at the end of a row the rest of the quad is left
+			// empty and the next read starts the next row
 			int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : int(xstarti_r());
-			int const y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ystarti_r());
+			int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ystarti_r());
+			int const x0 = int(xstarti_r());
+			int const x1 = int(xendi_r());
+			int const dx = (x1 >= x0) ? 1 : -1;
+			int const dy = (int(yendi_r()) >= int(ystarti_r())) ? 1 : -1;
 			unsigned const count = (cmd & REX15_OP_FLAG_QUADMODE) ? 4 : 1;
 			u32 data = 0;
-			for (unsigned n = 0; n < count; n++, x++)
+			unsigned n = 0;
+			while (n < count)
+			{
 				data = (data << 8) | vram_r(x, y);
-			m_rwaux1 = data << (8 * (4 - count));
+				n++;
+				if ((cmd & REX15_OP_FLAG_BLOCK) && x == x1)
+				{
+					x = x0;
+					y += dy;
+					break;
+				}
+				x += dx;
+			}
+			data <<= 8 * (count - n);
+			m_rwaux1 = m_rwaux2 = data << (8 * (4 - count));
 			m_xcurri = x;
 			m_ycurri = y;
 		}
