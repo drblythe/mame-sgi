@@ -400,12 +400,32 @@ u8 sgi_lg1_device::vram_r(int x, int y) const
 	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? plane_buffer()[y * x_res + x] : 0;
 }
 
+bool sgi_lg1_device::smask_pass(int x, int y) const
+{
+	unsigned const enables = BIT(m_aux2, 8, 4);
+	if (!enables)
+		return true;
+
+	for (unsigned n = 0; n < 4; n++)
+	{
+		if (!BIT(enables, n))
+			continue;
+		u32 const mx = m_smask[n * 2];
+		u32 const my = m_smask[n * 2 + 1];
+		if (x >= int(BIT(mx, 0, 10)) && x <= int(BIT(mx, 16, 10)) && y >= int(BIT(my, 0, 10)) && y <= int(BIT(my, 16, 10)))
+			return true;
+	}
+	return false;
+}
+
 // write one pixel through the logic operation and the write mask
 void sgi_lg1_device::plot(int x, int y, u8 src)
 {
 	x += xywin_x();
 	y += xywin_y();
 	if (x < 0 || x >= int(x_res) || y < 0 || y >= 1024)
+		return;
+	if (!smask_pass(x, y))
 		return;
 
 	u8 &pixel = plane_buffer()[y * x_res + x];
