@@ -34,6 +34,7 @@ protected:
 
 	void do_rex_command();
 	void plot(int x, int y, u8 src);
+	u8 logic_op(u8 src, u8 dst) const;
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
 	// coordinate, and drawing is limited to the union of the enabled masks;
@@ -48,6 +49,10 @@ protected:
 	unsigned plane_select() const { return BIT(m_aux2, 29, 2); }
 	u8 *plane_buffer() const { return (plane_select() == 2) ? m_pup.get() : (plane_select() == 3) ? m_cid.get() : m_vram.get(); }
 	u8 plane_mask() const { return (plane_select() >= 2) ? 0x03 : 0xff; }
+	// 4-bit double-buffered mode (aux1 bit 5): the colour planes hold two
+	// 4-bit buffers, buffer 0 in bits 0-3 and buffer 1 in bits 4-7; aux1
+	// bits 2 and 3 enable writes to buffers 0 and 1, bit 4 reads buffer 1
+	bool dbl4() const { return BIT(m_aux1, 5) && plane_select() < 2; }
 	// window origin: coordinates are offset by xywin, where 0x800 is none
 	int xywin_x() const { return int((m_xywin >> 16) & 0x0fff) - 0x800; }
 	int xywin_y() const { return int(m_xywin & 0x0fff) - 0x800; }

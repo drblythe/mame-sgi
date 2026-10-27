@@ -403,7 +403,10 @@ u8 sgi_lg1_device::vram_r(int x, int y) const
 {
 	x += xywin_x();
 	y += xywin_y();
-	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? plane_buffer()[y * x_res + x] : 0;
+	if (x < 0 || x >= int(x_res) || y < 0 || y >= 1024)
+		return 0;
+	u8 const pixel = plane_buffer()[y * x_res + x];
+	return dbl4() ? (pixel >> (BIT(m_aux1, 4) * 4)) & 0x0f : pixel;
 }
 
 bool sgi_lg1_device::clip_pass(int x, int y) const
@@ -442,7 +445,24 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 		return;
 
 	u8 &pixel = plane_buffer()[y * x_res + x];
-	u8 const dst = pixel;
+	u8 const wrmask = m_wrmask & plane_mask();
+	if (dbl4())
+	{
+		for (unsigned n = 0; n < 2; n++)
+		{
+			if (!BIT(m_aux1, 2 + n))
+				continue;
+			u8 const shift = n * 4;
+			u8 const mask = (wrmask & 0x0f) << shift;
+			pixel = (pixel & ~mask) | ((logic_op(src & 0x0f, (pixel >> shift) & 0x0f) << shift) & mask);
+		}
+		return;
+	}
+	pixel = (pixel & ~wrmask) | (logic_op(src, pixel) & wrmask);
+}
+
+u8 sgi_lg1_device::logic_op(u8 src, u8 dst) const
+{
 	u8 result;
 	switch (m_logicop & 15)
 	{
@@ -463,8 +483,7 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 	case 14: result = ~(src & dst); break;
 	case 15: result = 0xff; break;
 	}
-	u8 const wrmask = m_wrmask & plane_mask();
-	pixel = (dst & ~wrmask) | (result & wrmask);
+	return result;
 }
 
 /*
@@ -555,10 +574,12 @@ void sgi_lg1_device::do_rex_command()
 	int const mx = util::sext(m_xymove >> 16, 11);
 	int const my = util::sext(m_xymove, 11);
 	// RGB mode packs the red, green and blue integer parts into a 3-3-2
-	// pixel: red in bits 5-7, blue in 3-4 and green in 0-2
-	u8 const color = (cmd & REX15_OP_FLAG_RGBMODE)
-		? u8((colori_r<0>() & 0xe0) | ((colori_r<2>() >> 3) & 0x18) | ((colori_r<1>() >> 5) & 0x07))
-		: u8(colori_r<0>());
+	// pixel: red in bits 5-7, blue in 3-4 and green in 0-2; in 4-bit
+	// double-buffered mode a 1-2-1 pixel: red in bit 3, green in 1-2 and
+	// blue in 0
+	u8 const color = !(cmd & REX15_OP_FLAG_RGBMODE) ? u8(colori_r<0>())
+		: dbl4() ? u8(((colori_r<0>() >> 4) & 0x08) | ((colori_r<1>() >> 5) & 0x06) | ((colori_r<2>() >> 7) & 0x01))
+		: u8((colori_r<0>() & 0xe0) | ((colori_r<2>() >> 3) & 0x18) | ((colori_r<1>() >> 5) & 0x07));
 
 	int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : x0;
 	int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : y0;
