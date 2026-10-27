@@ -12,6 +12,7 @@ class bt47x_device_base
 public:
 	// color lookup
 	rgb_t palette_lookup(u8 index) const { return pen_color(index & m_read_mask); }
+	u8 read_mask() const { return m_read_mask; }
 	rgb_t overlay_lookup(u8 index) const { return pen_color(m_palette_colors + index); }
 
 	virtual void map(address_map &map) ATTR_COLD;
@@ -133,6 +134,15 @@ public:
 	virtual void map(address_map &map) override ATTR_COLD;
 	virtual u8 read(offs_t offset) override;
 	virtual void write(offs_t offset, u8 data) override;
+
+	// color lookup: window mode isn't emulated, so pixels use the palette
+	// selected in command register 0 (the one software loads and expects
+	// to see when no windows are enabled)
+	rgb_t palette_lookup(u8 index) const { return pen_color(BIT(m_command[0], 4, 2) * 0x100 + (index & read_mask())); }
+	// the 256 pens of a palette: one selected externally (P8/P9 palette
+	// select inputs), or with a negative value the one command register 0
+	// selects; index them with the pixel ANDed with read_mask()
+	pen_t const *palette_pens(int palette) const { return &pens()[((palette < 0) ? BIT(m_command[0], 4, 2) : (palette & 3)) * 0x100]; }
 
 protected:
 	virtual void device_start() override ATTR_COLD;
