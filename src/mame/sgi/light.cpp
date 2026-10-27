@@ -220,10 +220,11 @@ u32 sgi_lg1_device::dac_r(offs_t offset)
 
 void sgi_lg1_device::dac_w(offs_t offset, u32 data)
 {
+	// a host write loads the latch; a write to the GO address then also
+	// passes it to the device (software often writes only the GO address)
+	m_data = data;
 	if (offset & 0x200)
 		m_lut1->write(m_configsel, m_data);
-	else
-		m_data = data;
 }
 
 u32 sgi_lg1_device::vc1_r(offs_t offset)
@@ -236,10 +237,11 @@ u32 sgi_lg1_device::vc1_r(offs_t offset)
 
 void sgi_lg1_device::vc1_w(offs_t offset, u32 data)
 {
+	// a host write loads the latch; a write to the GO address then also
+	// passes it to the device (software often writes only the GO address)
+	m_data = data;
 	if (offset & 0x200)
 		m_vc1->write(m_configsel, m_data);
-	else
-		m_data = data;
 }
 
 void sgi_lg1_device::do_rex_command()
