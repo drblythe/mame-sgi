@@ -199,11 +199,13 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 
 	// VC1 cursor: 32x32, two planes of 4 bytes per row (most significant
 	// bit leftmost) in the VC1's SRAM at CUR_EP and CUR_EP + 0x80; the
-	// planes form an index into cursor colour map 3 (0 is transparent)
+	// planes form an index (0 is transparent) into the colour map and
+	// submap the cursor mode register selects
 	{
 		u16 const ep = m_vc1->cursor_ep();
 		int const cx = int(m_vc1->cursor_x()) - CURSOR_X_OFFSET;
 		int const cy = int(m_vc1->cursor_y()) - CURSOR_Y_OFFSET;
+		unsigned const cursor_pens = BIT(m_vc1->cursor_mode(), 14, 2) * 0x100 + BIT(m_vc1->cursor_mode(), 10, 4) * 0x10;
 
 		for (int row = 0; row < 32; row++)
 		{
@@ -221,7 +223,7 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 				int const x = cx + col;
 				unsigned const index = BIT(p1, 31 - col) << 1 | BIT(p0, 31 - col);
 				if (index && x >= cliprect.min_x && x <= cliprect.max_x)
-					bitmap.pix(y, x) = m_lut1->pen_color(0x300 + index);
+					bitmap.pix(y, x) = m_lut1->pen_color(cursor_pens + index);
 			}
 		}
 	}
