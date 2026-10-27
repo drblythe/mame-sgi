@@ -34,10 +34,13 @@ protected:
 
 	void do_rex_command();
 	void plot(int x, int y, u8 src);
-	// screen masks: aux2 bits 8-11 enable masks 1-4, each an x and a y
+	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
-	// coordinate; drawing is limited to the union of the enabled masks
-	bool smask_pass(int x, int y) const;
+	// coordinate, and drawing is limited to the union of the enabled masks;
+	// aux2 bits 8-11 are a clip id match mask, bit n allowing drawing where
+	// the clip id planes hold n (checked unless drawing into the clip id
+	// planes themselves)
+	bool clip_pass(int x, int y) const;
 	u8 vram_r(int x, int y) const;
 	// aux2 bits 29-30 select the planes drawing and pixel reads use: the 8
 	// colour planes (1), the 2 pop-up planes (2) or the 2 clip id planes

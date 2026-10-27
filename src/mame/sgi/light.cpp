@@ -400,9 +400,16 @@ u8 sgi_lg1_device::vram_r(int x, int y) const
 	return (x >= 0 && x < int(x_res) && y >= 0 && y < 1024) ? plane_buffer()[y * x_res + x] : 0;
 }
 
-bool sgi_lg1_device::smask_pass(int x, int y) const
+bool sgi_lg1_device::clip_pass(int x, int y) const
 {
-	unsigned const enables = BIT(m_aux2, 8, 4);
+	if (plane_select() != 3)
+	{
+		unsigned const match = BIT(m_aux2, 8, 4);
+		if (match && !BIT(match, m_cid[y * x_res + x] & 3))
+			return false;
+	}
+
+	unsigned const enables = BIT(m_aux2, 4, 4);
 	if (!enables)
 		return true;
 
@@ -425,7 +432,7 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 	y += xywin_y();
 	if (x < 0 || x >= int(x_res) || y < 0 || y >= 1024)
 		return;
-	if (!smask_pass(x, y))
+	if (!clip_pass(x, y))
 		return;
 
 	u8 &pixel = plane_buffer()[y * x_res + x];
