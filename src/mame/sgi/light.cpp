@@ -39,6 +39,7 @@ enum
 	REX15_OP_NOP                = 0x00000000,
 	REX15_OP_DRAW               = 0x00000001,
 	REX15_OP_LDPIXEL            = 0x00000003,
+	REX15_OP_FLAG_ANTIALIAS     = 0x00000004,
 	REX15_OP_FLAG_BLOCK         = 0x00000008,
 	REX15_OP_FLAG_LENGTH32      = 0x00000010,
 	REX15_OP_FLAG_QUADMODE      = 0x00000020,
@@ -46,6 +47,7 @@ enum
 	REX15_OP_FLAG_STOPONX       = 0x00000100,
 	REX15_OP_FLAG_STOPONY       = 0x00000200,
 	REX15_OP_FLAG_ENZPATTERN    = 0x00000400,
+	REX15_OP_FLAG_LINE          = 0x00001000,
 	REX15_OP_FLAG_RGBMODE       = 0x00004000,
 	REX15_OP_FLAG_COLORCOMP     = 0x00010000,
 	REX15_OP_FLAG_LOGICSRC      = 0x00080000,
@@ -107,6 +109,7 @@ void sgi_lg1_device::device_reset()
 	m_wrmask = 0xff;
 	m_logicop = 3; // source
 	m_xywin = 0x0800'0800; // window origin 0x800, 0x800: no offset
+	m_aamask = 0x0f;
 	m_aux2_source = false;
 }
 
@@ -506,6 +509,57 @@ bool sgi_lg1_device::compare_pass(u8 src, u8 dst) const
 }
 
 /*
+ * Line mode: one pixel per step along the major axis (x with STOPONX,
+ * y with STOPONY; a single pixel with neither) from the start to the end
+ * coordinate, adding the minor slope (signed, 15 fraction bits like the
+ * start coordinates) to the minor coordinate each step. Antialiased passes
+ * (command bit 2) replace the colour index bits loaded by opcode 2 with a
+ * weight: from aweight, eight 4-bit intensities indexed by coverage 0-7,
+ * the top three bits of the minor fraction f (opcode 0) or 7 - f (opcode
+ * 1); or the low bits of rwaux1 (opcode 2). IRIS GL draws a one-pixel
+ * smooth line as two passes, opcode 0 a row past the line's centre and
+ * opcode 1 half a row before it, wider ones with opcode 2 rows of weight
+ * 0xf between, and a smooth point as four single pixels with its computed
+ * coverages in rwaux1.
+ */
+void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
+{
+	bool const xmajor = !(cmd & REX15_OP_FLAG_STOPONY);
+	s32 const slope = util::sext(m_minorslope, 17);
+	int major = xmajor ? int(xstarti_r()) : int(ystarti_r());
+	int const end = !(cmd & (REX15_OP_FLAG_STOPONX | REX15_OP_FLAG_STOPONY)) ? major
+		: xmajor ? int(xendi_r()) : int(yendi_r());
+	s32 minor = s32(xmajor ? m_ystart : m_xstart);
+	int const step = (end >= major) ? 1 : -1;
+	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
+
+	for (unsigned n = 0; n < 4096; n++)
+	{
+		int const x = xmajor ? major : (minor >> 15);
+		int const y = xmajor ? (minor >> 15) : major;
+		u8 src = color;
+		if (aa >= 0)
+		{
+			unsigned const f = (minor >> 12) & 7;
+			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
+			src = (color & ~m_aamask) | (weight & m_aamask);
+		}
+		bool draw = !stipple || BIT(m_lspattern, 31 - (n & 31));
+		if (draw && (cmd & REX15_OP_FLAG_COLORCOMP) && !compare_pass(src, vram_r(x, y)))
+			draw = false;
+		if (draw)
+			plot(x, y, src);
+		if (major == end)
+			break;
+		major += step;
+		minor += slope;
+	}
+
+	m_xcurri = xmajor ? major + step : (minor >> 15);
+	m_ycurri = xmajor ? (minor >> 15) : major + step;
+}
+
+/*
  * The command register holds the opcode, mode flags and logic operation;
  * any access through the GO page runs it. Drawing steps from the start
  * towards the end coordinates in each axis (software orders them for the
@@ -519,8 +573,18 @@ void sgi_lg1_device::do_rex_command()
 {
 	u32 const cmd = m_command;
 
-	switch (cmd & 3)
+	// antialiased passes: bit 2 with opcode 0 (weighted by the minor axis
+	// fraction), 1 (by one minus it) or 2 (the weight in rwaux1)
+	int const aa = (cmd & REX15_OP_FLAG_ANTIALIAS) ? int(cmd & 3) : -1;
+
+	switch (aa >= 0 ? REX15_OP_DRAW : (cmd & 3))
 	{
+	case 2:
+		// load the colour index bits that antialiased passes replace with
+		// the weight (IRIS GL loads 0xf before its smooth lines)
+		m_aamask = u8(m_rwaux1);
+		return;
+
 	case REX15_OP_NOP:
 		m_xcurri = xstarti_r();
 		m_ycurri = ystarti_r();
@@ -599,6 +663,12 @@ void sgi_lg1_device::do_rex_command()
 	u8 const color = !(cmd & REX15_OP_FLAG_RGBMODE) ? u8(colori_r<0>())
 		: dbl4() ? u8(((colori_r<0>() >> 4) & 0x08) | ((colori_r<1>() >> 5) & 0x06) | ((colori_r<2>() >> 7) & 0x01))
 		: u8((colori_r<0>() & 0xe0) | ((colori_r<2>() >> 3) & 0x18) | ((colori_r<1>() >> 5) & 0x07));
+
+	if ((cmd & REX15_OP_FLAG_LINE) || aa >= 0)
+	{
+		draw_line(cmd, color, aa);
+		return;
+	}
 
 	int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : x0;
 	int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : y0;

@@ -34,6 +34,7 @@ protected:
 
 	void do_rex_command();
 	void plot(int x, int y, u8 src);
+	void draw_line(u32 cmd, u8 color, int aa);
 	bool compare_pass(u8 src, u8 dst) const;
 	u8 logic_op(u8 src, u8 dst) const;
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
@@ -181,6 +182,7 @@ private:
 	u32 m_yend;
 	u32 m_xsave;
 	u32 m_minorslope;
+	u8 m_aamask; // index bits that take the antialiasing weight
 	u8 m_wrmask;
 	u8 m_logicop;
 	bool m_aux2_source;
