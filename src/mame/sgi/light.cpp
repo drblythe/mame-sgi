@@ -510,6 +510,7 @@ void sgi_lg1_device::do_rex_command()
 	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
 	bool const block = cmd & REX15_OP_FLAG_BLOCK;
 	bool const span = block || (cmd & REX15_OP_FLAG_STOPONX);
+	bool const quadaux = (cmd & REX15_OP_FLAG_COLORAUX) && (cmd & REX15_OP_FLAG_QUADMODE);
 	// host pixel data: each GO with XYCONTINUE supplies the next four
 	// pixels; without it, the four repeat to the end of the span
 	bool const hostdata = (cmd & REX15_OP_FLAG_COLORAUX) && (cmd & REX15_OP_FLAG_XYCONTINUE);
@@ -569,8 +570,10 @@ void sgi_lg1_device::do_rex_command()
 
 		if (!span)
 		{
-			// a single pixel
+			// a single pixel, or four of host data in quad mode
 			x += dx;
+			if (quadaux && n < 3)
+				continue;
 			break;
 		}
 
@@ -590,7 +593,9 @@ void sgi_lg1_device::do_rex_command()
 		}
 		x = x0;
 		y += dy;
-		if (pattern || stipple)
+		// pattern rows take a new pattern word, and host data rows start
+		// with a new quad (the rest of the current one is discarded)
+		if (pattern || stipple || hostdata)
 			break;
 	}
 
