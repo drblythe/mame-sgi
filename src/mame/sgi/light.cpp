@@ -748,8 +748,11 @@ void sgi_lg1_device::do_rex_command()
 	int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : x0;
 	int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : y0;
 
-	// a block that has finished its last row draws nothing more
+	// a block that has finished its last row, or a span that has reached
+	// its end, draws nothing more
 	if (block && (cmd & REX15_OP_FLAG_XYCONTINUE) && (dy > 0 ? y > y1 : y < y1))
+		return;
+	if (span && !block && (cmd & REX15_OP_FLAG_XYCONTINUE) && (dx > 0 ? x > x1 : x < x1))
 		return;
 
 	LOGMASKED(LOG_REX, "command %08x: %d,%d to %d,%d from %d,%d\n", cmd, x0, y0, x1, y1, x, y);
@@ -801,7 +804,16 @@ void sgi_lg1_device::do_rex_command()
 		}
 
 		// end of the span
-		if (!block || y == y1)
+		if (!block)
+		{
+			// just past the end on the same row: a following XYCONTINUE
+			// with a later end carries on (IRIX's OpenGL draws a bitmap row
+			// as 8-pixel pattern pieces, moving the end each time), with
+			// the same end it draws nothing
+			x += dx;
+			break;
+		}
+		if (y == y1)
 		{
 			// past the end, so a following XYCONTINUE draws nothing
 			x = x0;
