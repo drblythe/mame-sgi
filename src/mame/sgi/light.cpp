@@ -180,6 +180,17 @@ void sgi_lg1_device::map(address_map &map)
 
 u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, rectangle const &cliprect)
 {
+	// redraw only frames after something visible changed (a pixel of the
+	// colour or pop-up planes, the RAMDAC or the VC1); decided at a frame's
+	// first scanline, so its partial updates agree
+	if (cliprect.min_y == screen.visible_area().min_y)
+	{
+		m_draw_frame = m_display_dirty;
+		m_display_dirty = false;
+	}
+	if (!m_draw_frame)
+		return UPDATE_HAS_NOT_CHANGED;
+
 	// the PROM and IRIX blank the screen through the VC1
 	if (!m_vc1->video_enabled())
 	{
@@ -275,7 +286,10 @@ void sgi_lg1_device::dac_w(offs_t offset, u32 data)
 	// passes it to the device (software often writes only the GO address)
 	m_data = data;
 	if (offset & 0x200)
+	{
 		m_lut1->write(m_configsel, m_data);
+		m_display_dirty = true;
+	}
 }
 
 u32 sgi_lg1_device::vc1_r(offs_t offset)
@@ -292,7 +306,10 @@ void sgi_lg1_device::vc1_w(offs_t offset, u32 data)
 	// passes it to the device (software often writes only the GO address)
 	m_data = data;
 	if (offset & 0x200)
+	{
 		m_vc1->write(m_configsel, m_data);
+		m_display_dirty = true;
+	}
 }
 
 void sgi_lg1_device::rex_reg_w(unsigned reg, u32 data)
@@ -451,6 +468,7 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 		return;
 
 	u8 &pixel = plane_buffer()[y * x_res + x];
+	u8 const old = pixel;
 	u8 const wrmask = m_wrmask & plane_mask();
 	if (dbl4())
 	{
@@ -462,9 +480,13 @@ void sgi_lg1_device::plot(int x, int y, u8 src)
 			u8 const mask = (wrmask & 0x0f) << shift;
 			pixel = (pixel & ~mask) | ((logic_op(src & 0x0f, (pixel >> shift) & 0x0f) << shift) & mask);
 		}
-		return;
 	}
-	pixel = (pixel & ~wrmask) | (logic_op(src, pixel) & wrmask);
+	else
+		pixel = (pixel & ~wrmask) | (logic_op(src, pixel) & wrmask);
+
+	// the clip id planes aren't displayed
+	if (pixel != old && plane_select() != 3)
+		m_display_dirty = true;
 }
 
 u8 sgi_lg1_device::logic_op(u8 src, u8 dst) const

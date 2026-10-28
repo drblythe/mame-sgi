@@ -29,6 +29,7 @@ protected:
 	void device_add_mconfig(machine_config &config) override ATTR_COLD;
 	virtual void device_start() override ATTR_COLD;
 	virtual void device_reset() override ATTR_COLD;
+	virtual void device_post_load() override { m_display_dirty = true; }
 
 	u32 screen_update(screen_device &screen, bitmap_rgb32 &bitmap, rectangle const &cliprect);
 
@@ -192,6 +193,8 @@ private:
 	u32 m_xsave;
 	u32 m_minorslope;
 	u8 m_aamask; // index bits that take the antialiasing weight
+	bool m_display_dirty = true; // something visible changed since the last redraw
+	bool m_draw_frame = true;    // this frame is being redrawn
 	// the current position (15 fraction bits): loaded from the start
 	// registers by a NOP or a GO without XYCONTINUE, carried from one
 	// piece of a line or span to the next. The REX keeps it, with the
