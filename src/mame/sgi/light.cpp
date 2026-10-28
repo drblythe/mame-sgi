@@ -51,9 +51,9 @@ enum
 	REX15_OP_FLAG_LINE          = 0x00001000,
 	REX15_OP_FLAG_RGBMODE       = 0x00004000,
 	REX15_OP_FLAG_COLORCOMP     = 0x00010000,
+	REX15_OP_FLAG_ENLSPATTERN   = 0x00040000,
 	REX15_OP_FLAG_LOGICSRC      = 0x00080000,
 	REX15_OP_FLAG_COLORAUX      = 0x00200000,
-	REX15_OP_FLAG_ENLSPATTERN   = 0x00400000,
 	REX15_OP_FLAG_ZOPAQUE       = 0x00800000,
 	REX15_OP_FLAG_ZCONTINUE     = 0x01000000,
 };
@@ -507,6 +507,31 @@ u8 sgi_lg1_device::pack_rgb(u8 r, u8 g, u8 b) const
 // values), passing when the new colour compares with the one in the
 // frame buffer; IRIS GL uses it for zsource(ZSRC_COLOR), and the firmware's
 // REX revision check uses greater (aux1 0x100)
+// line stipple (command bit 18): the pattern's most significant bit
+// enables the pixel; each pixel counts down the repeat count in lsmode bits
+// 0-7, and at zero it reloads from bits 8-15 and the pattern rotates left
+// one bit (IRIS GL replicates its 16-bit linestyle to 32 bits). Both
+// registers carry the position from one line to the next; the last pixel
+// of a line doesn't advance it, as IRIS GL's polylines expect (the next
+// segment starts on that pixel)
+bool sgi_lg1_device::line_stipple(bool last)
+{
+	bool const on = BIT(m_lspattern, 31);
+	if (!last)
+	{
+		u32 count = m_lsmode & 0xff;
+		if (count <= 1)
+		{
+			count = (m_lsmode >> 8) & 0xff;
+			m_lspattern = rotl_32(m_lspattern, 1);
+		}
+		else
+			count--;
+		m_lsmode = (m_lsmode & ~0xffU) | count;
+	}
+	return on;
+}
+
 bool sgi_lg1_device::compare_pass(u8 src, u8 dst) const
 {
 	switch (BIT(m_aux1, 6, 3))
@@ -571,7 +596,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
 			src = (color & ~m_aamask) | (weight & m_aamask);
 		}
-		bool draw = !stipple || BIT(m_lspattern, 31 - (n & 31));
+		bool draw = !stipple || line_stipple(major == end);
 		if (draw && pattern && !BIT(m_zpattern, 31 - n))
 		{
 			if (cmd & REX15_OP_FLAG_ZOPAQUE)
@@ -778,7 +803,7 @@ void sgi_lg1_device::do_rex_command()
 		y += dy;
 		// pattern rows take a new pattern word, and host data rows start
 		// with a new quad (the rest of the current one is discarded)
-		if (pattern || stipple || hostdata)
+		if (pattern || hostdata)
 			break;
 	}
 
