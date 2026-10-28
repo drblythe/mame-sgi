@@ -194,8 +194,8 @@ offs_t dsp56000_disassembler::disassemble(std::ostream &stream, offs_t pc, data_
 			case 0x00d805U: util::stream_format(stream, "norm  r%d,%c", (op >> 8) & 7, BIT(op, 3) ? 'B' : 'A'); break;
 			}
 			break;
-		case 0x2: util::stream_format(stream, "t%s   %s", CCCC[(op >> 12) & 15], JJJD[(op >> 3) & 7]); break;
-		case 0x3: util::stream_format(stream, "t%s   %s   r%d,r%d", CCCC[(op >> 12) & 15], JJJD[(op >> 3) & 7], (op >> 8) & 7, op & 7); break;
+		case 0x2: util::stream_format(stream, "t%s   %s", CCCC[(op >> 12) & 15], JJJD[(op >> 3) & 15]); break;
+		case 0x3: util::stream_format(stream, "t%s   %s   r%d,r%d", CCCC[(op >> 12) & 15], JJJD[(op >> 3) & 15], (op >> 8) & 7, op & 7); break;
 		case 0x4:
 			switch (op & 0x0000e0U)
 			{
@@ -308,7 +308,7 @@ offs_t dsp56000_disassembler::disassemble(std::ostream &stream, offs_t pc, data_
 		case 0x8:
 		case 0x9:
 			{
-				u16 const pp = 0xffc0 | ((op >> 8) & 63);
+				u16 const pp = 0xffc0 | (op & 63);
 
 				if (BIT(op, 7))
 				{
