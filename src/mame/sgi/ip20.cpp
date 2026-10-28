@@ -40,6 +40,13 @@
 #include "kbd.h"
 #include "light.h"
 #include "mc.h"
+#include "nwd33c9x.h"
+
+// SCSI: nwd33c9x_device, a single-object WD33C93 with the disk targets
+// built in (several times faster per byte than an initiator and targets
+// talking over an NSCSI bus), or, without this, the stock WD33C93A and
+// NSCSI bus
+#define MAME_SGI_IP20_USE_NWD33C9X
 
 //#define VERBOSE (LOG_GENERAL)
 #include "logmacro.h"
@@ -58,7 +65,11 @@ public:
 		, m_int(*this, "int")
 		, m_nvram(*this, "nvram")
 		, m_rtc(*this, "rtc")
+#ifdef MAME_SGI_IP20_USE_NWD33C9X
+		, m_scsi(*this, "nwd33c9x")
+#else
 		, m_scsi(*this, "wd33c93a")
+#endif
 		, m_eth(*this, "eth")
 		, m_scc(*this, "scc%u", 0U)
 		, m_dsp(*this, "dsp")
@@ -92,7 +103,12 @@ protected:
 	required_device<sgi_int2_device> m_int;
 	required_device<eeprom_serial_93cxx_device> m_nvram;
 	required_device<dp8572a_device> m_rtc;
-	required_device<wd33c93a_device> m_scsi;
+#ifdef MAME_SGI_IP20_USE_NWD33C9X
+	using scsi_ctrl_device = nwd33c9x_device;
+#else
+	using scsi_ctrl_device = wd33c93a_device;
+#endif
+	required_device<scsi_ctrl_device> m_scsi;
 	required_device<seeq8003_device> m_eth;
 	required_device_array<scc85c30_device, 3> m_scc;
 	required_device<dsp56001_device> m_dsp;
@@ -273,7 +289,7 @@ void ip20_state::cpu_map(address_map &map)
 		NAME([this]() { return m_dsp_miscsr; }),
 		NAME([this](u32 data) { dsp_miscsr_w(data); }));
 	map(0x1fb8'0100, 0x1fb8'011f).m(m_eth, FUNC(seeq8003_device::map)).umask32(0xff);
-	map(0x1fb8'0120, 0x1fb8'0127).rw(m_scsi, FUNC(wd33c93a_device::indir_r), FUNC(wd33c93a_device::indir_w)).umask32(0xff00);
+	map(0x1fb8'0120, 0x1fb8'0127).rw(m_scsi, FUNC(scsi_ctrl_device::indir_r), FUNC(scsi_ctrl_device::indir_w)).umask32(0xff00);
 	map(0x1fb8'01c0, 0x1fb8'01ff).m(m_int, FUNC(sgi_int2_device::map)).umask32(0xff);
 	map(0x1fb8'0d00, 0x1fb8'0d0f).rw(m_scc[0], FUNC(scc85c30_device::ab_dc_r), FUNC(scc85c30_device::ab_dc_w)).umask32(0xff);
 	map(0x1fb8'0d10, 0x1fb8'0d1f).rw(m_scc[1], FUNC(scc85c30_device::ab_dc_r), FUNC(scc85c30_device::ab_dc_w)).umask32(0xff);
@@ -291,6 +307,7 @@ static DEVICE_INPUT_DEFAULTS_START(ip20_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x07)
 DEVICE_INPUT_DEFAULTS_END
 
+#ifndef MAME_SGI_IP20_USE_NWD33C9X
 static void scsi_devices(device_slot_interface &device)
 {
 	device.option_add("cdrom", NSCSI_CDROM_SGI).machine_config(
@@ -300,6 +317,7 @@ static void scsi_devices(device_slot_interface &device)
 		});
 	device.option_add("harddisk", NSCSI_HARDDISK);
 }
+#endif
 
 void ip20_state::indigo_r4000(machine_config &config)
 {
@@ -347,9 +365,9 @@ void ip20_state::ip20(machine_config &config)
 	m_hpc->set_gio(m_cpu, AS_PROGRAM);
 	m_hpc->set_enet(m_eth);
 	m_hpc->int_w().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_ETHERNET>));
-	m_hpc->dma_r_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_r));
-	m_hpc->dma_w_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_w));
-	m_hpc->scsi_reset_w().set(m_scsi, FUNC(wd33c93a_device::reset_w));
+	m_hpc->dma_r_cb<0>().set(m_scsi, FUNC(scsi_ctrl_device::dma_r));
+	m_hpc->dma_w_cb<0>().set(m_scsi, FUNC(scsi_ctrl_device::dma_w));
+	m_hpc->scsi_reset_w().set(m_scsi, FUNC(scsi_ctrl_device::reset_w));
 	m_hpc->eeprom_dati().set(m_nvram, FUNC(eeprom_serial_93cxx_device::do_read));
 	m_hpc->eeprom_out().set(
 		[this](u8 data)
@@ -380,6 +398,18 @@ void ip20_state::ip20(machine_config &config)
 	DP8572A(config, m_rtc, 32.768_kHz_XTAL).set_use_utc(true);
 	m_rtc->set_year_base(1970); // IRIX stores years since 1970
 
+#ifdef MAME_SGI_IP20_USE_NWD33C9X
+	// disks are -hard1 (SCSI ID 1, the boot disk) to -hard7 (ID 7); CD-ROMs
+	// sit on the controller's own bus, where the Indigo's is at ID 4
+	NWD33C9X(config, m_scsi, 10_MHz_XTAL);
+	m_scsi->irq_cb().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_SCSI>));
+	m_scsi->drq_cb().set(m_hpc, FUNC(hpc1_device::write_drq<0>));
+	subdevice<nscsi_connector>("nwd33c9x:auxbus:6")->set_default_option(nullptr);
+	subdevice<nscsi_connector>("nwd33c9x:auxbus:4")->set_default_option("cdrom");
+	// the PROM reads CDs in 512-byte blocks without selecting that size
+	subdevice<nscsi_connector>("nwd33c9x:auxbus:4")->set_option_machine_config("cdrom",
+		[](device_t *device) { downcast<nscsi_cdrom_device &>(*device).set_block_size(512); });
+#else
 	auto &scsi(NSCSI_BUS(config, "scsi"));
 
 	WD33C93A(config, m_scsi, 10_MHz_XTAL);
@@ -394,6 +424,7 @@ void ip20_state::ip20(machine_config &config)
 	NSCSI_CONNECTOR(config, "scsi:5", scsi_devices, nullptr, false);
 	NSCSI_CONNECTOR(config, "scsi:6", scsi_devices, nullptr, false);
 	NSCSI_CONNECTOR(config, "scsi:7", scsi_devices, nullptr, false);
+#endif
 
 	SEEQ8003(config, m_eth);
 	m_eth->out_int_cb().set(m_hpc, FUNC(hpc1_device::write_int));
