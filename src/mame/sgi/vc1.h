@@ -17,19 +17,33 @@ public:
 
 	// cursor generator state, for the board's screen update
 	u8 sysctl() const { return m_sysctl; }
-	// display id: the frame table at DID_EP holds one line table pointer
-	// per scan line; the line's first entry gives its display id, and the
-	// display id's mode (two bytes each in the xmap table) selects the
-	// RAMDAC palette in bits 2-3 of its second byte
+	// display ids: the frame table at DID_EP holds one line list pointer
+	// per scan line. A list is a count followed by that many 16-bit entries,
+	// in x order, each the x where a display id starts (pixels, bits 5-15)
+	// and the id (bits 0-4); the X server gives windows with their own
+	// colour map their own id. The entries increase in x; one that doesn't
+	// ends the list (software pads lists with entries the VC1 reads ahead).
+	// An id's mode (two bytes each in the xmap table) selects the RAMDAC
+	// palette in bits 2-3 of its second byte. Returns the line's runs as
+	// start x and palette (at most max), or 0 without display id tables
 	u16 did_ep() const { return u16(m_reg[0x40]) << 8 | m_reg[0x41]; }
-	int line_palette(unsigned line) const
+	unsigned line_runs(unsigned line, u16 *x, u8 *palette, unsigned max) const
 	{
 		u16 const ep = did_ep();
 		if (!ep)
-			return -1;
-		u16 const lp = u16(ram(ep + line * 2)) << 8 | ram(ep + line * 2 + 1);
-		unsigned const did = ram(lp + 3) & 0x1f;
-		return BIT(m_xmap[did * 2 + 1], 2, 2);
+			return 0;
+		u16 const lp = ram16(ep + line * 2);
+		unsigned const count = std::min<unsigned>(ram16(lp), max);
+		unsigned runs = 0;
+		for (unsigned i = 0; i < count; i++)
+		{
+			u16 const entry = ram16(lp + 2 + i * 2);
+			if (runs && (entry >> 5) <= x[runs - 1])
+				break;
+			x[runs] = entry >> 5;
+			palette[runs++] = BIT(m_xmap[(entry & 0x1f) * 2 + 1], 2, 2);
+		}
+		return runs;
 	}
 	bool video_enabled() const { return m_sysctl & 0x04; } // cleared to blank the screen
 	// xmap control: the colour map (bits 4-5) and submap (bits 0-3) the
@@ -40,6 +54,7 @@ public:
 	u16 cursor_y() const { return u16(m_reg[0x24]) << 8 | m_reg[0x25]; }
 	u16 cursor_mode() const { return u16(m_reg[0x26]) << 8 | m_reg[0x27]; }
 	u8 ram(u16 address) const { return m_ram[address & 0x7fffU]; }
+	u16 ram16(u16 address) const { return u16(ram(address)) << 8 | ram(address + 1); }
 
 protected:
 	virtual void device_start() override ATTR_COLD;
