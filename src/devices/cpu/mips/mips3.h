@@ -366,6 +366,14 @@ public:
 	void mips3drc_set_options(uint32_t options);
 	uint32_t mips3drc_get_options();
 	void mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cycles);
+	// An idle PC: an instruction (its virtual PC and opcode) that the
+	// guest reaches only while it waits for an interrupt, e.g. an
+	// operating system's idle loop on a CPU without WAIT. There, with no
+	// enabled interrupt pending, the CPU gives up the rest of its timeslice
+	// as WAIT does (emulated time and interrupt latency are unchanged: the
+	// timeslice ends at the next timer or input change anyway). The
+	// recompiler's cache is flushed on the next execute_run.
+	void set_idle_pc(offs_t pc, uint32_t opcode);
 
 	// TEMPORARY diagnostic (2026-08-17) - host-gdb-callable helpers for
 	// live investigation of a specific compiled DRC block, without
@@ -778,6 +786,8 @@ protected:
 
 																		 /* hotspots */
 	uint32_t        m_hotspot_select;
+	offs_t          m_idle_pc = 0;
+	uint32_t        m_idle_opcode = 0;
 	struct {
 		offs_t      pc;                         /* PC to consider */
 		uint32_t    opcode;                     /* required opcode at that PC */

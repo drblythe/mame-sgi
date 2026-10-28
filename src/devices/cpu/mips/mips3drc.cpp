@@ -475,6 +475,13 @@ void mips3_device::add_fastram(offs_t start, offs_t end, uint8_t readonly, void 
     mips3drc_add_hotspot - add a new hotspot
 -------------------------------------------------*/
 
+void mips3_device::set_idle_pc(offs_t pc, uint32_t opcode)
+{
+	m_idle_pc = pc;
+	m_idle_opcode = opcode;
+	m_drc_cache_dirty = true;	// recompiled, with the idle PC, on the next execute_run
+}
+
 void mips3_device::mips3drc_add_hotspot(offs_t pc, uint32_t opcode, uint32_t cycles)
 {
 	if (!allow_drc()) return;
@@ -2945,6 +2952,17 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			compiler.cycles += m_hotspot[hotnum].cycles;
 			break;
 		}
+
+	/* at the idle PC, give up the timeslice unless an interrupt is pending */
+	if (m_idle_pc != 0 && desc->pc == m_idle_pc && desc->opptr == m_idle_opcode)
+	{
+		uml::code_label skip;
+		UML_AND(block, I0, CPR032(COP0_Cause), CPR032(COP0_Status));      // and     i0,[Cause],[Status]
+		UML_AND(block, I0, I0, 0xff00);                                   // and     i0,i0,0xff00
+		UML_JMPc(block, COND_NZ, skip = compiler.labelnum++);             // jmp     skip,NZ
+		UML_MOV(block, mem(&m_core->icount), 0);                          // mov     [icount],0
+		UML_LABEL(block, skip);                                           // skip:
+	}
 
 	/* update the icount map variable */
 	UML_MAPVAR(block, MAPVAR_CYCLES, compiler.cycles);                             // mapvar  CYCLES,compiler.cycles

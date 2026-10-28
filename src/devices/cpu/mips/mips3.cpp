@@ -5617,6 +5617,10 @@ void mips3_device::execute_run()
 		m_ppc = m_core->pc;
 		debugger_instruction_hook(m_core->pc);
 
+		/* at the idle PC, give up the timeslice unless an interrupt is pending */
+		if (m_idle_pc != 0 && m_core->pc == m_idle_pc && !(m_core->cpr[0][COP0_Cause] & SR & 0xff00))
+			m_core->icount = 0;
+
 #ifdef MAME_SGI_PC_TRACE_DIAG
 		// TEMPORARY (2026-08-14): true per-instruction resolution for the
 		// same narrow-window trace as execute_run()'s own hook above -
