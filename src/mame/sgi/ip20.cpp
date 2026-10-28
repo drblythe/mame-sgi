@@ -83,6 +83,7 @@ protected:
 	void dsp_miscsr_w(u32 data);
 	void vblank_w(int state);
 	void clearvri_w(int state);
+	TIMER_CALLBACK_MEMBER(idle_scan);
 
 	required_device<cpu_device> m_cpu;
 	required_device<eeprom_serial_93cxx_device> m_eerom;
@@ -101,6 +102,7 @@ protected:
 	bool m_vblank = false;
 	bool m_vr_enable = false;
 	bool m_vr_latch = false;
+	emu_timer *m_idle_scan = nullptr;
 };
 
 void ip20_state::machine_start()
@@ -109,11 +111,55 @@ void ip20_state::machine_start()
 	save_item(NAME(m_vblank));
 	save_item(NAME(m_vr_enable));
 	save_item(NAME(m_vr_latch));
+
+	m_idle_scan = timer_alloc(FUNC(ip20_state::idle_scan), this);
 }
 
 void ip20_state::machine_reset()
 {
 	m_dsp_miscsr = 0;
+
+	// look for IRIX's idle loop once a second until the kernel is loaded
+	if (auto *const mips3 = dynamic_cast<mips3_device *>(m_cpu.target()))
+	{
+		mips3->set_idle_pc(0, 0);
+		m_idle_scan->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
+	}
+}
+
+// The R4000/R4400 has no WAIT, so IRIX on the IP20 idles in a busy loop,
+// while (local_idle() && !idler()), which only an interrupt ends. Find
+// local_idle (it tests the per-CPU p_nextthread and c_threads; the field
+// offsets are left unmatched) in the kernel's text and make it the MIPS III
+// core's idle PC, where it gives up its timeslice while no interrupt is
+// pending, instead of spinning at full emulated speed. IRIX relinks the
+// kernel on each system, so its address isn't fixed.
+TIMER_CALLBACK_MEMBER(ip20_state::idle_scan)
+{
+	static constexpr u32 sig[10] = {
+		0x8c01'0000, 0x1420'0006, 0x0000'1025, 0x8c02'0000, 0x1440'0003,
+		0x0000'1025, 0x03e0'0008, 0x2402'0001, 0x03e0'0008, 0x0000'0000 }; // lw at,(zero); bnez; move v0,zero; lw v0,(zero); bnez; ...
+	static constexpr u32 mask[10] = {
+		0xffff'0000, 0xffff'ffff, 0xffff'ffff, 0xffff'0000, 0xffff'ffff,
+		0xffff'ffff, 0xffff'ffff, 0xffff'ffff, 0xffff'ffff, 0xffff'ffff };
+
+	address_space &space = m_cpu->space(AS_PROGRAM);
+	// the kernel's text, at kseg0 0x8800'0000
+	for (offs_t a = 0x0800'0000; a < 0x0840'0000; a += 4)
+	{
+		if ((space.read_dword(a) & mask[0]) != sig[0])
+			continue;
+		unsigned n = 1;
+		while (n < 10 && (space.read_dword(a + n * 4) & mask[n]) == sig[n])
+			n++;
+		if (n == 10)
+		{
+			downcast<mips3_device &>(*m_cpu).set_idle_pc(0x8000'0000 | a, space.read_dword(a));
+			m_idle_scan->adjust(attotime::never);
+			LOG("idle loop: local_idle at %08x\n", 0x8000'0000 | a);
+			return;
+		}
+	}
 }
 
 // The vertical retrace interrupt (local I/O 1, GIO2) is latched at the
