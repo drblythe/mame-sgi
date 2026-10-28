@@ -43,6 +43,7 @@ enum
 	REX15_OP_FLAG_BLOCK         = 0x00000008,
 	REX15_OP_FLAG_LENGTH32      = 0x00000010,
 	REX15_OP_FLAG_QUADMODE      = 0x00000020,
+	REX15_OP_FLAG_XMAJOR        = 0x00000040,
 	REX15_OP_FLAG_XYCONTINUE    = 0x00000080,
 	REX15_OP_FLAG_STOPONX       = 0x00000100,
 	REX15_OP_FLAG_STOPONY       = 0x00000200,
@@ -730,7 +731,15 @@ void sgi_lg1_device::do_rex_command()
 	bool const rgb = cmd & REX15_OP_FLAG_RGBMODE;
 	u8 const color = rgb ? pack_rgb(colori_r<0>(), colori_r<1>(), colori_r<2>()) : u8(colori_r<0>());
 
-	if ((cmd & (REX15_OP_FLAG_FLINE | REX15_OP_FLAG_LINE)) || aa >= 0)
+	// lines: commands with a line bit, antialiased passes, and the other
+	// non-block draws that step the minor axis, x-major ones (STOPONX with
+	// bit 6) and y-major ones (STOPONY): OpenGL's integer lines set neither
+	// line bit; its polygon spans (STOPONX without bit 6) don't step y.
+	// Host data and copies take the span path
+	bool const linear = !(cmd & REX15_OP_FLAG_BLOCK)
+		&& ((cmd & REX15_OP_FLAG_STOPONY) || ((cmd & REX15_OP_FLAG_STOPONX) && (cmd & REX15_OP_FLAG_XMAJOR)))
+		&& !(cmd & (REX15_OP_FLAG_COLORAUX | REX15_OP_FLAG_LOGICSRC));
+	if ((cmd & (REX15_OP_FLAG_FLINE | REX15_OP_FLAG_LINE)) || aa >= 0 || linear)
 	{
 		draw_line(cmd, color, aa);
 		return;
