@@ -686,22 +686,28 @@ bool sgi_lg1_device::compare_pass(u8 src, u8 dst) const
  */
 void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 {
-	bool const xmajor = !(cmd & REX15_OP_FLAG_STOPONY);
-	bool const single = !(cmd & (REX15_OP_FLAG_STOPONX | REX15_OP_FLAG_STOPONY));
+	// with STOPONX or STOPONY a line runs to its end in xend/yend (32
+	// pixels at most for a LENGTH32 or pattern piece) and STOPONY makes it
+	// y-major. Without them a GO takes one step along the axis the XMAJOR
+	// bit picks, towards the end: IRIS GL draws software-blended and
+	// software z-buffered lines a pixel at a time (a pattern step with a
+	// zero pattern skips a pixel that fails its depth test)
+	bool const stop = cmd & (REX15_OP_FLAG_STOPONX | REX15_OP_FLAG_STOPONY);
+	bool const xmajor = stop ? !(cmd & REX15_OP_FLAG_STOPONY) : bool(cmd & REX15_OP_FLAG_XMAJOR);
 	s32 const slope = util::sext(m_minorslope, 17);
 	int const start = xmajor ? int(xnexti()) : int(ynexti());
-	int const end = single ? start : xmajor ? int(xendi_r()) : int(yendi_r());
-	int const step = (end >= start) ? 1 : -1;
+	int const last = xmajor ? int(xendi_r()) : int(yendi_r());
+	int const step = (last >= start) ? 1 : -1;
 	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
 	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
 	bool const shade = cmd & REX15_OP_FLAG_SHADE;
-	unsigned const limit = (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : 4096;
+	unsigned const limit = !stop ? 1 : (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : 4096;
 
 	bool const cont = cmd & REX15_OP_FLAG_XYCONTINUE;
 	int major = !cont ? start : int(s32(xmajor ? m_xcurf : m_ycurf) >> 15);
 	s32 minor = s32(xmajor ? (cont ? m_ycurf : m_ystart) : (cont ? m_xcurf : m_xstart));
 	// a line that has finished draws nothing more
-	if (cont && (step > 0 ? major > end : major < end))
+	if (stop && cont && (step > 0 ? major > last : major < last))
 		return;
 
 	for (unsigned n = 0; n < limit; n++)
@@ -716,7 +722,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
 			src = (base & ~m_aamask) | (weight & m_aamask);
 		}
-		bool draw = !stipple || line_stipple(major == end);
+		bool draw = !stipple || line_stipple(stop && major == last);
 		if (draw && pattern && !BIT(m_zpattern, 31 - n))
 		{
 			if (cmd & REX15_OP_FLAG_ZOPAQUE)
@@ -732,7 +738,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 			shade_step();
 		major += step;
 		minor += slope;
-		if (major - step == end)
+		if (stop && major - step == last)
 			break;
 	}
 
@@ -825,6 +831,36 @@ void sgi_lg1_device::do_rex_command()
 			// empty and the next read starts the next row
 			int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : int(xnexti());
 			int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ynexti());
+
+			// a single-pixel read steps along a line like a one-step line
+			// draw (the XMAJOR bit picks the axis, the minor axis moves by
+			// minorslope, the position keeps its fraction): IRIS GL blends
+			// lines in software by reading their pixels this way, then
+			// drawing them back
+			if (!(cmd & (REX15_OP_FLAG_QUADMODE | REX15_OP_FLAG_BLOCK)))
+			{
+				if (!(cmd & REX15_OP_FLAG_XYCONTINUE))
+				{
+					m_xcurf = m_xstart;
+					m_ycurf = m_ystart;
+				}
+				m_rwaux1 = m_rwaux2 = u32(vram_r(int(s32(m_xcurf) >> 15), int(s32(m_ycurf) >> 15))) << 24;
+				s32 const slope = util::sext(m_minorslope, 17);
+				if (cmd & REX15_OP_FLAG_XMAJOR)
+				{
+					m_xcurf += (int(xendi_r()) >= int(xnexti())) ? 0x8000 : -0x8000;
+					m_ycurf += slope;
+				}
+				else
+				{
+					m_ycurf += (int(yendi_r()) >= int(ynexti())) ? 0x8000 : -0x8000;
+					m_xcurf += slope;
+				}
+				m_xcurri = s32(m_xcurf) >> 15;
+				m_ycurri = s32(m_ycurf) >> 15;
+				return;
+			}
+
 			int const x0 = int(xnexti());
 			int const x1 = int(xendi_r());
 			int const dx = (x1 >= x0) ? 1 : -1;
