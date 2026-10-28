@@ -106,6 +106,48 @@ void sgi_lg1_device::device_start()
 	save_pointer(NAME(m_vram), 0x10'0000);
 	save_pointer(NAME(m_pup), 0x10'0000);
 	save_pointer(NAME(m_cid), 0x10'0000);
+
+	save_item(NAME(m_command));
+	save_item(NAME(m_aux1));
+	save_item(NAME(m_xstate));
+	save_item(NAME(m_xstart));
+	save_item(NAME(m_ystart));
+	save_item(NAME(m_xymove));
+	save_item(NAME(m_color));
+	save_item(NAME(m_colorcur));
+	save_item(NAME(m_slopecolor));
+	save_item(NAME(m_colorback));
+	save_item(NAME(m_zpattern));
+	save_item(NAME(m_lspattern));
+	save_item(NAME(m_lsmode));
+	save_item(NAME(m_aweight));
+	save_item(NAME(m_rwaux1));
+	save_item(NAME(m_rwaux2));
+	save_item(NAME(m_rwmask));
+	save_item(NAME(m_xend));
+	save_item(NAME(m_yend));
+	save_item(NAME(m_xsave));
+	save_item(NAME(m_minorslope));
+	save_item(NAME(m_aamask));
+	save_item(NAME(m_xcurf));
+	save_item(NAME(m_ycurf));
+	save_item(NAME(m_wrmask));
+	save_item(NAME(m_logicop));
+	save_item(NAME(m_aux2_source));
+
+	save_item(NAME(m_smask));
+	save_item(NAME(m_aux2));
+	save_item(NAME(m_diagvram));
+	save_item(NAME(m_diagcid));
+	save_item(NAME(m_wclock));
+	save_item(NAME(m_configsel));
+	save_item(NAME(m_togglectxt));
+	save_item(NAME(m_configmode));
+	save_item(NAME(m_xywin));
+
+	save_item(NAME(m_xcurri));
+	save_item(NAME(m_ycurri));
+	save_item(NAME(m_data));
 }
 
 void sgi_lg1_device::device_reset()
