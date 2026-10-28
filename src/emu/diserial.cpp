@@ -237,7 +237,11 @@ void device_serial_interface::rx_w(int state)
 		LOGMASKED(LOG_RX, "Receiver is synchronized\n");
 		if (m_rcv_clock && !(m_rcv_rate.is_never()))
 		{
-			// make start delay half a cycle longer to make sure we are called after the sender
+			// make start delay half a cycle longer to make sure we are called after the sender:
+			// the first tick raises the clock and the second, a bit and a half after the start
+			// bit's edge, samples the first data bit (with the clock left high by an earlier
+			// character the first tick would sample at the bit boundary)
+			m_rcv_clock_state = false;
 			m_rcv_clock->adjust(m_rcv_rate * 2, 0, m_rcv_rate);
 		}
 		else if (m_start_bit_hack_for_external_clocks)
