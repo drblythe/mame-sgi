@@ -33,10 +33,17 @@ jobs:
           clean: false
           fetch-depth: 1
 
+      # REGENIE=1: the kept build directory has project files generated
+      # for an older sgi.lua; without regenerating them a source added
+      # there is never compiled (its drivers then fail to link)
       - name: Build mamesgi
-        run: make SUBTARGET=sgi -j"$(nproc)"
+        run: make SUBTARGET=sgi REGENIE=1 -j"$(nproc)"
 
       - name: Validate the SGI drivers
         run: |
           ./mamesgi -validate indy_4610
           ./mamesgi -validate challenge_s
+          ./mamesgi -validate indigo2_4415
+          ./mamesgi -validate indigo_r4000
+          ./mamesgi -validate indigo_r4400
+          ./mamesgi -validate indigo_r4400m
