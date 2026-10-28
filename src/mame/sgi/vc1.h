@@ -23,11 +23,15 @@ public:
 	// and the id (bits 0-4); the X server gives windows with their own
 	// colour map their own id. The entries increase in x; one that doesn't
 	// ends the list (software pads lists with entries the VC1 reads ahead).
-	// An id's mode (two bytes each in the xmap table) selects the RAMDAC
-	// palette in bits 2-3 of its second byte. Returns the line's runs as
-	// start x and palette (at most max), or 0 without display id tables
+	// An id's mode is two bytes in the xmap table; the second gives the
+	// pixel's display: bits 2-3 the RAMDAC palette; bit 0 clear for 8-bit
+	// pixels, set for 4-bit ones (double-buffered windows), which show the
+	// high nibble with bit 1 set (the buffer the X server swaps to) and use
+	// the 16 entries of the palette that bits 4-7 select. Returns the
+	// line's runs as start x and that mode byte (at most max), or 0
+	// without display id tables
 	u16 did_ep() const { return u16(m_reg[0x40]) << 8 | m_reg[0x41]; }
-	unsigned line_runs(unsigned line, u16 *x, u8 *palette, unsigned max) const
+	unsigned line_runs(unsigned line, u16 *x, u8 *mode, unsigned max) const
 	{
 		u16 const ep = did_ep();
 		if (!ep)
@@ -41,7 +45,7 @@ public:
 			if (runs && (entry >> 5) <= x[runs - 1])
 				break;
 			x[runs] = entry >> 5;
-			palette[runs++] = BIT(m_xmap[(entry & 0x1f) * 2 + 1], 2, 2);
+			mode[runs++] = m_xmap[(entry & 0x1f) * 2 + 1];
 		}
 		return runs;
 	}

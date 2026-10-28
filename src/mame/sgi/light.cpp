@@ -253,20 +253,34 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 	unsigned const min_x = screen.visible_area().min_x, max_x = screen.visible_area().max_x;
 	for (unsigned y = screen.visible_area().min_y; y <= screen.visible_area().max_y; y++)
 	{
-		// the VC1 selects the palette of each run of a line through its
-		// display ids (a window with its own colour map is a run of its
-		// own); without display id tables, the palette the RAMDAC selects
+		// the VC1 sets the display of each run of a line through its
+		// display ids (a window with its own colour map or a
+		// double-buffered one is a run of its own): the palette, and for
+		// 4-bit pixels the nibble shown and the 16 entries it indexes.
+		// Without display id tables, 8-bit pixels and the palette the
+		// RAMDAC selects
 		u16 run_x[32];
-		u8 run_palette[32];
-		unsigned const runs = m_vc1->line_runs(y, run_x, run_palette, std::size(run_x));
+		u8 run_mode[32];
+		unsigned const runs = m_vc1->line_runs(y, run_x, run_mode, std::size(run_x));
 		u32 *dst = &bitmap.pix(y, min_x);
 		unsigned x = min_x;
 		for (unsigned r = 0; r < std::max(runs, 1U); r++)
 		{
-			pen_t const *const pens = m_lut1->palette_pens(runs ? int(run_palette[r]) : -1);
+			u8 const mode = runs ? run_mode[r] : 0;
+			pen_t const *const pens = m_lut1->palette_pens(runs ? int(BIT(mode, 2, 2)) : -1);
 			unsigned const end = (r + 1 < runs) ? std::min<unsigned>(run_x[r + 1], max_x + 1) : max_x + 1;
-			for (; x < end; x++, src++, pup++)
-				*dst++ = *pup ? pup_pens[*pup] : pens[*src & mask];
+			if (BIT(mode, 0))
+			{
+				pen_t const *const sub = pens + BIT(mode, 4, 4) * 0x10;
+				unsigned const shift = BIT(mode, 1) ? 4 : 0;
+				for (; x < end; x++, src++, pup++)
+					*dst++ = *pup ? pup_pens[*pup] : sub[(*src >> shift) & 0x0f];
+			}
+			else
+			{
+				for (; x < end; x++, src++, pup++)
+					*dst++ = *pup ? pup_pens[*pup] : pens[*src & mask];
+			}
 		}
 	}
 
