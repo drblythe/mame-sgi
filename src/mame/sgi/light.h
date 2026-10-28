@@ -39,7 +39,7 @@ protected:
 	bool compare_pass(u8 src, u8 dst) const;
 	bool line_stipple(bool last);
 	u8 pack_rgb(u8 r, u8 g, u8 b) const;
-	u8 current_color(u32 cmd) const;
+	u8 current_color(u32 cmd, int x, int y) const;
 	void shade_step();
 	void load_current_color() { std::copy(std::begin(m_color), std::end(m_color), std::begin(m_colorcur)); }
 	u8 logic_op(u8 src, u8 dst) const;

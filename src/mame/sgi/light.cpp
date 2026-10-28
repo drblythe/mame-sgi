@@ -51,6 +51,7 @@ enum
 	REX15_OP_FLAG_FLINE         = 0x00000800,
 	REX15_OP_FLAG_LINE          = 0x00001000,
 	REX15_OP_FLAG_RGBMODE       = 0x00004000,
+	REX15_OP_FLAG_DITHER        = 0x00008000,
 	REX15_OP_FLAG_COLORCOMP     = 0x00010000,
 	REX15_OP_FLAG_SHADE         = 0x00020000,
 	REX15_OP_FLAG_ENLSPATTERN   = 0x00040000,
@@ -570,14 +571,45 @@ u8 sgi_lg1_device::pack_rgb(u8 r, u8 g, u8 b) const
 		: u8((r & 0xe0) | ((b >> 3) & 0x18) | ((g >> 5) & 0x07));
 }
 
-// the pixel for the current colour: its integer part, truncated (OpenGL
-// biases red and green by just under half a step to round them), packed
-// in RGB mode or a colour index from red
-u8 sgi_lg1_device::current_color(u32 cmd) const
+// the pixel for the current colour: its integer part, truncated (without
+// dither, OpenGL biases red and green by just under half a step to round
+// them), packed in RGB mode or a colour index from red.
+//
+// Dither (command bit 15): each channel keeps its top bits and goes up one
+// step when the 4 bits below them exceed the entry of a 4x4 ordered matrix
+// for the pixel (window x & 3, y & 3). The LG1's matrix isn't documented;
+// this is the Newport (REX3) one, its successor's. In RGB mode the kept
+// bits are 3/3/2 (1/2/1 in 4-bit mode); a colour index keeps all 8 bits
+// and the 4 bits of fraction below them decide.
+u8 sgi_lg1_device::current_color(u32 cmd, int x, int y) const
 {
-	return (cmd & REX15_OP_FLAG_RGBMODE)
-		? pack_rgb(u8(m_colorcur[0] >> 11), u8(m_colorcur[1] >> 11), u8(m_colorcur[2] >> 11))
-		: u8(m_colorcur[0] >> 11);
+	static u8 const s_dither[4][4] = { { 0, 12, 3, 15 }, { 8, 4, 11, 7 }, { 2, 14, 1, 13 }, { 10, 6, 9, 5 } };
+
+	bool const rgb = cmd & REX15_OP_FLAG_RGBMODE;
+	if (!(cmd & REX15_OP_FLAG_DITHER))
+		return rgb
+			? pack_rgb(u8(m_colorcur[0] >> 11), u8(m_colorcur[1] >> 11), u8(m_colorcur[2] >> 11))
+			: u8(m_colorcur[0] >> 11);
+
+	u8 const threshold = s_dither[x & 3][y & 3];
+	// the channel's top bits (as many as it keeps), stepped up when the 4
+	// bits below them are above the threshold, then back in place as 8 bits
+	auto const dither = [threshold] (u32 color, unsigned bits) -> u8
+	{
+		unsigned const max = (1U << bits) - 1;
+		unsigned value = (color >> (19 - bits)) & max;
+		if (value < max && ((color >> (15 - bits)) & 15) > threshold)
+			value++;
+		return u8(value << (8 - bits));
+	};
+	if (!rgb)
+	{
+		unsigned const index = (m_colorcur[0] >> 11) & 0xff;
+		return u8((index < 0xff && ((m_colorcur[0] >> 7) & 15) > threshold) ? index + 1 : index);
+	}
+	return dbl4()
+		? pack_rgb(dither(m_colorcur[0], 1), dither(m_colorcur[1], 2), dither(m_colorcur[2], 1))
+		: pack_rgb(dither(m_colorcur[0], 3), dither(m_colorcur[1], 3), dither(m_colorcur[2], 2));
 }
 
 // shading (command bit 17): each step adds the slopes (signed, 8.11) to
@@ -676,7 +708,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	{
 		int const x = xmajor ? major : (minor >> 15);
 		int const y = xmajor ? (minor >> 15) : major;
-		u8 const base = shade ? current_color(cmd) : color;
+		u8 const base = (shade || (cmd & REX15_OP_FLAG_DITHER)) ? current_color(cmd, x, y) : color;
 		u8 src = base;
 		if (aa >= 0)
 		{
@@ -850,7 +882,9 @@ void sgi_lg1_device::do_rex_command()
 	int const my = util::sext(m_xymove, 11);
 	bool const rgb = cmd & REX15_OP_FLAG_RGBMODE;
 	bool const shade = cmd & REX15_OP_FLAG_SHADE;
-	u8 const color = current_color(cmd);
+	// shaded or dithered colours change from pixel to pixel
+	bool const percolor = shade || (cmd & REX15_OP_FLAG_DITHER);
+	u8 const color = current_color(cmd, x0, y0);
 
 	// lines: commands with a line bit, antialiased passes, and the other
 	// non-block draws that step the minor axis, x-major ones (STOPONX with
@@ -881,7 +915,7 @@ void sgi_lg1_device::do_rex_command()
 	for (unsigned n = 0; n < limit; n++)
 	{
 		bool draw = true;
-		u8 src = shade ? current_color(cmd) : color;
+		u8 src = percolor ? current_color(cmd, x, y) : color;
 		if (stipple && !BIT(m_lspattern, 31 - ((x - x0) * dx & 31)))
 			draw = false;
 		else if (pattern)
