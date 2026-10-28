@@ -119,9 +119,14 @@ void ip20_state::machine_reset()
 {
 	m_dsp_miscsr = 0;
 
-	// look for IRIX's idle loop once a second until the kernel is loaded
 	if (auto *const mips3 = dynamic_cast<mips3_device *>(m_cpu.target()))
 	{
+		// IRIX hands the FPU to a process lazily: it clears Status CU1 at a
+		// context switch and restores the process's FP registers when its
+		// next FP instruction traps, so the recompiler must test CU1 too
+		mips3->mips3drc_set_options(MIPS3DRC_STRICT_COP1);
+
+		// look for IRIX's idle loop once a second until the kernel is loaded
 		mips3->set_idle_pc(0, 0);
 		m_idle_scan->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
 	}
