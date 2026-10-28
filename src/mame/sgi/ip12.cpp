@@ -320,7 +320,8 @@ void ip12_state::ip12(machine_config &config)
 	m_scc[2]->configure_channels(3'686'400, 0, 3'686'400, 0);
 	m_scc[2]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<1>));
 
-	DSP56001(config, m_dsp, 20_MHz_XTAL);
+	// not connected yet: held in reset, so it doesn't run
+	DSP56001(config, m_dsp, 20_MHz_XTAL).set_disable();
 	//m_dsp->moda_w(1);
 	//m_dsp->modb_w(0);
 
