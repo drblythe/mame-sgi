@@ -52,6 +52,7 @@ enum
 	REX15_OP_FLAG_LINE          = 0x00001000,
 	REX15_OP_FLAG_RGBMODE       = 0x00004000,
 	REX15_OP_FLAG_COLORCOMP     = 0x00010000,
+	REX15_OP_FLAG_SHADE         = 0x00020000,
 	REX15_OP_FLAG_ENLSPATTERN   = 0x00040000,
 	REX15_OP_FLAG_LOGICSRC      = 0x00080000,
 	REX15_OP_FLAG_COLORAUX      = 0x00200000,
@@ -92,6 +93,7 @@ void sgi_lg1_device::device_start()
 
 	m_command = m_aux1 = m_xstate = m_xstart = m_ystart = m_xymove = 0;
 	std::fill(std::begin(m_color), std::end(m_color), 0);
+	std::fill(std::begin(m_colorcur), std::end(m_colorcur), 0);
 	std::fill(std::begin(m_slopecolor), std::end(m_slopecolor), 0);
 	m_colorback = m_zpattern = m_lspattern = m_lsmode = m_aweight = 0;
 	m_rwaux1 = m_rwaux2 = m_rwmask = m_xend = m_yend = m_xsave = m_minorslope = 0;
@@ -526,6 +528,25 @@ u8 sgi_lg1_device::pack_rgb(u8 r, u8 g, u8 b) const
 		: u8((r & 0xe0) | ((b >> 3) & 0x18) | ((g >> 5) & 0x07));
 }
 
+// the pixel for the current colour: its integer part, truncated (OpenGL
+// biases red and green by just under half a step to round them), packed
+// in RGB mode or a colour index from red
+u8 sgi_lg1_device::current_color(u32 cmd) const
+{
+	return (cmd & REX15_OP_FLAG_RGBMODE)
+		? pack_rgb(u8(m_colorcur[0] >> 11), u8(m_colorcur[1] >> 11), u8(m_colorcur[2] >> 11))
+		: u8(m_colorcur[0] >> 11);
+}
+
+// shading (command bit 17): each step adds the slopes (signed, 8.11) to
+// the current colour, for spans per pixel along x and for lines per step
+// along the major axis
+void sgi_lg1_device::shade_step()
+{
+	for (unsigned i = 0; i < 3; i++)
+		m_colorcur[i] = (m_colorcur[i] + util::sext(m_slopecolor[i], 21)) & 0x000f'ffffU;
+}
+
 // colour compare: aux1 bits 6-8 hold the function (IRIS GL's zfunction
 // values), passing when the new colour compares with the one in the
 // frame buffer; IRIS GL uses it for zsource(ZSRC_COLOR), and the firmware's
@@ -599,6 +620,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	int const step = (end >= start) ? 1 : -1;
 	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
 	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
+	bool const shade = cmd & REX15_OP_FLAG_SHADE;
 	unsigned const limit = (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : 4096;
 
 	bool const cont = cmd & REX15_OP_FLAG_XYCONTINUE;
@@ -612,12 +634,13 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	{
 		int const x = xmajor ? major : (minor >> 15);
 		int const y = xmajor ? (minor >> 15) : major;
-		u8 src = color;
+		u8 const base = shade ? current_color(cmd) : color;
+		u8 src = base;
 		if (aa >= 0)
 		{
 			unsigned const f = (minor >> 12) & 7;
 			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
-			src = (color & ~m_aamask) | (weight & m_aamask);
+			src = (base & ~m_aamask) | (weight & m_aamask);
 		}
 		bool draw = !stipple || line_stipple(major == end);
 		if (draw && pattern && !BIT(m_zpattern, 31 - n))
@@ -631,6 +654,8 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 			draw = false;
 		if (draw)
 			plot(x, y, src);
+		if (shade)
+			shade_step();
 		major += step;
 		minor += slope;
 		if (major - step == end)
@@ -660,15 +685,17 @@ void sgi_lg1_device::set_current(int x, int y)
 	m_ycurf = u32(y) << 15;
 }
 
-// IRIX switches graphics contexts by reading the current position,
-// toggling, reading the programmed start (with the other registers), and
-// on restore writing the saved current position, toggling, then the
-// programmed start: the toggle swaps the two copies
+// IRIX switches graphics contexts by reading the current position and
+// colour, toggling, reading the programmed start and colour (with the other
+// registers), and on restore writing the saved current values, toggling,
+// then the programmed ones: the toggle swaps the two copies
 void sgi_lg1_device::togglectxt_w(u32 data)
 {
 	m_togglectxt = data;
 	std::swap(m_xstart, m_xcurf);
 	std::swap(m_ystart, m_ycurf);
+	for (unsigned i = 0; i < 3; i++)
+		std::swap(m_color[i], m_colorcur[i]);
 	m_xcurri = m_xcurf >> 15;
 	m_ycurri = m_ycurf >> 15;
 }
@@ -687,6 +714,13 @@ void sgi_lg1_device::do_rex_command()
 {
 	u32 const cmd = m_command;
 
+	// a GO draws in the programmed colour, except that a shaded GO with
+	// XYCONTINUE carries on with the colour the last one stepped to (the X
+	// server writes a text colour after a NOP and then draws the glyphs as
+	// XYCONTINUE pattern pieces)
+	if (!(cmd & REX15_OP_FLAG_XYCONTINUE) || !(cmd & REX15_OP_FLAG_SHADE))
+		load_current_color();
+
 	// antialiased passes: bit 2 with opcode 0 (weighted by the minor axis
 	// fraction), 1 (by one minus it) or 2 (the weight in rwaux1)
 	int const aa = (cmd & REX15_OP_FLAG_ANTIALIAS) ? int(cmd & 3) : -1;
@@ -700,6 +734,7 @@ void sgi_lg1_device::do_rex_command()
 		return;
 
 	case REX15_OP_NOP:
+		load_current_color();
 		m_xcurf = m_xstart;
 		m_ycurf = m_ystart;
 		m_xcurri = xnexti();
@@ -772,7 +807,8 @@ void sgi_lg1_device::do_rex_command()
 	int const mx = util::sext(m_xymove >> 16, 11);
 	int const my = util::sext(m_xymove, 11);
 	bool const rgb = cmd & REX15_OP_FLAG_RGBMODE;
-	u8 const color = rgb ? pack_rgb(colori_r<0>(), colori_r<1>(), colori_r<2>()) : u8(colori_r<0>());
+	bool const shade = cmd & REX15_OP_FLAG_SHADE;
+	u8 const color = current_color(cmd);
 
 	// lines: commands with a line bit, antialiased passes, and the other
 	// non-block draws that step the minor axis, x-major ones (STOPONX with
@@ -803,7 +839,7 @@ void sgi_lg1_device::do_rex_command()
 	for (unsigned n = 0; n < limit; n++)
 	{
 		bool draw = true;
-		u8 src = color;
+		u8 src = shade ? current_color(cmd) : color;
 		if (stipple && !BIT(m_lspattern, 31 - ((x - x0) * dx & 31)))
 			draw = false;
 		else if (pattern)
@@ -830,6 +866,8 @@ void sgi_lg1_device::do_rex_command()
 
 		if (draw)
 			plot(x, y, src);
+		if (shade)
+			shade_step();
 
 		if (!span)
 		{

@@ -39,6 +39,9 @@ protected:
 	bool compare_pass(u8 src, u8 dst) const;
 	bool line_stipple(bool last);
 	u8 pack_rgb(u8 r, u8 g, u8 b) const;
+	u8 current_color(u32 cmd) const;
+	void shade_step();
+	void load_current_color() { std::copy(std::begin(m_color), std::end(m_color), std::begin(m_colorcur)); }
 	u8 logic_op(u8 src, u8 dst) const;
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
@@ -84,8 +87,8 @@ protected:
 	u32 xsave_r() { return m_xsave; }
 	u32 minorslope_r() { return m_minorslope; }
 	u32 xymove_r() { return m_xymove; }
-	template <unsigned Color> u32 colori_r() { return m_color[Color] >> 11; }
-	template <unsigned Color> u32 colorf_r() { return m_color[Color]; }
+	template <unsigned Color> u32 colori_r() { return m_colorcur[Color] >> 11; }
+	template <unsigned Color> u32 colorf_r() { return m_colorcur[Color]; }
 	template <unsigned Color> u32 slopecolor_r() { return m_slopecolor[Color]; }
 	u32 colorback_r() { return m_colorback; }
 	u32 zpattern_r() { return m_zpattern; }
@@ -179,6 +182,10 @@ private:
 	u32 m_ystart;
 	u32 m_xymove;
 	u32 m_color[3];
+	// the colour being drawn (8.11): loaded from m_color by a NOP or a GO
+	// (but kept by a shaded XYCONTINUE), stepped by the slopes when shading,
+	// swapped by togglectxt
+	u32 m_colorcur[3];
 	u32 m_slopecolor[3];
 	u32 m_colorback;
 	u32 m_zpattern;
