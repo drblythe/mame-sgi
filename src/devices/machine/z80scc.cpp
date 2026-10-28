@@ -1032,6 +1032,7 @@ z80scc_channel::z80scc_channel(const machine_config &mconfig, const char *tag, d
 		m_extint_latch(0),
 		m_extint_states(0),
 		m_rxd(0),
+		m_rxd_pin(1),
 		m_tx_clock(0),
 		m_tx_int_disarm(0),
 		m_dtr(0),
@@ -1138,6 +1139,7 @@ void z80scc_channel::device_start()
 	save_item(NAME(m_tx_int_disarm));
 	save_item(NAME(m_sync_pattern));
 	save_item(NAME(m_rxd));
+	save_item(NAME(m_rxd_pin));
 	save_item(NAME(m_rcv_mode));
 	save_item(NAME(m_index));
 	save_item(NAME(m_brg_rate));
@@ -1217,12 +1219,16 @@ void z80scc_channel::tra_callback()
 		LOGTX("%s: transmit mark 1 m_wr5:%02x\n", FUNCNAME, m_wr5);
 		// transmit mark
 		out_txd_cb(1);
+		if (m_wr14 & WR14_LOCAL_LOOPBACK)
+			write_rx(1);
 	}
 	else if (m_wr5 & WR5_SEND_BREAK)
 	{
 		LOGTX("%s: send break 1 m_wr5:%02x\n", FUNCNAME, m_wr5);
 		// transmit break
 		out_txd_cb(0);
+		if (m_wr14 & WR14_LOCAL_LOOPBACK)
+			write_rx(0);
 	}
 	else if (!is_transmit_register_empty())
 	{
@@ -2305,13 +2311,24 @@ void z80scc_channel::do_sccreg_wr14(uint8_t data)
 		m_brg_counter = 0;
 	}
 
-	if (!(m_wr14 & WR14_LOCAL_LOOPBACK) && (data & WR14_LOCAL_LOOPBACK))
+	// local loopback connects the receiver to the transmitter, which idles
+	// at mark, and disconnects the RxD pin until it ends
+	bool const loopback_on = !(m_wr14 & WR14_LOCAL_LOOPBACK) && (data & WR14_LOCAL_LOOPBACK);
+	bool const loopback_off = (m_wr14 & WR14_LOCAL_LOOPBACK) && !(data & WR14_LOCAL_LOOPBACK);
+	if (loopback_on)
 		receive_register_reset();
 
 	// TODO: Add info on the other bits of this register
 	m_wr14 = data;
 	update_serial();
 	if (brg_change) update_baudtimer();
+
+	// set the receiver's line (and the serial interface's start bit
+	// detection) to the transmitter's idle mark, or back to the pin
+	if (loopback_on)
+		write_rx(1);
+	else if (loopback_off)
+		write_rx(m_rxd_pin);
 }
 
 /* WR15 is the External/Status Source Control register. If the External/Status interrupts are enabled
@@ -3119,6 +3136,20 @@ void z80scc_channel::set_dtr(int state)
 	m_dtr = state;
 
 	out_dtr_cb(m_dtr);
+}
+
+//-------------------------------------------------
+//  rxd_pin_w - the RxD pin: in local loopback the
+//  receiver takes the transmitter's output instead
+//  and ignores the pin
+//-------------------------------------------------
+void z80scc_channel::rxd_pin_w(int state)
+{
+	m_rxd_pin = state;
+	if (m_wr14 & WR14_LOCAL_LOOPBACK)
+		return;
+
+	write_rx(state);
 }
 
 //-------------------------------------------------

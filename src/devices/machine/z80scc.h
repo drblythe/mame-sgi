@@ -114,6 +114,7 @@ public:
 	uint8_t m_rx_fifo_rp_data();
 
 	void write_rx(int state);
+	void rxd_pin_w(int state);
 	void cts_w(int state);
 	void dcd_w(int state);
 	void rxc_w(int state);
@@ -275,6 +276,7 @@ protected:
 	uint8_t m_extint_states;   // external/status Int latches state
 
 	int m_rxd;
+	int m_rxd_pin; // the RxD pin, which local loopback disconnects
 	int m_ri;       // ring indicator latch
 
 	// transmitter state
@@ -385,8 +387,8 @@ public:
 	// Single registers instances accessed from both channels
 	uint8_t m_wr9;  // REG_WR9_MASTER_INT_CTRL
 
-	void rxa_w(int state) { m_chanA->write_rx(state); }
-	void rxb_w(int state) { m_chanB->write_rx(state); }
+	void rxa_w(int state) { m_chanA->rxd_pin_w(state); }
+	void rxb_w(int state) { m_chanB->rxd_pin_w(state); }
 	void ctsa_w(int state) { m_chanA->cts_w(state); }
 	void ctsb_w(int state) { m_chanB->cts_w(state); }
 	void dcda_w(int state) { m_chanA->dcd_w(state); }
