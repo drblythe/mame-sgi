@@ -33,6 +33,12 @@ public:
 	template <unsigned N> void write_drq(int state);
 	void write_int(int state);
 
+	// SCSI DMA of a run of bytes in one call, for a controller that can
+	// hand over more than a byte per request: device to memory (in) and
+	// memory to device (out); each returns how many bytes it moved
+	u32 scsi_dma_bulk_in(const u8 *src, u32 count);
+	u32 scsi_dma_bulk_out(u8 *dst, u32 count);
+
 	void map(address_map &map) ATTR_COLD;
 
 protected:

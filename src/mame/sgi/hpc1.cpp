@@ -347,6 +347,52 @@ void hpc1_device::scsi_dma()
 	}
 }
 
+u32 hpc1_device::scsi_dma_bulk_in(const u8 *src, u32 count)
+{
+	u32 done = 0;
+	while (done < count && (m_scsi_ctrl & SCSI_STARTDMA) && (m_scsi_ctrl & SCSI_TO_MEM) && m_scsi_bc)
+	{
+		u32 const run = std::min<u32>(m_scsi_bc, count - done);
+		for (u32 i = 0; i < run; i++)
+			m_gio->write_byte((m_scsi_cbp + i) & SCSI_CBP_BUFADDR, src[done + i]);
+		m_scsi_cbp += run;
+		m_scsi_bc -= run;
+		done += run;
+
+		if (m_scsi_bc == 0)
+		{
+			if (m_scsi_cbp & SCSI_CBP_EOX)
+				m_scsi_ctrl &= ~SCSI_STARTDMA;
+			else
+				scsi_chain();
+		}
+	}
+	return done;
+}
+
+u32 hpc1_device::scsi_dma_bulk_out(u8 *dst, u32 count)
+{
+	u32 done = 0;
+	while (done < count && (m_scsi_ctrl & SCSI_STARTDMA) && !(m_scsi_ctrl & SCSI_TO_MEM) && m_scsi_bc)
+	{
+		u32 const run = std::min<u32>(m_scsi_bc, count - done);
+		for (u32 i = 0; i < run; i++)
+			dst[done + i] = m_gio->read_byte((m_scsi_cbp + i) & SCSI_CBP_BUFADDR);
+		m_scsi_cbp += run;
+		m_scsi_bc -= run;
+		done += run;
+
+		if (m_scsi_bc == 0)
+		{
+			if (m_scsi_cbp & SCSI_CBP_EOX)
+				m_scsi_ctrl &= ~SCSI_STARTDMA;
+			else
+				scsi_chain();
+		}
+	}
+	return done;
+}
+
 void hpc1_device::enet_dma()
 {
 	// transmit

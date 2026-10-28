@@ -404,6 +404,10 @@ void ip20_state::ip20(machine_config &config)
 	NWD33C9X(config, m_scsi, 10_MHz_XTAL);
 	m_scsi->irq_cb().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_SCSI>));
 	m_scsi->drq_cb().set(m_hpc, FUNC(hpc1_device::write_drq<0>));
+#if MAME_SGI_SCSI_BULK_DMA
+	m_scsi->set_bulk_dma_in(m_hpc, FUNC(hpc1_device::scsi_dma_bulk_in));
+	m_scsi->set_bulk_dma_out(m_hpc, FUNC(hpc1_device::scsi_dma_bulk_out));
+#endif
 	subdevice<nscsi_connector>("nwd33c9x:auxbus:6")->set_default_option(nullptr);
 	subdevice<nscsi_connector>("nwd33c9x:auxbus:4")->set_default_option("cdrom");
 	// the PROM reads CDs in 512-byte blocks without selecting that size
