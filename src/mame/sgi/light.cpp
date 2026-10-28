@@ -572,7 +572,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	bool const xmajor = !(cmd & REX15_OP_FLAG_STOPONY);
 	bool const single = !(cmd & (REX15_OP_FLAG_STOPONX | REX15_OP_FLAG_STOPONY));
 	s32 const slope = util::sext(m_minorslope, 17);
-	int const start = xmajor ? int(xstarti_r()) : int(ystarti_r());
+	int const start = xmajor ? int(xnexti()) : int(ynexti());
 	int const end = single ? start : xmajor ? int(xendi_r()) : int(yendi_r());
 	int const step = (end >= start) ? 1 : -1;
 	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
@@ -629,6 +629,28 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	m_ycurri = m_ycurf >> 15;
 }
 
+// spans and readback leave an integer current position
+void sgi_lg1_device::set_current(int x, int y)
+{
+	m_xcurri = x;
+	m_ycurri = y;
+	m_xcurf = u32(x) << 15;
+	m_ycurf = u32(y) << 15;
+}
+
+// IRIX switches graphics contexts by reading the current position,
+// toggling, reading the programmed start (with the other registers), and
+// on restore writing the saved current position, toggling, then the
+// programmed start: the toggle swaps the two copies
+void sgi_lg1_device::togglectxt_w(u32 data)
+{
+	m_togglectxt = data;
+	std::swap(m_xstart, m_xcurf);
+	std::swap(m_ystart, m_ycurf);
+	m_xcurri = m_xcurf >> 15;
+	m_ycurri = m_ycurf >> 15;
+}
+
 /*
  * The command register holds the opcode, mode flags and logic operation;
  * any access through the GO page runs it. Drawing steps from the start
@@ -658,8 +680,8 @@ void sgi_lg1_device::do_rex_command()
 	case REX15_OP_NOP:
 		m_xcurf = m_xstart;
 		m_ycurf = m_ystart;
-		m_xcurri = xstarti_r();
-		m_ycurri = ystarti_r();
+		m_xcurri = xnexti();
+		m_ycurri = ynexti();
 		return;
 
 	case REX15_OP_LDPIXEL:
@@ -670,12 +692,12 @@ void sgi_lg1_device::do_rex_command()
 			// A BLOCK read steps through a rectangle like a host data
 			// draw: at the end of a row the rest of the quad is left
 			// empty and the next read starts the next row
-			int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : int(xstarti_r());
-			int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ystarti_r());
-			int const x0 = int(xstarti_r());
+			int x = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_xcurri) : int(xnexti());
+			int y = (cmd & REX15_OP_FLAG_XYCONTINUE) ? int(m_ycurri) : int(ynexti());
+			int const x0 = int(xnexti());
 			int const x1 = int(xendi_r());
 			int const dx = (x1 >= x0) ? 1 : -1;
-			int const dy = (int(yendi_r()) >= int(ystarti_r())) ? 1 : -1;
+			int const dy = (int(yendi_r()) >= int(ynexti())) ? 1 : -1;
 			unsigned const count = (cmd & REX15_OP_FLAG_QUADMODE) ? 4 : 1;
 			u32 data = 0;
 			unsigned n = 0;
@@ -693,8 +715,7 @@ void sgi_lg1_device::do_rex_command()
 			}
 			data <<= 8 * (count - n);
 			m_rwaux1 = m_rwaux2 = data << (8 * (4 - count));
-			m_xcurri = x;
-			m_ycurri = y;
+			set_current(x, y);
 		}
 		return;
 
@@ -706,8 +727,8 @@ void sgi_lg1_device::do_rex_command()
 		return;
 	}
 
-	int const x0 = int(xstarti_r());
-	int const y0 = int(ystarti_r());
+	int const x0 = int(xnexti());
+	int const y0 = int(ynexti());
 	int const x1 = int(xendi_r());
 	int const y1 = int(yendi_r());
 	int const dx = (x1 >= x0) ? 1 : -1;
@@ -828,6 +849,5 @@ void sgi_lg1_device::do_rex_command()
 			break;
 	}
 
-	m_xcurri = x;
-	m_ycurri = y;
+	set_current(x, y);
 }

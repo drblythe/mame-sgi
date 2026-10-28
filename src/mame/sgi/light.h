@@ -69,13 +69,16 @@ protected:
 	u32 command_r() { return m_command; }
 	u32 aux1_r() { return m_aux1; }
 	u32 xstate_r() { return m_xstate; }
-	u32 xstart_r() { return m_xstart; }
-	u32 xstarti_r() { return m_xstart >> 15; }
-	u32 xstartf_r() { return m_xstart >> 4; }
+	// the start registers read back the current position (where drawing
+	// has got to); writes set the next one, which a GO without
+	// XYCONTINUE draws from
+	u32 xstart_r() { return m_xcurf; }
+	u32 xstarti_r() { return m_xcurf >> 15; }
+	u32 xstartf_r() { return m_xcurf >> 4; }
 	u32 xendf_r() { return m_xend >> 4; }
-	u32 ystarti_r() { return m_ystart >> 15; }
-	u32 ystartf_r() { return m_ystart >> 4; }
-	u32 ystart_r() { return m_ystart; }
+	u32 ystarti_r() { return m_ycurf >> 15; }
+	u32 ystartf_r() { return m_ycurf >> 4; }
+	u32 ystart_r() { return m_ycurf; }
 	u32 yendf_r() { return m_yend >> 4; }
 	u32 xsave_r() { return m_xsave; }
 	u32 minorslope_r() { return m_minorslope; }
@@ -93,6 +96,10 @@ protected:
 	u32 rwmask_r() { return m_rwmask; }
 	u32 xendi_r() { return m_xend >> 15; }
 	u32 yendi_r() { return m_yend >> 15; }
+	// the programmed (next) start, integer part
+	u32 xnexti() const { return m_xstart >> 15; }
+	u32 ynexti() const { return m_ystart >> 15; }
+	void set_current(int x, int y);
 
 	// rex register write handlers
 	void command_w(offs_t offset, u32 data) { m_command = data; m_logicop = data >> 28; }
@@ -101,13 +108,13 @@ protected:
 	// logic operation (24-27), also set through colorredi, rwmask and the
 	// command
 	void xstate_w(u32 data) { m_xstate = data; m_color[0] = (data & 0xffU) << 11; m_wrmask = u8(data >> 16); m_logicop = (data >> 24) & 15; }
-	void xstarti_w(u32 data) { m_xstart = m_xcurf = (data & 0x0fffU) << 15; m_xcurri = data & 0x0fffU; }
-	void xstartf_w(u32 data) { m_xstart = m_xcurf = (data & 0x007fffffU) << 4; m_xcurri = (data >> 11) & 0x0fffU; }
-	void xstart_w(u32 data) { m_xstart = m_xcurf = data & 0x07ffffffU; }
+	void xstarti_w(u32 data) { m_xstart = (data & 0x0fffU) << 15; }
+	void xstartf_w(u32 data) { m_xstart = (data & 0x007fffffU) << 4; }
+	void xstart_w(u32 data) { m_xstart = data & 0x07ffffffU; }
 	void xendf_w(u32 data) { m_xend = (data & 0x007ff800U) << 4; }
-	void ystarti_w(u32 data) { m_ystart = m_ycurf = (data & 0x0fffU) << 15; m_ycurri = data & 0x0fffU; }
-	void ystartf_w(u32 data) { m_ystart = m_ycurf = (data & 0x007fffffU) << 4; m_ycurri = (data >> 11) & 0x0fffU; }
-	void ystart_w(u32 data) { m_ystart = m_ycurf = data & 0x07ffffffU; }
+	void ystarti_w(u32 data) { m_ystart = (data & 0x0fffU) << 15; }
+	void ystartf_w(u32 data) { m_ystart = (data & 0x007fffffU) << 4; }
+	void ystart_w(u32 data) { m_ystart = data & 0x07ffffffU; }
 	void yendf_w(u32 data) { m_yend = (data & 0x007ff800U) << 4; }
 	void xsave_w(u32 data) { m_xsave = data & 0x0fffU; }
 	void minorslope_w(u32 data);
@@ -151,7 +158,7 @@ protected:
 	void dac_w(offs_t offset, u32 data);
 	void configsel_w(u32 data) { m_configsel = data & 7; }
 	void vc1_w(offs_t offset, u32 data);
-	void togglectxt_w(u32 data) { m_togglectxt = data; }
+	void togglectxt_w(u32 data);
 	void configmode_w(u32 data) { m_configmode = data; }
 	void xywin_w(u32 data) { m_xywin = data & 0x0fff0fffU; }
 
@@ -185,8 +192,10 @@ private:
 	u32 m_xsave;
 	u32 m_minorslope;
 	u8 m_aamask; // index bits that take the antialiasing weight
-	// a line's current position (15 fraction bits): set by writing the
-	// start registers, carried from one piece of a line to the next
+	// the current position (15 fraction bits): loaded from the start
+	// registers by a NOP or a GO without XYCONTINUE, carried from one
+	// piece of a line or span to the next. The REX keeps it, with the
+	// programmed start, as two copies that togglectxt swaps
 	u32 m_xcurf;
 	u32 m_ycurf;
 	u8 m_wrmask;
