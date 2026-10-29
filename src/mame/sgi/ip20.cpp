@@ -52,6 +52,12 @@
 // NSCSI bus
 #define MAME_SGI_IP20_USE_NWD33C9X
 
+// CPU: MAME's MIPS III core with its recompiler, or, with this, the
+// separate interpreter-only R4000/R4400 core (cpu/mips/r4000.cpp), which
+// is much slower but an independent implementation to cross-check a
+// problem against
+//#define MAME_SGI_IP20_R4000_INTERPRETER
+
 //#define VERBOSE (LOG_GENERAL)
 #include "logmacro.h"
 
@@ -89,7 +95,9 @@ public:
 
 	void indigo_r4000(machine_config &config);
 	void indigo_r4400(machine_config &config);
-	void indigo_r4400m(machine_config &config);
+#ifndef MAME_SGI_IP20_R4000_INTERPRETER
+	void mips3_drc(mips3_device &cpu, u32 caches);
+#endif
 
 protected:
 	void ip20(machine_config &config);
@@ -597,33 +605,44 @@ static void scsi_devices(device_slot_interface &device)
 }
 #endif
 
+#ifndef MAME_SGI_IP20_R4000_INTERPRETER
+// MAME's MIPS III core with the recompiler
+void ip20_state::mips3_drc(mips3_device &cpu, u32 caches)
+{
+	cpu.set_system_clock(50'000'000);
+	cpu.set_icache_size(caches);
+	cpu.set_dcache_size(caches);
+	cpu.set_drc_hash32(true);
+	cpu.set_drc_asid_dispatch(true); // IRIX runs many processes at the same virtual addresses
+	cpu.set_drc_cache_mb(128);
+	// an uncached instruction fetch takes about 273ns: the boot PROM's
+	// delay calibration counts timer ticks over loops run from the PROM
+	cpu.set_uncached_fetch_cycles(int(cpu.clock() * 273e-9 + 0.5));
+}
+#endif
+
+// R4000 revision 3.0 or R4400, 100 or 150 MHz on a 50 MHz system clock
 void ip20_state::indigo_r4000(machine_config &config)
 {
+#ifdef MAME_SGI_IP20_R4000_INTERPRETER
 	R4000(config, m_cpu, 50'000'000);
+#else
+	r4000be_device &cpu = R4000BE(config, m_cpu, 100'000'000);
+	cpu.set_prid(0x0430);
+	mips3_drc(cpu, 0x2000);
+#endif
 
 	ip20(config);
 }
 
 void ip20_state::indigo_r4400(machine_config &config)
 {
+#ifdef MAME_SGI_IP20_R4000_INTERPRETER
 	R4400(config, m_cpu, 75'000'000);
-
-	ip20(config);
-}
-
-// the same R4400 on MAME's MIPS III core, which has a recompiler
-void ip20_state::indigo_r4400m(machine_config &config)
-{
+#else
 	r4400be_device &cpu = R4400BE(config, m_cpu, 150'000'000);
-	cpu.set_system_clock(50'000'000);
-	cpu.set_icache_size(0x4000);
-	cpu.set_dcache_size(0x4000);
-	cpu.set_drc_hash32(true);
-	cpu.set_drc_asid_dispatch(true); // IRIX runs many processes at the same virtual addresses
-	cpu.set_drc_cache_mb(128);
-	// an uncached instruction fetch takes about 273ns: the boot PROM's
-	// delay calibration counts timer ticks over loops run from the PROM
-	cpu.set_uncached_fetch_cycles(41);
+	mips3_drc(cpu, 0x4000);
+#endif
 
 	ip20(config);
 }
@@ -803,7 +822,6 @@ ROM_START(indigo_r4000)
 ROM_END
 
 #define rom_indigo_r4400 rom_indigo_r4000
-#define rom_indigo_r4400m rom_indigo_r4000
 } // anonymous namespace
 
 // The Indigo's LG1 graphics and its sound (no audio input or AES) are
@@ -811,6 +829,5 @@ ROM_END
 // left off for now: their startup warning needs a keypress on every boot,
 // which stops unattended test runs.
 //   YEAR  NAME          PARENT  COMPAT  MACHINE       INPUT  CLASS       INIT        COMPANY             FULLNAME             FLAGS
-COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", 0)
-COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", 0)
-COMP(1991, indigo_r4400m, indigo_r4400, 0, indigo_r4400m, 0,  ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400 (MIPS III recompiler)", MACHINE_SUPPORTS_SAVE)
+COMP(1992, indigo_r4000, 0, 0, indigo_r4000, 0, ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo (R4000, 100MHz)", MACHINE_SUPPORTS_SAVE)
+COMP(1993, indigo_r4400, 0, 0, indigo_r4400, 0, ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo (R4400, 150MHz)", MACHINE_SUPPORTS_SAVE)

@@ -46,4 +46,3 @@ jobs:
           ./mamesgi -validate indigo2_4415
           ./mamesgi -validate indigo_r4000
           ./mamesgi -validate indigo_r4400
-          ./mamesgi -validate indigo_r4400m
