@@ -856,8 +856,8 @@ std::error_condition chd_file::open(
  *            append-then-map-entry sequence is otherwise two
  *            unordered writes with no barrier between them -
  *            an unclean kill mid-sequence can corrupt the CHD,
- *            the actual mechanism behind this project's own
- *            "fresh-CHD-per-boot-test" workaround. Full chain:
+ *            which is why test boots use a fresh CHD each
+ *            time. Full chain:
  *            (chd_file::flush() -> hard_disk_file::flush() ->
  *            harddisk_image_device::flush() ->
  *            nscsi_harddisk_device's SC_SYNCHRONIZE_CACHE ->

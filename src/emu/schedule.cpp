@@ -98,12 +98,12 @@ void mame_sgi_cost_sources_dump(FILE *f, double tsc_hz)
 
 #define PRECISION
 
-// TEMPORARY DIAGNOSTIC (2026-07-30), disabled by default. Periodically
+// Diagnostic, disabled by default. Periodically
 // snapshots-and-resets per-callback timer call count/host time from inside
 // execute_timers(), to compare which timer callback actually dominates at
 // different points in a boot (disk-I/O-heavy phases vs. idle post-login
 // GUI) rather than inferring it from a single boot-focused -bench window.
-// Learned directly from a prior mistake (2026-07-29): this kind of
+// Note: this kind of
 // accumulator must never run unguarded on this hot path - an earlier,
 // #ifdef-less version of essentially this same instrumentation sat
 // directly in execute_timers() and cost a std::string-keyed hash lookup on
@@ -161,7 +161,7 @@ namespace {
 }
 #endif
 
-// TEMPORARY diagnostic (2026-09-17) - isolating which specific
+// Diagnostic, compiled out by default - isolates which specific
 // timer callback (video vblank, audio stream update, DMA completion, and
 // so on) is responsible for a deterministic early-boot ~150ms gap between
 // a CPU device_execute_interface's own successive re-entries, already

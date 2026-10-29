@@ -95,7 +95,7 @@ baud rate:
 #include "z80scc.h"
 
 
-// WORKAROUND (2026-07-28): a diagnostic tap (since removed) confirmed IRIX's SGI Indy
+// WORKAROUND: a diagnostic tap confirmed IRIX's SGI Indy
 // console driver genuinely overflows this chip's real 4-slot TX FIFO
 // during bursty output (multiple characters written back-to-back with no
 // wait for TBE between them) - MAME's own overrun handling is accurate
@@ -106,7 +106,7 @@ baud rate:
 // real Indy hardware, per direct operator experience) - plausibly
 // because a real CPU's write rate relative to the chip's actual 9600-
 // baud drain rate never manages to fill 4 slots before the shift
-// register catches up, a ratio this project's much faster host CPU
+// register catches up, a ratio a much faster host CPU
 // doesn't preserve. Rather than touch the real FIFO's size or timing
 // (shared MAME core code, used by every driver with this chip - keep it
 // hardware-accurate for everyone else), this adds a second-stage
@@ -2915,7 +2915,7 @@ void z80scc_channel::txc_w(int state)
 //   ensure this is to write to WR5 to change the character length before writing the data to the transmit
 //   buffer."
 //
-// FIX (2026-08-11): previously this force-cleared TRANSMIT_REGISTER_EMPTY
+// FIX: previously this force-cleared TRANSMIT_REGISTER_EMPTY
 // unconditionally even while a character was still genuinely mid-shift,
 // discarding it - confirmed live to leave the chip in a state that never
 // asserts whatever completion condition guest code (SGI ARCS PROM, in this

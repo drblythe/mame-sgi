@@ -39,11 +39,9 @@
 
 #define VERBOSE 0
 
-// DISABLED (2026-08-14, same day): already served its purpose (built the
-// offset map used to identify the HPC3 PBUS DMA channel 1/2 arm-timing
-// finding). Left the implementation in place
-// (dump_registry() below) in case another offset-map needs to be pulled
-// later, but re-enable deliberately - firing unconditionally on every boot
+// Disabled by default. Dumps the save-state registry as an offset map
+// (see dump_registry() below). Enable deliberately - firing
+// unconditionally on every boot
 // interleaves with other stderr-writing diagnostics (confirmed live: torn/
 // garbled lines in a run that also had the HPC3 postload diag active) and
 // adds ~3100 lines of output to every single run.
@@ -541,7 +539,7 @@ void save_manager::dump_registry() const
 	for (auto &entry : m_entry_list)
 		LOG(("%s: %u x %u x %u (%u)\n", entry->m_name.c_str(), entry->m_typesize, entry->m_typecount, entry->m_blockcount, entry->m_stride));
 #ifdef MAME_SGI_SAVE_REGISTRY_DUMP
-	// TEMPORARY (2026-08-14): direct-to-stderr dump, bypassing logerror's own
+	// Diagnostic: direct-to-stderr dump, bypassing logerror's own
 	// routing (error.log requires -log; the LOG() macro above also depends
 	// on VERBOSE being nonzero) - printed in save-stream order, so a running
 	// cumulative sum of typesize*typecount*blockcount gives the exact byte

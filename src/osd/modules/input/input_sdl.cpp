@@ -55,7 +55,7 @@
 #endif
 
 
-// TEMPORARY diagnostic (2026-08-23) - wall-clock-timestamped log of
+// Diagnostic, compiled out by default: wall-clock-timestamped log of
 // every raw SDL_KEYDOWN/SDL_KEYUP process_event() actually receives,
 // independent of the sticky-press logic below. Built to distinguish
 // "the keystroke was lost before reaching MAME's input code at all"
@@ -65,8 +65,7 @@
 // shows the event, but it still never reaches the guest). Timestamp
 // format matches console_live.log's own (HH:MM:SS.mmm) for direct
 // cross-reference against what the guest console shows at the same
-// moment. DISABLED (2026-08-23) - used to pin down the dropped-keystroke
-// bugs.
+// moment. Uncomment the define below to enable.
 // #define MAME_SGI_KBD_RAW_EVENT_DIAG
 
 
@@ -816,12 +815,11 @@ private:
 	{
 		// state[] narrowed from s32 to u8 by upstream in 0.289 (along with
 		// removing oldkey[]/currkey[] entirely, ported out below) - our own
-		// code only ever writes 0x00/0x80 here, confirmed safe under u8
-		// during the 0.289 port survey (2026-09-15).
+		// code only ever writes 0x00/0x80 here, so u8 is safe.
 		u8  state[0x3ff];
 		s8  pending_first_sample[0x3ff]; // sticky-press: set on keydown, cleared after surviving one poll()
 		s8  release_deferred[0x3ff];     // sticky-press: keyup arrived before pending_first_sample cleared
-		// Same-key-collision fix (2026-08-23): a SECOND physical press of
+		// Same-key-collision fix: a SECOND physical press of
 		// the same scancode arriving before poll() retires the first
 		// pulse used to reset release_deferred outright, silently
 		// collapsing two real press+release cycles (e.g. the double-o in

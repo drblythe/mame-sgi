@@ -24,7 +24,7 @@ TODO:
 
 #define LOG     0
 
-// TEMPORARY diagnostic (2026-08-23) - real keyboard-drop investigation.
+// Diagnostic, compiled out by default, for tracing dropped keystrokes.
 // input_sdl.cpp's MAME_SGI_KBD_RAW_EVENT_DIAG
 // already proved the host SDL layer delivers every keystroke correctly
 // during a heavy GUI-session-restore stall; this is the next hop down
@@ -34,11 +34,9 @@ TODO:
 // reads (data != 0xFF, i.e. the firmware just detected some key down on
 // whatever row(s) m_p1/m_p2 currently have selected) - genuinely rare
 // events (only real keypresses), no rate limiting needed, unlike the
-// per-dispatch-style diagnostics elsewhere in this project. Same
+// per-dispatch-style diagnostics elsewhere in this fork. Same
 // wall-clock HH:MM:SS.mmm format as MAME_SGI_KBD_RAW_EVENT_DIAG for
-// direct cross-reference. DISABLED (2026-08-23) - reopened
-// investigation paused once row/column addresses for the affected keys
-// were recorded; re-enable if another live session is needed.
+// direct cross-reference. Uncomment the define below to enable.
 // #define MAME_SGI_KBD_MATRIX_SCAN_DIAG
 
 #ifdef MAME_SGI_KBD_MATRIX_SCAN_DIAG
@@ -58,7 +56,7 @@ std::string kbd_matrix_scan_timestamp()
 }
 #endif
 
-// TEMPORARY diagnostic (2026-08-23) - investigation of keys dropped during
+// Diagnostic, compiled out by default, for keys dropped during
 // a host stall: MAME_SGI_KBD_MATRIX_SCAN_DIAG proved a key that IS
 // correctly toggled at the host layer (a real, guaranteed-visible
 // state=0x80 window, confirmed with a host-side key state trace in
@@ -74,9 +72,9 @@ std::string kbd_matrix_scan_timestamp()
 // consecutive samples of that *same* select value - i.e. the row's own
 // scan-revisit period. Reported periodically (rate-limited), not
 // per-call - p0_read() fires far too often (thousands/sec) for
-// per-call logging like MATRIX_SCAN_DIAG uses. DISABLED (2026-08-23) -
-// answered its question (measured worst_gap=373.9ms, correlated to a
-// drc_cache flush); reopened investigation paused.
+// per-call logging like MATRIX_SCAN_DIAG uses. A measured worst_gap of
+// 373.9ms correlated with a drc_cache flush. Uncomment the define below
+// to enable.
 // #define MAME_SGI_KBD_SCAN_RATE_DIAG
 
 #ifdef MAME_SGI_KBD_SCAN_RATE_DIAG

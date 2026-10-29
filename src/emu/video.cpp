@@ -39,7 +39,7 @@
 
 #define LOG_THROTTLE                (0)
 
-// TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
+// Diagnostic, disabled by default. Times
 // machine().osd().update()'s cost (pushing the finished frame to the real
 // host window) in isolation, to compare against the separate CPU-side
 // framebuffer compositing cost measured by the newport.cpp diagnostic -
@@ -47,7 +47,7 @@
 // (schedule.cpp diagnostic, 66-75% of all timer-callback time at idle)
 // into its two real components. Core file, shared across every MAME
 // subtarget - same self-defined-macro convention as every other diagnostic
-// this project has added to shared code, disabled by default.
+// this fork has added to shared code, disabled by default.
 // #define MAME_SGI_OSD_BLIT_TIMING_DIAG
 #ifdef MAME_SGI_OSD_BLIT_TIMING_DIAG
 namespace {
@@ -766,13 +766,11 @@ void video_manager::exit()
 		double final_emu_time = m_overall_emutime.as_double();
 		osd_printf_info("Average speed: %.2f%% (%d seconds)\n", 100 * final_emu_time / final_real_time, (m_overall_emutime + attotime(0, ATTOSECONDS_PER_SECOND / 2)).seconds());
 
-		// TEMPORARY diagnostic (2026-07-28): dump MAME's own built-in
+		// Diagnostic: dump MAME's own built-in
 		// profiler breakdown (see the matching g_profiler.enable(true) added
 		// to the SGI Indy driver's machine_reset()) alongside the speed
-		// figure at clean exit, rather than only via the on-screen overlay -
-		// part of the "DRC still nowhere near 10x faster than -nodrc"
-		// investigation, to see where real time is actually going instead
-		// of guessing from source alone.
+		// figure at clean exit, rather than only via the on-screen overlay,
+		// to show where real time is actually going.
 		if (g_profiler.enabled())
 			osd_printf_info("Profiler breakdown:\n%s\n", g_profiler.text(machine()));
 

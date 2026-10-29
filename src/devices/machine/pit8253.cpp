@@ -38,7 +38,7 @@
 
 #include "logmacro.h"
 
-// TEMPORARY DIAGNOSTIC (2026-07-31), disabled by default. Logs each
+// Diagnostic, disabled by default. Logs each
 // counter's actual re-arm rate (from the same cycles_to_output/m_clock_period
 // computation simulate() already does, just before adjust_timer()) whenever
 // it changes, to see what rate IRIX has actually programmed into each of
@@ -50,7 +50,7 @@
 // MAME PC/PIT-equipped system, not just this SGI driver) - self-defined
 // macro per the established src/devices/ scoping convention, disabled by
 // default.
-// REAL FIX, kept enabled permanently (2026-07-31): mode 4/5's (software/
+// FIX, enabled permanently: mode 4/5's (software/
 // hardware-triggered strobe) cycles_to_output switch has no case for
 // m_phase==0, the documented "waiting for count, infinite length" idle
 // state (matching mode 0's own explicit handling of the same phase a few
@@ -73,7 +73,7 @@
 // pattern would be a reasonable small follow-up cleanup.
 #define MAME_SGI_PIT_MODE45_PHASE0_FIX
 
-// FIX (2026-08-21, gated): catch-up loops (e.g. Mode 2's
+// FIX (gated): catch-up loops (e.g. Mode 2's
 // do-while in simulate()) can call set_output() -> devcb -> a
 // downstream cascaded PIT's set_clock_signal() many times in a tight
 // loop when draining a large historical elapsed_cycles backlog (real

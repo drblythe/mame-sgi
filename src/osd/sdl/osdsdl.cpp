@@ -471,7 +471,7 @@ bool sdl_osd_interface::should_hide_mouse()
 	if (!options().mouse() && !options().lightgun())
 		return false;
 
-	// Capture is gated on window focus, not cursor hover (2026-08-15):
+	// Capture is gated on window focus, not cursor hover:
 	// the previous mouse_over_window() check toggled a real
 	// XGrabPointer()/XUngrabPointer() round-trip - both asynchronous X11
 	// protocol requests - on every Enter/Leave crossing of the window

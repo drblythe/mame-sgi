@@ -877,7 +877,7 @@ int debug_gdbstub::readchar()
 		m_readbuf_len = m_socket.read(m_readbuf, sizeof(m_readbuf), err);
 		if ( m_readbuf_len == 0 )
 		{
-			// FIX (2026-09-12): "no data yet, still waiting" (a
+			// FIX: "no data yet, still waiting" (a
 			// non-blocking poll with nothing ready) reports actual == 0
 			// WITH an operation_would_block error - err is set, ignore it
 			// below exactly as before this fix, just retry. A genuinely
@@ -1021,7 +1021,7 @@ void debug_gdbstub::wait_for_debugger(device_t &device, bool firststop)
 
 		m_is_be = m_address_space->endianness() == ENDIANNESS_BIG;
 
-		// FIX (2026-09-02): the register-read path above already resolves and
+		// FIX: the register-read path above already resolves and
 		// caches the right CPU as m_maincpu (see the comment at its assignment,
 		// a few lines up) - but every execution-control handler (handle_c,
 		// handle_D, handle_k, handle_s, handle_Z, handle_z, and this function's
@@ -1042,13 +1042,12 @@ void debug_gdbstub::wait_for_debugger(device_t &device, bool firststop)
 		// still gets registered and replies "OK" (breakpoint_set() itself
 		// doesn't know or care it's on the wrong device), but the guest CPU
 		// that's actually running MIPS3 code never has that PC checked against
-		// it, so the breakpoint can never fire. Confirmed live: a breakpoint
-		// set at the CPU's own current PC (and separately, at $ra) via
-		// tools/gdb_session.py's new --hookrun mode never fired even after 30s
-		// of a guest process definitely executing through that address -
-		// working as intended once every get_visible_cpu() call site in this
-		// file was changed to use m_maincpu instead, matching the register-read
-		// side's existing fix. This project's gdbstub usage only ever debugs
+		// it, so the breakpoint can never fire. Observed: a breakpoint set at
+		// the CPU's own current PC (and separately, at $ra) never fired even
+		// after 30s of a guest process executing through that address; it
+		// works once every get_visible_cpu() call site in this file uses
+		// m_maincpu instead, matching the register-read side's existing fix.
+		// This fork's gdbstub usage only ever debugs
 		// one CPU (this driver's MIPS3 main CPU) and has no use for gdbstub's
 		// generic multi-CPU "visible cpu" concept at all.
 
@@ -1290,7 +1289,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_m(const char *buf)
 	reply.reserve(length * 2);
 	for ( int i = 0; i < length; i++ )
 	{
-		// FIX (2026-09-02): translate() must be called separately for every
+		// FIX: translate() must be called separately for every
 		// byte, not once for the request's start address with the result
 		// blindly incremented across the whole range. A guest virtual range
 		// spanning more than one page has no guarantee its pages are
@@ -1304,8 +1303,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_m(const char *buf)
 		// intermittent - this bug fires unconditionally whenever a request
 		// crosses a page boundary), while the same guest address read via
 		// gdb attached natively inside the guest (unaffected by this code
-		// at all) came back correct - see tools/gdb_session.py's --hookrun
-		// mode for how this was found.
+		// at all) came back correct.
 		offs_t offset = address + i;
 		address_space *tspace;
 		if ( !m_memory->translate(m_address_space->spacenum(), device_memory_interface::TR_READ, offset, tspace) )
@@ -1348,7 +1346,7 @@ debug_gdbstub::cmd_reply debug_gdbstub::handle_M(const char *buf)
 	if ( !hex_decode(&data, buf + buf_offset, length) )
 		return REPLY_ENN;
 
-	// FIX (2026-09-02): same bug as handle_m (see its own comment) - a
+	// FIX: same bug as handle_m (see its own comment) - a
 	// multi-page write must re-translate per byte, not reuse one
 	// start-of-request translation incremented across the whole range.
 	for ( int i = 0; i < length; i++ )
