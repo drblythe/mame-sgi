@@ -1911,6 +1911,13 @@ void dsp56000_device_base::execute_nonparallel(u32 op)
 
 void dsp56000_device_base::interrupt_check()
 {
+	// nothing can be pending: no latched source, no IRQ line asserted, no
+	// enabled SSI or SCI condition
+	if (!m_irq_pending && m_irqa_state == CLEAR_LINE && m_irqb_state == CLEAR_LINE
+		&& !((m_crb & CRB_RIE) && (m_ssisr & (SSISR_RDF | SSISR_ROE)))
+		&& !((m_crb & CRB_TIE) && (m_ssisr & (SSISR_TDE | SSISR_TUE))))
+		return;
+
 	// collect the level of each pending source: -1 masked or disabled
 	struct source { u8 vector; int level; };
 	source sources[16];
