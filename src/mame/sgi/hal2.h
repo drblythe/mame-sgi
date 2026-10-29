@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "audio_in.h"
+
 #include "sound/dac.h"
 #include "speaker.h"
 
@@ -133,38 +135,10 @@ protected:
 	// 2048 frames is about 43 ms at 48 kHz: over two sound updates of
 	// slack. It fills while nothing records (the oldest frame is dropped
 	// when full); a recording starts by trimming it to ADC_START_FRAMES.
-	struct frame_fifo
-	{
-		static constexpr unsigned FRAMES = 2048;
-		int16_t data[FRAMES][2]{};
-		unsigned read = 0;
-		unsigned count = 0;
+	using frame_fifo = sgi_audio_in::frame_fifo;
 
-		void clear() { read = count = 0; }
-		void push(int16_t l, int16_t r);
-		bool pop(int16_t frame[2]);
-		void trim(unsigned keep);
-	};
-
-	// host input at the stream's rate converted to a guest sample rate with
-	// a windowed-sinc filter (TAPS taps, coefficients for PHASES fractional
-	// positions, interpolated between them). Equal rates pass through.
-	// Output frames lag the input by TAPS / 2 input frames.
-	struct input_converter
-	{
-		static constexpr int TAPS = 64;
-		static constexpr int PHASES = 256;
-		static constexpr unsigned HIST = 4096;   // frames of history before compacting
-		double step = 0.0;          // output rate / input rate the filter was built for
-		std::vector<float> coeff;   // (PHASES + 1) rows of TAPS
-		float hist[2][HIST]{};
-		unsigned count = 0;         // frames in hist
-		double pos = 0.0;           // next output time, in input frames from the newest one
-
-		void reset() { step = 0.0; count = 0; pos = 0.0; }
-		void build(double new_step);
-	};
-	static void convert_input(const int16_t frame[2], double step, input_converter &conv, frame_fifo &fifo);
+	// host input converted to a guest sample rate (audio_in.h)
+	using input_converter = sgi_audio_in::input_converter;
 
 	// MAME_SGI_HAL2_AUDIO_INPUT: the microphone (inputs 0-1) and, with the
 	// host AES connection, the AES input (inputs 2-3) feed one stream at

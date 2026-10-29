@@ -273,6 +273,8 @@ files{
 	MAME_DIR .. "src/devices/bus/rs232/terminal.h",
 	MAME_DIR .. "src/mame/sgi/sgi_rs232_devices.cpp",
 	MAME_DIR .. "src/mame/sgi/indy_indigo2.cpp",
+	MAME_DIR .. "src/mame/sgi/audio_in.cpp",
+	MAME_DIR .. "src/mame/sgi/audio_in.h",
 	MAME_DIR .. "src/mame/sgi/hal2.cpp",
 	MAME_DIR .. "src/mame/sgi/hal2.h",
 	MAME_DIR .. "src/mame/sgi/hpc3.cpp",
