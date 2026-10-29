@@ -32,9 +32,8 @@
 // marker (not folded into a plain comment) for future discoverability/
 // diffing if more invasive fixes to the shared DRC frontend
 // (src/devices/cpu/drcfe.ipp, affecting every DRC-capable core) follow.
-// Three-way comparison (2026-07-23) concluded: fix confirmed to eliminate
-// the original crash cleanly (crash reproduces exactly when reverted,
-// disappears when re-enabled). Re-enabled.
+// The original crash reproduces when this is undefined and disappears
+// when it is defined.
 #define MAME_DRC_BUGFIXES
 
 // MAME_SGI_COP1_CHECK_ONCE: emit the STRICT_COP1 usability test (Status
@@ -44,45 +43,26 @@
 #define MAME_SGI_COP1_CHECK_ONCE 1
 #endif
 
-// Own sub-macro (2026-09-11) for the null-seqlast fallback's reporting
+// Separate sub-macro for the null-seqlast fallback's reporting
 // only - the fallback itself stays unconditional under MAME_DRC_BUGFIXES
 // above regardless of this. See the fallback's own comment in
 // code_compile_block() and diag_null_seqlast_count's comment in mips3.h.
 // #define MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
 
 
-// TEMPORARY diagnostic (2026-08-01): validating a theory about USER-mode
-// (real IRIX application) code recompilation during multi-process
-// operation - see mips3.h's comment on m_diag_usermode_recompile_counts
-// for the full mechanism/hypothesis. Counts recompile events per
-// (mode, pc), USER mode only, dumped at clean exit from mips3.cpp's
-// device_stop(). RESTORED (2026-08-17) - stock-vs-modified A/B concluded - at the
-// time judged "cheap... safe to leave on for a normal test run" on an
-// amortized-cost basis (one hash-map insert per compile).
-// DISABLED, THEN RE-ENABLED WITH A FIX (2026-09-17, QoS
-// follow-up) - that "cheap" judgment used the wrong success metric for
-// what this investigation actually needs. Amortized-O(1) insert cost is
-// real in aggregate, but says nothing about the periodic O(n) rehash
-// spikes that same unbounded growth causes - exactly the tail-latency
-// question this diagnostic's own caller (execute_run()'s MAME_SGI_
-// STALL_DURATION_DIAG) exists to catch, not something perf_ab_stats.sh's
-// aggregate instructions/cycles view would ever surface. Caught directly
-// via a gdb conditional breakpoint on mmap(~2.7MB) during a live boot:
-// m_diag_usermode_recompile_counts (an unordered_map<uint64_t,uint32_t>,
-// never cleared, growing for the whole session) rehashing to 351,061
-// buckets was one of two real causes found for MAME_SGI_COMPILE_LENGTH_
-// CORRELATION_DIAG's ~11-13ms "long compile" outliers - the other,
-// found by describe_code()/histogram/gdb-backtrace follow-up, was
-// m_checkints_addrs (a per-PC set of the since-removed in-sequence
-// interrupt-check heuristic).
-// Re-enabled after adding a one-time reserve() at the insert site (see
-// its own comment below) that converts the periodic rehash stalls into
-// one predictable upfront allocation - verified via boot test that
-// MAME_SGI_STALL_DURATION_DIAG's over_10ms_threshold stays at 0 with
-// this diagnostic active again.
+// Diagnostic (off): counts USER-mode (IRIX application) recompile events
+// per (mode, pc) during multi-process operation, dumped at clean exit from
+// mips3.cpp's device_stop(). See mips3.h's comment on
+// m_diag_usermode_recompile_counts for the mechanism being measured. Cost
+// is one hash-map insert per compile. The map is never cleared, so without
+// care its periodic O(n) rehashes (up to ~351,000 buckets) show up as
+// ~11-13ms compile stalls under MAME_SGI_STALL_DURATION_DIAG; a one-time
+// reserve() at the insert site (see its comment below) replaces them with
+// a single upfront allocation, and over_10ms_threshold stays at 0 with
+// this diagnostic active.
 // #define MAME_DRC_USERMODE_RECOMPILE_DIAG
 
-// TEMPORARY diagnostic (2026-10-09, recompile study): classifies
+// Diagnostic (off), recompile study: classifies
 // every USER-mode compile request by cause - first compile of its key, after
 // a full cache flush, hash miss without a flush, rejected by the checksum
 // guard (nocode exit with the block still registered), or rejected by the
@@ -101,14 +81,14 @@
 // next to the TSV with .trace/.validate/.handler suffixes.
 // #define MAME_SGI_RECOMPILE_STUDY_DIAG
 
-// TEMPORARY diagnostic (2026-10-10): when $MAME_SGI_SYSCALL_LOG
+// Diagnostic (off): when $MAME_SGI_SYSCALL_LOG
 // names a file, log every SYSCALL exception there - total cycles, ASID,
 // syscall number (v0) and a0-a3, plus the path string for calls whose
 // first or second argument is a path - to find what a guest process sleeps
 // in. Costs a C call per syscall when built in.
 // #define MAME_SGI_SYSCALL_LOG_DIAG
 
-// Diagnostic (2026-10-09): report the DRC hash table's footprint
+// Diagnostic (off): report the DRC hash table's footprint
 // just before every cache flush and at exit - populated dispatch modes and
 // L2 tables in use, split into shared keys (mode < 8) and per-ASID keys
 // (MAME_SGI_DISPATCH_MODE_ASID_FIX composites), plus the L1/L2 tables
@@ -130,79 +110,32 @@
 #define MAME_SGI_STALE_STUB_FIX
 
 
-// TEMPORARY FIX, DISABLED BY DEFAULT (2026-08-01, refined 2026-08-02) -
-// see the full comment at its use site, generate_update_mode()
-// (mips3drc.cpp). Addresses USER-mode cross-process cache thrashing.
-// Widens the DRC dispatch key to include ASID, fixing cross-process
-// cache collisions for private/writable code while leaving kernel
-// code's ASID-immunity intact.
+// Widens the DRC dispatch key to include ASID for USER-mode code on
+// writable pages, fixing cross-process cache collisions for private code
+// while leaving kernel code's ASID-immunity intact. See the full comment
+// at its use site, generate_update_mode().
 //
-// Numeric toggle, not a plain #define, specifically so all three
-// development states stay one line away during this still-in-progress
-// investigation (per direct request 2026-08-02 - "make it easy to flip
-// back... including all the way back to the non-ASID-aware version"):
-//   (undefined)  original behavior, no ASID awareness at all
-//   1            first-pass fix: ASID folded into EVERY non-kernel
-//                dispatch unconditionally. Correct, but a real measured
-//                regression - fragments genuinely shared code (the
-//                interpreter, common libc routines) that the old
-//                checksum-only design already handled correctly and
-//                cheaply. 9.3x more distinct cache keys, 6.8x more
-//                compile events, ~25x more full-cache flushes on a
-//                clean before/after boot-to-login comparison. Kept only
-//                as a reference/comparison point, not the intended
-//                end state.
-//   2            refined fix: ASID folded in only for pages confirmed
-//                writable via a live VTLB check (m_core->mode used
-//                unchanged for read-only/shared pages). Validated
-//                against real IRIX kernel source ($IRIXSRC's
-//                exec.c/execmap(): "non-writable mappings... set up as
-//                MAP_SHARED", i.e. IRIX's own kernel already uses
-//                exactly this signal to decide what's safe to share).
-// RESTORED (2026-08-06/07): the clean-baseline check (undefined) confirmed
-// ~103.5s to /.oldtmp, matching the original ~92.7s baseline - conclusively
-// showing the regression tracked back to this mechanism, not the two-page-
-// vs-one-page distinction (single-page A/B was ALSO slow, 415s). Real
-// cause found: page_shareable()'s FETCH_ALLOWED requirement was applied to
-// BOTH pages in dispatch_page_writable()/generate_select_dispatch_key(),
-// not just the delay-slot page that actually needs it - see
-// own_page_needs_asid()'s comment in mips3.h. Fixed there; this stays 2.
-// RESTORED to 2 (2026-08-17) after the ASID-vs-symptom A/B test:
-// busy-loop reproduced identically with this disabled, confirming it's
-// not the cause (consistent with the earlier -nodrc result) - back to
-// the normal, validated-correctness-fix state.
+// Numeric toggle so each state stays one line away:
+//   (undefined)  no ASID awareness at all
+//   1            ASID folded into EVERY non-kernel dispatch
+//                unconditionally. Correct, but fragments genuinely shared
+//                code (the interpreter, common libc routines) that the
+//                checksum-only design already handled cheaply: measured
+//                9.3x more distinct cache keys, 6.8x more compile events,
+//                ~25x more full-cache flushes on a boot to login. Kept as
+//                a comparison point only.
+//   2            ASID folded in only for pages confirmed writable via a
+//                live VTLB check (m_core->mode used unchanged for
+//                read-only/shared pages). This matches IRIX's own rule
+//                ($IRIXSRC exec.c/execmap(): "non-writable mappings... set
+//                up as MAP_SHARED"). Default.
+// page_shareable()'s FETCH_ALLOWED requirement applies only to the
+// delay-slot page, not to the instruction's own page; applying it to both
+// made mode 2 far slower than undefined (see own_page_needs_asid()'s
+// comment in mips3.h).
 //
-// cc1 <built-in> flake bisection (2026-09-02): tested undefined - 18/100 failures,
-// within this project's own established run-to-run noise band, same as
-// every other flag tested so far. Restored to 2 (the normal,
-// validated-correctness-fix state).
-// Flake forced-trigger retest (2026-09-02): undefined and tested
-// against the new 100%-reliable native-gdb repro trigger (not just the
-// earlier ~30% natural rate) - 30/30 failures, no change. Restored to 2.
-// Flake forced-trigger retest (2026-09-02): undefined and tested
-// against the new 100%-reliable native-gdb repro trigger (not just the
-// earlier ~30% natural rate) - 30/30 failures, no change. Restored to 2.
-// Flake natural-rate retest (2026-09-03): undefined again and tested
-// against the NATURAL (non-forced) rate this time - 30 iterations,
-// 3/30 failures (10%, one consecutive burst at i=19-21) - lower than
-// the established ~29-36% baseline with this fix enabled, and the same
-// bursty/clustered failure shape either way. Disabling this fix does
-// not eliminate the bug and maximal recompile churn does not increase
-// its rate - rules out both "this fix's mere presence causes the bug"
-// and "more compile churn causes more failures" as explanations.
-// Restored to 2.
-// Flake natural-rate retest w/ passive polling (2026-09-03, later
-// same day): undefined again to capture live mode/dispatch_mode/r19
-// telemetry (via /proc/pid/mem polling, no gdb) around the residual
-// failures - the as/sh/expr/gcc cross-binary-collision hypothesis was
-// ruled out first (none of those binaries' .text reaches anywhere near
-// 0x1007de00-0x1007e100), so this rerun is to gather direct evidence on
-// what the residual mechanism actually is, not just its rate.
-// Restored to 2 (2026-09-03, Opus-review followup) - the fix-off
-// natural-rate test turned out confounded (the review found disabling it
-// makes the shared key LESS ASID-scoped, not more private, contradicting
-// the original framing) - back to the default/baseline config for the
-// generated-code-diff experiment.
+// Undefining this does not change the rate of the intermittent cc1
+// "<built-in>" failure, so it is not that failure's cause.
 #define MAME_SGI_DISPATCH_MODE_ASID_FIX 2
 
 
@@ -238,42 +171,30 @@
 #include <utility>
 
 
-// TEMPORARY debug toggle (2026-08-02): compiles this file's HOST C++
-// (the DRC compiler machinery itself - code_compile_block(),
-// generate_sequence_instruction(), etc.) without optimization, purely to
-// make host-gdb sessions reliable. Does NOT affect the JIT-generated
-// guest native code this file emits at runtime - that still runs at
-// full speed regardless, since it's produced by drcbex64.cpp's own
-// codegen, unrelated to how this file's own source got compiled. Real,
-// confirmed need: with -O3, a host-gdb session hit -O3-inlined STL
-// frames ("this=<optimized out>", locals unresolvable) trying to break
-// on a single line deep inside code_compile_block, even with full DWARF
-// info present - a genuinely different failure
-// mode than the earlier "no debug info at all" gap, needing a different
-// fix. Undefined by default - only enable for a deliberate host-gdb
-// investigation session, not as a standing default (compile-time DRC
-// machinery runs measurably slower unoptimized, most noticeable during
-// boot's heavy initial compile burst).
+// Debug toggle (off): compiles this file's host C++ (the DRC compiler
+// itself - code_compile_block(), generate_sequence_instruction(), etc.)
+// without optimization so host gdb can resolve locals and frames that -O3
+// inlines away. Does not affect the generated native code, which
+// drcbex64.cpp emits independently. Compilation runs measurably slower
+// with it, most noticeably during boot's initial compile burst.
 // #define MAME_SGI_HOST_DEBUG_NOOPT
 #ifdef MAME_SGI_HOST_DEBUG_NOOPT
 #pragma GCC optimize("O0")
 #endif
 
 
-// Fix (2026-09-17, QoS follow-up) - same cross-TU gotcha as
-// above, needed here too now: code_compile_block()'s own abort_compilation
-// catch block (below) times its internal code_flush_cache() call using
-// this file's own MAME_SGI_STALL_DURATION_DIAG/MAME_SGI_STALL_DIAG_
-// THRESHOLD_NS, mirroring mips3.cpp's two call sites exactly (same
-// threshold value, same counter fields in internal_mips3_state) so this
-// third, previously-unattributed flush mechanism reports through the same
-// diag_flush_stall_* bucket instead of hiding inside diag_compile_stall_*/
-// diag_compile_corr_*. See diag_last_compile_flush_ns's comment in
-// mips3.h for the full mechanism this fixes.
+// Defined separately here because mips3.cpp's definitions do not reach
+// this translation unit: code_compile_block()'s abort_compilation catch
+// block (below) times its internal code_flush_cache() call using this
+// file's MAME_SGI_STALL_DURATION_DIAG/MAME_SGI_STALL_DIAG_THRESHOLD_NS,
+// mirroring mips3.cpp's two call sites (same threshold value, same
+// counter fields in internal_mips3_state) so this third flush path reports
+// through the diag_flush_stall_* bucket instead of being counted in
+// diag_compile_stall_*/diag_compile_corr_*. See
+// diag_last_compile_flush_ns's comment in mips3.h.
 // #define MAME_SGI_STALL_DURATION_DIAG
 #define MAME_SGI_STALL_DIAG_THRESHOLD_NS 10'000'000ULL
 
-// THE FIX (2026-08-22; reworked 2026-08-23) -
 // static_generate_tlb_mismatch()'s "skip" branch, reached when the live
 // TLB entry for this PC's page is mapped again by the time the handler
 // runs, unconditionally EXITs to EXECUTE_MISSING_CODE. That throws away
@@ -283,33 +204,18 @@
 // instead, with an anti-loop guard and an icount charge; see the
 // handler itself for the full reasoning and the two brakes.
 //
-// The original 2026-08-22 form of this fix instead compared the live TLB
-// entry against the value the dispatching instance had baked into its
-// own validate_tlb CMP, on the theory that a transient unmap (IRIX
-// doesn't use the hardware TLB Global bit for shared-library text, so
-// mips3com_asid_changed() explicitly zeroes this process's own entry on
-// every context switch away even though the physical page never changes)
-// would have been refilled to the same value by the time the handler
-// ran. That compare is unsatisfiable by construction and measured a
-// literal 0% hit rate over several full boots - the conditional dispatch
-// fires only when live != baked, and nothing executes between it and the
-// handler's re-read of the same entry. Measurement also showed the
-// validate_tlb fast path is only 3.8% of arrivals at that branch anyway;
-// the compiler_page_fault() stub site is 96.2%.
+// Comparing the live TLB entry against the value baked into the
+// dispatching block's validate_tlb CMP does not work: the conditional
+// dispatch fires only when live != baked, and nothing executes between it
+// and the handler's re-read of the same entry, so such a check never
+// succeeds. (The transient unmaps come from IRIX not using the TLB Global
+// bit for shared-library text: mips3com_asid_changed() zeroes this
+// process's entry on every context switch away even though the physical
+// page never changes.) Of the arrivals at this branch, 96.2% come from
+// compiler_page_fault() stubs and only 3.8% from the validate_tlb path.
 //
-// Toggle-numbered (not a plain #define) per this project's established
-// convention for changes in this exact code region, which has already
-// livelocked twice via two different structurally-unrelated approaches
-// - keeps every state one line
-// away without needing to rediscover this comment block to revert.
-//
-// cc1 <built-in> flake bisection (2026-09-02): tested undefined - 16/100 failures,
-// within this project's own established run-to-run noise band, same as
-// every other flag tested in this bisection. Restored to 1 (the normal
-// state).
-// Flake forced-trigger retest (2026-09-02): undefined and tested
-// against the new 100%-reliable native-gdb repro trigger (not just the
-// earlier ~30% natural rate) - 30/30 failures, no change. Restored to 1.
+// Numeric toggle so the off state stays one line away: this code region
+// has livelocked under two earlier, unrelated approaches.
 #define MAME_SGI_TLB_MISMATCH_REFRESH_FIX 1
 
 
@@ -1081,20 +987,13 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 
 
-	// Standing feature (2026-08-07, not a temporary diagnostic): report
-	// drc_cache health (flush count, permanent-cache utilization) the
-	// moment a new flush happens, not only when the process exits
-	// cleanly. A plain kill -9 - this project's usual way of ending a
-	// test run - skips drc_cache's own destructor entirely, so a real
-	// cache-thrashing regression can run for an entire session without
-	// ever becoming visible; this is exactly what happened investigating
-	// the ASID_FIX==2 regression (2026-08-07: 997 flushes by
-	// /.oldtmp vs 7 for the same milestone with the mechanism disabled -
-	// found only via a special clean-exit run, not from any routine
-	// boot test's log). Checking flush_count() here is cheap (one
-	// comparison per compile) and self-rate-limits: a healthy run flushes
-	// rarely, so this stays near-silent; a thrashing one reports every
-	// single flush as it happens.
+	// Report drc_cache health (flush count, permanent-cache utilization)
+	// the moment a new flush happens, not only at clean exit: a kill -9
+	// skips drc_cache's destructor entirely, so a cache-thrashing regression
+	// could otherwise run unnoticed (one such regression showed 997 flushes
+	// to the same boot milestone that normally takes 7). Checking
+	// flush_count() costs one comparison per compile and self-rate-limits:
+	// a healthy run flushes rarely, a thrashing one reports every flush.
 	{
 		static uint32_t s_last_flush_count = 0;
 		uint32_t const current_flush_count = m_drcuml->cache().flush_count();
@@ -1106,46 +1005,27 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 	}
 
 
-// Standing counter report for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (
-// diag_tlb_mismatch_skip_total/refresh_hits, see their comment in mips3.h)
-// used to live here as a self-rate-limited live print every time the
-// totals changed meaningfully. Moved to a single clean-exit summary in
-// mips3_device::device_stop() instead (2026-09-11), matching the same
-// hygiene convention applied to other diagnostics the same day -
-// the fix itself (the counters' increments, in static_generate_tlb_
-// mismatch()) is untouched, only this reporting was live/periodic.
+// The MAME_SGI_TLB_MISMATCH_REFRESH_FIX counters
+// (diag_tlb_mismatch_skip_total/refresh_hits, see their comment in mips3.h)
+// are reported once at clean exit from mips3_device::device_stop(); they
+// are incremented in static_generate_tlb_mismatch().
 
 #ifdef MAME_DRC_USERMODE_RECOMPILE_DIAG
-	// TEMPORARY diagnostic (2026-08-01, UPDATED same day): `mode` here is
-	// now m_core->dispatch_mode (the ASID-aware composite, see
+	// `mode` here is m_core->dispatch_mode (the ASID-aware composite, see
 	// internal_mips3_state's comment on that field and mips3.cpp's
-	// execute_run() call site) - NOT the plain privilege+FR encoding this
-	// check originally assumed. Under the composite: bit0=FR, bit1=is_user
-	// (only meaningful when non-kernel), bits2+ = asid-component (0 means
-	// kernel sentinel). A genuine USER-mode composite is non-kernel
-	// (bits2+ nonzero) AND has the is_user bit set - `(mode>>1)==MODE_USER`
-	// (the original check, written for the old plain encoding) can never
-	// be true under the new one, which silently produced zero recorded
-	// entries on the first post-fix test run rather than a visible error -
-	// caught by the diagnostic dump being unexpectedly empty, not by a
-	// build/runtime failure.
+	// execute_run() call site), not the plain privilege+FR encoding. Under
+	// the composite: bit0=FR, bit1=is_user (only meaningful when
+	// non-kernel), bits2+ = asid-component (0 means kernel sentinel). A
+	// USER-mode composite is non-kernel (bits2+ nonzero) AND has the is_user
+	// bit set; `(mode>>1)==MODE_USER` would never match it.
 	if (((mode >> 2) != 0) && ((mode & 0x02) != 0))
 	{
-		// Fix (2026-09-17, QoS follow-up) - see this macro's own
-		// enable comment above for the full story: this map's incremental
-		// rehashing (libstdc++ growing its bucket array, observed reaching
-		// 351,061 buckets mid-boot via a live gdb backtrace) was the exact
-		// mechanism causing this diagnostic's real ~11-13ms tail-latency
-		// cost, despite genuinely being cheap on an amortized-per-insert
-		// basis. Reserving a large bucket count on first use converts that
-		// into one upfront, predictable allocation instead of several
-		// scattered, unpredictable rehash stalls through the boot - same
-		// total work, but paid once instead of as periodic surprises.
-		// 500,000 is comfortably above the observed 351,061-bucket rehash
-		// point, with headroom for a heavier session; if a given boot still
-		// exceeds it, this just falls back to ordinary (rarer) rehashing,
-		// same as before this fix - reserve() is a mitigation of frequency/
-		// predictability, not a hard cap.
+		// Reserve a large bucket count on first use so the map's
+		// incremental rehashing (observed reaching 351,061 buckets mid-boot)
+		// becomes one upfront allocation instead of several ~11-13ms
+		// stalls scattered through the boot. 500,000 leaves headroom; a
+		// boot that exceeds it just falls back to ordinary, rarer
+		// rehashing - this reduces stall frequency, it is not a cap.
 		if (m_diag_usermode_recompile_counts.empty())
 			m_diag_usermode_recompile_counts.reserve(500'000);
 		m_diag_usermode_recompile_counts[(uint64_t(mode) << 32) | uint32_t(pc)]++;
@@ -1164,25 +1044,17 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 		// currently non-writable, since content on a read-only page can't
 		// differ per process.
 		//
-		// FIX 1 (2026-08-06) was tried here twice - first checking every
-		// instruction in the compiled desclist, then narrowed to just this
-		// pc's page plus its delay slot's page - both attempts caused a real
-		// early-boot livelock (console frozen, CPU pegged, zero forward
-		// progress). Root cause, found by reading static_dispatch_key()/
-		// live_dispatch_key() (mips3.h): those two functions - used by every
-		// OTHER compiled block's HASHJMP to decide what key to look a target
-		// pc up under - only ever call this same single-page
-		// dispatch_page_writable(pc) check, with no knowledge of any delay
-		// slot. Fix 1 changed the key code_compile_block() *registers* a
-		// block under (this site) without also changing the key every
-		// HASHJMP *looks it up* under (those two sites) - so on any
-		// delay-slot branch where the two checks disagree, the block is
-		// registered under one key and never found under the other,
-		// producing an infinite EXECUTE_MISSING_CODE/recompile loop that
-		// never progresses. A correct fix needs static_dispatch_key()/
-		// live_dispatch_key() updated in lockstep with this site, not just
-		// this site alone - reverted back to the original single-page check
-		// pending that.
+		// Only pc's own page is checked here, not its delay slot's page,
+		// because static_dispatch_key()/live_dispatch_key() (mips3.h) - which
+		// every other compiled block's HASHJMP uses to choose the lookup key
+		// for a target pc - make this same single-page
+		// dispatch_page_writable(pc) check. If this site registered blocks
+		// under a key computed differently (e.g. also checking the delay
+		// slot's page, or every instruction in the desclist), a block could
+		// be registered under one key and never found under the other,
+		// looping forever through EXECUTE_MISSING_CODE and recompiling; that
+		// was observed as an early-boot livelock. A wider check needs all
+		// three sites changed in lockstep.
 		bool const writable_now = dispatch_page_writable(pc);
 #ifdef MAME_SGI_RECOMPILE_TRACKING
 		if (pc >= 0x1007de00 && pc <= 0x1007e100)
@@ -1221,56 +1093,25 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 		m_compile_entry_mode = mode;
 #endif
 
-		// Cross-key aliasing - ATTEMPTED AND REVERTED (2026-08-22, same
-		// session as the entry-key diagnostic above). Reasoning at the time:
-		// execute_run()'s EXECUTE_MISSING_CODE handler (mips3.cpp) always
-		// calls this function with the RAW, ASID-scoped m_core->dispatch_mode,
-		// regardless of what key the dispatch that actually missed was using;
-		// since registration always collapses to the shared key above, the
-		// raw key is never registered, so any entry via a path that doesn't
-		// go through generate_select_dispatch_key()'s own collapsed-key
-		// HASHJMP forces a full, wasted recompile even though a valid compile
-		// already exists under the shared key (measured: one raw mode value
-		// alone reached 140,774 wasted recompiles of pc=0x0fac5ffc in one
-		// boot). The fix built here aliased the raw key to the shared key's
-		// existing code pointer (drcuml_state::set_codeptr(), added this
-		// session specifically for this - a hash-table pointer write only,
-		// no codegen) instead of recompiling, then returned - reasoned to be
-		// safer than the 2026-08-02 attempt below because it actually
-		// registers something under the key it was asked to compile for,
-		// rather than bailing with nothing registered.
+		// Cross-key aliasing (disabled). execute_run()'s EXECUTE_MISSING_CODE
+		// handler (mips3.cpp) always calls this function with the raw,
+		// ASID-scoped m_core->dispatch_mode; since registration collapses to
+		// the shared key above, the raw key is never registered, and an entry
+		// through a path that bypasses generate_select_dispatch_key()'s
+		// collapsed-key HASHJMP forces a full recompile even though a valid
+		// block exists under the shared key (one pc reached 140,774 such
+		// recompiles in a boot). The code below aliases the raw key to the
+		// shared key's existing code pointer via drcuml_state::set_codeptr()
+		// instead of recompiling.
 		//
-		// REGRESSED IMMEDIATELY, different failure signature than expected:
-		// not the classic frozen-console livelock, but a diag_alias_hits
-		// counter that reached 1.2+ BILLION in under 90 seconds (a tight,
-		// cheap, unbounded loop - each iteration just two hash lookups and a
-		// return, so it doesn't peg the same way a real recompile would, but
-		// is equally non-terminating), while console_live.log stalled
-		// immediately after "All Rights Reserved" - early kernel bring-up,
-		// before any user-mode process runs at all. Confirmed via the
-		// 0x0fac5ffc-specific entry diagnostic (still active above) that it
-		// logged ZERO hits during this entire run - this is a DIFFERENT
-		// address than the one investigated, encountered during kernel init,
-		// not the user-mode/shared-library case this fix was designed
-		// around. This falsifies the "aliasing avoids the 2026-08-02 failure
-		// mode because it registers something" reasoning above: the raw key
-		// clearly WAS getting re-registered (alias_hits climbing in lockstep
-		// with compile_total, both incrementing together every call) and
-		// execute() STILL immediately re-entered EXECUTE_MISSING_CODE for
-		// what must be the same (or a tiny rotating set of) raw key(s) again
-		// and again. The actual mechanism making *m_entry's dispatch fail to
-		// find a freshly-registered raw-key entry - whether that's a
-		// set_codeptr()-on-an-unpopulated-mode precondition problem
-		// (drc_hash_table::populate_mode(), drcbeut.h - never called here),
-		// some kernel-init-specific mode/ASID churn invalidating the alias
-		// before it's ever read, or something else entirely - is still
-		// unknown. A third attempt at this class of fix needs that mechanism
-		// actually understood first, not just a structurally-different
-		// reason to expect it might work this time. Left as dead code, not deleted, per this
-		// project's convention - the drcuml_state::set_codeptr() API added
-		// for this remains in place (harmless on its own, unused unless
-		// called) since it may still be useful groundwork for a future,
-		// better-understood fix.
+		// It does not work: during early kernel bring-up, before any user
+		// process runs, execute() keeps re-entering EXECUTE_MISSING_CODE for
+		// the just-aliased key, an unbounded loop (over a billion alias hits
+		// in 90 seconds). Why the freshly-set raw-key entry is not found is
+		// not understood - possibly set_codeptr() on a mode that
+		// drc_hash_table::populate_mode() (drcbeut.h) never populated, or
+		// mode/ASID churn during kernel init. set_codeptr() remains available
+		// for a future fix.
 #if 0
 		if (mode != raw_mode && m_drcuml->hash_exists(mode, pc))
 		{
@@ -1281,29 +1122,16 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 	}
 
-	// REVERTED (2026-08-02, same evening): first attempt at this fix
-	// unconditionally skipped recompilation whenever hash_exists(mode,pc)
-	// was true at entry, reasoning that static_generate_tlb_mismatch()'s
-	// fall-through EXECUTE_MISSING_CODE (see that function, tag 10 in the
-	// dispatch-site diagnostic) meant "TLB just needed a refill, the
-	// compiled block is still fine, retry will succeed." Caused a real
-	// boot livelock on the very next test run - console output froze
-	// during early boot (long before any previous run's normal pace)
-	// while the process sat at ~97% CPU, the exact signature of
-	// execute()->EXECUTE_MISSING_CODE->[skip, no compile]->execute()...
-	// spinning forever with zero forward progress. The assumption that
-	// "hash_exists true at the entry pc ⇒ a bare retry will succeed" does
-	// NOT hold in general - the existing in-loop logic further down this
-	// function (the "assume out of sync, recompile" branch, matched by
-	// `seqhead == desclist`) exists precisely because MAME's original
-	// authors already knew hash_exists-true-at-entry can mean genuine
-	// staleness, not just "TLB was stale" - this fix bypassed that
-	// safeguard entirely instead of only replacing it for the specific
-	// TLB-refill case it was reasoning about. Left as a comment, not
-	// silently deleted, so the next attempt doesn't re-derive the same
-	// wrong assumption from scratch. A real fix here would need
-	// to distinguish the TLB-refill-only case from a genuine staleness
-	// case before skipping, not treat hash_exists() alone as sufficient.
+	// Skipping recompilation whenever hash_exists(mode, pc) is true at entry
+	// (disabled) is wrong. The idea was that static_generate_tlb_mismatch()'s
+	// fall-through to EXECUTE_MISSING_CODE only means the TLB needed a
+	// refill, so a bare retry would succeed. It livelocks early boot
+	// (execute() -> EXECUTE_MISSING_CODE -> skip -> execute() forever at
+	// full CPU). An existing hash entry can be genuinely stale - which is
+	// why the loop below has its "assume out of sync, recompile" branch
+	// (matched by `seqhead == desclist`) - and this bypasses that safeguard.
+	// A correct version must distinguish the TLB-refill-only case from real
+	// staleness before skipping.
 #if 0
 	if (m_drcuml->hash_exists(mode, pc))
 	{
@@ -1373,24 +1201,12 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 				if (seqlast == nullptr)
 				{
 					// The fallback itself (seqlast = seqhead, below) is
-					// permanent and unconditional - never gate it behind
-					// its own diagnostic macro, it's the actual crash
-					// prevention. Only the reporting is optional/gated,
-					// under its own sub-macro (not bare MAME_DRC_BUGFIXES)
-					// per this project's own hygiene convention of never
-					// leaving a diagnostic's output ungated inside a
-					// permanent fix's own block.
-					//
-					// Was: unconditional per-event fprintf with a running
-					// count, "remove once the frequency/pattern is
-					// understood" (2026-07-23). It now is - three-way
-					// comparison the same week confirmed the fallback is
-					// genuinely rare (zero fires across an 11+ minute
-					// live run) - so reworked
-					// 2026-09-11 to a silent counter, reported once as a
-					// clean-exit summary in device_stop() instead of
-					// per-event, matching
-					// MAME_SGI_TLB_MISMATCH_REFRESH_FIX's same-day rework.
+					// permanent and unconditional - it is the crash
+					// prevention. Only the reporting is optional, under its
+					// own sub-macro (not bare MAME_DRC_BUGFIXES), as a
+					// silent counter reported once at clean exit from
+					// device_stop(). The fallback is rare in practice (no
+					// fires over 11+ minutes of running).
 #ifdef MAME_DRC_BUGFIXES_NULL_SEQLAST_DIAG
 					m_core->diag_null_seqlast_count++;
 					m_core->diag_null_seqlast_last_pc = seqhead->pc;
@@ -1400,14 +1216,10 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 #endif
 
 
-				// DISABLED (2026-07-29): like the COMPILETIME(elocore_exl_N)
-				// print above, this was never gated - found while
-				// investigating whether repeated recompiles of the known
-				// 0x8800fcc4 LL/AND/BNE spinlock sequence were a genuine
-				// compile-thrashing bug (as suspected) or just normal
-				// first-time compilation; the unconditional fprintf+fflush
-				// itself was adding real cost on top of whatever the
-                                // underlying recompile frequency turns out to be.
+				// No per-compile print here for the 0x8800fcc4 LL/AND/BNE
+				// spinlock sequence: like the COMPILETIME(elocore_exl_N) print
+				// above, an ungated fprintf+fflush on this path adds real cost
+				// of its own.
 
 
 				/* if we don't have a hash for this mode/pc, or if we are overriding all, add one */
@@ -1764,7 +1576,7 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
     exception handler for "out of code"
 -------------------------------------------------*/
 
-// MAME_SGI_NOCODE_REFRESH_FIX (2026-09-16): static_dispatch_key()
+// MAME_SGI_NOCODE_REFRESH_FIX: static_dispatch_key()
 // bakes its resolved dispatch key as a compile-time constant at the jumping
 // instruction's own compile time. If the target page's writability
 // classification later changes (routine under ASID switches, since
@@ -1773,12 +1585,11 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 // exists under the CURRENT resolved key - the shared nocode handler had no
 // way to tell "genuinely missing" apart from "stale key, code exists
 // elsewhere", so it unconditionally paid a full recompile either way.
-// Measured before this fix: 99.985%
-// of arrivals at one hot PC's compile were exactly this stale-key case.
+// Without this fix, 99.985% of arrivals at one hot PC's compile were this
+// stale-key case.
 //
-// Fix, directly modeled on the already-shipped, already-proven
-// MAME_SGI_TLB_MISMATCH_REFRESH_FIX (same file, static_generate_tlb_
-// mismatch() - see its own comment for the full reasoning this mirrors):
+// Modeled on MAME_SGI_TLB_MISMATCH_REFRESH_FIX (static_generate_tlb_
+// mismatch() - see its comment for the reasoning this mirrors):
 // before giving up, recompute the key LIVE (not the stale baked one) via
 // generate_select_dispatch_key() and try one more HASHJMP. If a valid
 // compile exists under the current key, this finds it and jumps away
@@ -1929,8 +1740,8 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	// whatever block it lands on runs its own validate_tlb guard exactly
 	// as if the guest had branched here, and a hash miss falls through to
 	// m_nocode, which re-raises EXECUTE_MISSING_CODE and compiles for
-	// real. That is what separates this from the 2026-08-02 attempt that
-	// livelocked (see the #if 0 block in code_compile_block()): that one
+	// real. That is what separates this from the disabled early-return in
+	// code_compile_block() (the #if 0 block there), which livelocks: it
 	// made code_compile_block() return WITHOUT compiling, so a hash miss
 	// had no way to ever make progress. Here the miss path still compiles.
 	//
@@ -1949,7 +1760,7 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	//     guest cycles and hand control back to the scheduler, so no retry
 	//     pattern can spin without the machine advancing.
 	//
-	// Measured 2026-08-23 (full boot to login, 402,000 skip events): 96.2%
+	// Over a full boot to login (402,000 skip events), 96.2%
 	// of arrivals here come from the compiler_page_fault() stub site, 3.8%
 	// from validate_tlb()'s conditional fast path, 0% from the
 	// compile-time-already-unmapped site (compiler_page_fault() is tested
@@ -1961,8 +1772,8 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
 	UML_JMPc(block, COND_E, no_retry);                                          // jmp     no_retry,e
 	UML_MOV(block, mem(&m_core->tlb_mismatch_retry_pc), I0);                    // mov     [tlb_mismatch_retry_pc],i0
 	UML_ADD(block, mem(&m_core->diag_tlb_mismatch_refresh_hits), mem(&m_core->diag_tlb_mismatch_refresh_hits), 1);
-	// Reporting these two counters periodically happens from
-	// code_compile_block() instead of here - this function only runs
+	// These two counters are reported from device_stop(), not here -
+	// this function only runs
 	// ONCE, at device-start, to emit this shared handler's machine code;
 	// a "static" local here would evaluate at codegen time, not per
 	// runtime invocation, which is not useful for a runtime counter.
@@ -2027,7 +1838,7 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	{
 		/* set BadVAddr to the fault address */
 		UML_GETEXP(block, I0);                                                  // getexp  i0
-		// FIX (2026-07-30): BadVAddr is a genuinely 64-bit COP0 register
+		// BadVAddr is a genuinely 64-bit COP0 register
 		// (unlike Status/Cause/Count/Compare, which are architecturally
 		// 32-bit-only). The interpreter's equivalent (generate_tlb_exception,
 		// mips3.cpp) assigns the full 64-bit register from the fault
@@ -2068,17 +1879,14 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	UML_SUB(block, I0, I0, 1);                                                  // sub     i0,i0,1
 	UML_LABEL(block, next);                                                     // <next>:
 	UML_MOV(block, I3, offset);                                                 // mov     i3,offset
-	// FIX (2026-07-30): EPC is a genuinely 64-bit COP0 register; the
-	// interpreter assigns it from m_core->pc (a uint32_t), zero-extending
-	// into the full 64-bit slot. Zero-extend I0 (a plain guest PC value via
-	// RECOVER/arithmetic above) here, strictly BEFORE the flag-setting TEST
-	// just below - an earlier attempt at this fix put the zero-extend
-	// *between* TEST and the COND_Z move that consumes its flag, and
-	// UML_DAND clobbering that flag as a side effect silently skipped the
-	// EPC store on real guest execution (confirmed: caused an early-boot
-	// KERNEL FAULT with PC=0x0, reverted, root-caused, now fixed by
-	// reordering). TEST must be
-	// the last thing before the conditional move that depends on it.
+	// EPC is a genuinely 64-bit COP0 register; the interpreter assigns it
+	// from m_core->pc (a uint32_t), zero-extending into the full 64-bit
+	// slot. Zero-extend I0 (a plain guest PC value via RECOVER/arithmetic
+	// above) here, strictly BEFORE the flag-setting TEST just below: DAND
+	// clobbers the flags, so placed between TEST and the COND_Z move it
+	// silently skips the EPC store (an early-boot KERNEL FAULT with PC=0x0).
+	// TEST must be the last thing before the conditional move that depends
+	// on it.
 	UML_DAND(block, I0, I0, 0xffffffff);                                        // dand    i0,i0,0xffffffff
 	UML_TEST(block, CPR032(COP0_Status), SR_EXL);                               // test    [Status],SR_EXL
 	UML_DMOVc(block, COND_Z, CPR064(COP0_EPC), I0);                             // dmov    [EPC],i0,Z
@@ -2091,12 +1899,6 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 		UML_GETEXP(block, I0);                                                  // getexp  i0
 		UML_ROLINS(block, CPR032(COP0_Cause), I0, 28, 0x30000000);              // rolins  [Cause],i0,28,0x30000000
 	}
-
-	// TEMPORARY probe (2026-07-27): stash the EPC candidate (I0, still valid
-	// here - nothing since <next> has touched it) and check whether Status
-	// already looks address-shaped *entering* this delivery, before this
-	// function's own SR_EXL OR below touches it at all. See
-	// func_interrupt_delivery_probe's own comment for the full rationale.
 
 	/* set EXL in the SR */
 	UML_OR(block, I0, CPR032(COP0_Status), SR_EXL);                             // or      i0,[Status],SR_EXL
@@ -2123,16 +1925,14 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	UML_SUB(block, mem(&m_core->icount), mem(&m_core->icount), I1);             // sub icount,icount,cycles,S
 	UML_EXHc(block, COND_S, *m_out_of_cycles, I0);                              // exh     out_of_cycles,i0
 
-	// FIX (2026-07-30): every other static_generate_* handler that leaves
+	// Every other static_generate_* handler that leaves
 	// this function's own compiled context (static_generate_nocode_handler,
 	// static_generate_out_of_cycles, static_generate_tlb_mismatch) calls
 	// save_fast_iregs before its own exit point - this one, which hands off
 	// to the guest exception vector via hashjmp, never did. $v0 is
-	// fast-mapped to host register I4 (mips3.cpp:786-807; only I4's gate
-	// clears on this project's actual Linux build - drcbex64.cpp's
-	// non-Windows int_register_map has 5 entries, not the >=7 needed for
-	// $v1/$a0 to also get mapped, corrected 2026-09-05 from an earlier,
-	// wrong "$v0/$v1/$a0 -> I4/I5/I6" version of this comment) rather than
+	// fast-mapped to host register I4 (mips3.cpp:786-807; on non-Windows
+	// x64 only I4's gate clears - drcbex64.cpp's int_register_map there has
+	// 5 entries, not the >=7 needed for $v1/$a0 to also be mapped) rather than
 	// always living in m_core->r[]; without this, whatever that host
 	// register held at the moment of the exception was never flushed to
 	// memory before jumping into the vector, so any consumer that reads r[]
@@ -2192,8 +1992,7 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 	// A 32-bit-native mips3_device (the more common MIPS3 configuration)
 	// needs the original scale (no swizzle at size==4, a half-swap DROR at
 	// size==8); this SGI driver's genuinely 64-bit-native space needs the
-	// opposite (see the per-size comments below; a live mismatch on
-	// 2026-09-30 found this).
+	// opposite (see the per-size comments below).
 	bool const native64 = m_program->data_width() == 64;
 	if (!debugger_enabled())
 	{
@@ -2215,10 +2014,8 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 				}
 				if (!iswrite)
 				{
-					// A fast-path/slow-path comparison found this
-					// fastram region is natively 64-bit (Width=3 - confirmed
-					// via the read_dword() dispatch trace, 2026-09-30),
-					// not 32-bit. Every branch below
+					// In a 64-bit-native space (Width=3 in the
+					// read_dword() dispatch) every branch below
 					// needs the "...to a 64-bit space" XOR variant
 					// (BYTE8_XOR_BE/WORD2_XOR_BE/DWORD_XOR_BE in
 					// endianness.h) to pick the right byte lane within the
@@ -2228,11 +2025,9 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					// size==4 had no swizzle at all. Getting size==1/2's
 					// scale wrong is self-consistent for a same-size
 					// write-then-read round trip (a fixed wrong permutation
-					// still round-trips with itself), which is why it never
-					// showed up as a correctness bug on its own - it only
-					// disagrees with a DIFFERENT access size/path touching
-					// the same bytes, exactly the shape of this investigation's
-					// original fast/slow mismatch.
+					// still round-trips with itself); it only disagrees with
+					// a different access size or the slow path touching
+					// the same bytes.
 					if (size == 1)
 					{
 						UML_XOR(block, I0, I0, m_bigendian ? (native64 ? BYTE8_XOR_BE(0) : BYTE4_XOR_BE(0))
@@ -2261,15 +2056,11 @@ void mips3_device::static_generate_fastram_accessor(drcuml_block &block, int &la
 					}
 					else if (size == 8)
 					{
-						// The same comparison (widened
-						// pass, 2026-09-30): confirmed via a live mismatch
-						// (addr=0x0832d8a8, size=8:
-						// fast=0xbfbb000bffffffff slow=0xffffffffbfbb000b)
-						// that for a 64-bit-native space, this DROR must NOT
-						// run - rotating fast's halves back (undoing the
-						// DROR by 32) gives exactly slow, i.e. the RAW host
-						// load already equals the correct value with no
-						// rotation at all. For a 32-bit-native space,
+						// For a 64-bit-native space this DROR must NOT run:
+						// the raw host load is already the correct value
+						// (with the DROR, a fast-path read gave
+						// 0xbfbb000bffffffff where the slow path gave
+						// 0xffffffffbfbb000b). For a 32-bit-native space,
 						// though, a qword access is TWICE the native width
 						// - the original DROR-by-32 half-swap (combining
 						// two native 32-bit lanes into one 64-bit value) is
@@ -2521,7 +2312,7 @@ void mips3_device::generate_update_mode(drcuml_block &block)
 
 	if (m_drc_asid_dispatch)
 	{
-		// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01, refined 2026-08-02):
+		// MAME_SGI_DISPATCH_MODE_ASID_FIX:
 		// compute the ASID-scoped composite from the mode just derived above
 		// (still in i2) plus a live read of the current ASID (EntryHi's low
 		// byte). Kernel gets a fixed sentinel (asid component forced to 0
@@ -2531,8 +2322,8 @@ void mips3_device::generate_update_mode(drcuml_block &block)
 		// See the toggle comment at the top of this file for what value 1
 		// vs 2 actually does with this value - this computation itself is
 		// identical either way, it's only *used* differently: value 1 uses
-		// it unconditionally for every non-kernel dispatch (the confirmed-
-		// regressive first pass); value 2 uses it only for pages confirmed
+		// it unconditionally for every non-kernel dispatch (measurably
+		// slower); value 2 uses it only for pages confirmed
 		// writable via a live VTLB check, chosen per-PC at code_compile_block
 		// (registration) and at each dispatch site (this function only
 		// produces the value, doesn't decide when to use it - see
@@ -2573,7 +2364,7 @@ void mips3_device::generate_update_mode(drcuml_block &block)
     and non-writable) and m_core->dispatch_mode
     (ASID-scoped private key, the default) into `dest`.
 
-    Same-page short-circuit (2026-08-06): pc and pc+4
+    Same-page short-circuit: pc and pc+4
     land in different pages only when pc is the last
     instruction slot in a page (low 12 bits == 0xffc) -
     true for at most 1 in 1024 dispatches. That test is
@@ -2581,14 +2372,11 @@ void mips3_device::generate_update_mode(drcuml_block &block)
     access needed, so it's cheap and well-predicted to
     check first and skip the second, almost-always-
     redundant vtlb_table() load entirely in the common
-    case. An earlier version always did both loads
-    unconditionally, doubling the cost of this function's
-    hottest call sites (JR/JALR's `jmpdest`, this file's
-    own "main entry point into shared library code") for
-    no benefit in the overwhelmingly common case -
-    confirmed as a real, measured ~4.3x boot-time
-    regression (2026-08-06) before this
-    fix. `labelnum` is threaded in from the caller (either
+    case. Always doing both loads doubles the cost at
+    this function's hottest call sites (JR/JALR's
+    `jmpdest`, the "main entry point into shared library
+    code") for no benefit in the common case.
+    `labelnum` is threaded in from the caller (either
     a static generator's own `label` counter or
     `compiler_state::labelnum` - both plain int refs, see
     this function's 5 call sites) since this is the one
@@ -2603,17 +2391,11 @@ void mips3_device::generate_update_mode(drcuml_block &block)
 void mips3_device::generate_select_dispatch_key(drcuml_block &block, uml::parameter target_pc, uml::parameter dest, int &labelnum)
 {
 #ifndef MAME_SGI_DISPATCH_TWO_PAGE_CHECK
-	// A/B fallback (2026-08-06, corrected 2026-08-07) - see the toggle's
-	// own comment in mips3.h. Must match dispatch_page_writable()'s
-	// #else branch exactly (lockstep registration/lookup contract) - that
-	// branch is now the literal pre-2026-08-06 WRITE_ALLOWED-only test,
-	// not the FETCH_ALLOWED-aware one (an earlier version of this
-	// fallback used FETCH_ALLOWED here to match a since-superseded
-	// version of dispatch_page_writable()'s fallback - correct in its
-	// own right at the time, but a 2026-08-07 measurement
-	// showed that FETCH_ALLOWED-awareness, not page count, is what
-	// costs ~4x boot time, so both sides moved back to WRITE_ALLOWED-only
-	// together).
+	// Single-page fallback - see the toggle's comment in mips3.h. Must
+	// match dispatch_page_writable()'s #else branch exactly (lockstep
+	// registration/lookup contract): both use the plain WRITE_ALLOWED-only
+	// test, not the FETCH_ALLOWED-aware one. Using FETCH_ALLOWED in this
+	// fallback, not the page count, was measured to cost ~4x boot time.
 	UML_SHR(block, I3, target_pc, MIPS3_MIN_PAGE_SHIFT);                        // shr     i3,target_pc,12
 	UML_LOAD(block, I3, (void *)vtlb_table(), I3, SIZE_DWORD, SCALE_x4);        // load    i3,[vtlb_table],i3,dword
 	UML_TEST(block, I3, WRITE_ALLOWED);                                         // test    i3,WRITE_ALLOWED
@@ -2623,11 +2405,10 @@ void mips3_device::generate_select_dispatch_key(drcuml_block &block, uml::parame
 	uml::code_label const cross_page = labelnum++;
 	uml::code_label const combine = labelnum++;
 
-	// REVERTED (2026-08-07): own page's indicator also needs FETCH_ALLOWED,
-	// not just WRITE_ALLOWED - see page_shareable()'s comment in mips3.h.
-	// A WRITE_ALLOWED-only own-page test reintroduced the exact failure
-	// class this investigation is about, on the target's own page instead
-	// of the delay page - reproduced a real livelock immediately.
+	// The own page's indicator also needs FETCH_ALLOWED, not just
+	// WRITE_ALLOWED - see page_shareable()'s comment in mips3.h. A
+	// WRITE_ALLOWED-only own-page test livelocks, the same failure as the
+	// delay page without it.
 	// own page: I2 = 0 iff shareable (FETCH_ALLOWED set, WRITE_ALLOWED clear)
 	UML_SHR(block, I2, target_pc, MIPS3_MIN_PAGE_SHIFT);                        // shr     i2,target_pc,12
 	UML_LOAD(block, I2, (void *)vtlb_table(), I2, SIZE_DWORD, SCALE_x4);        // load    i2,[vtlb_table],i2,dword
@@ -2692,18 +2473,13 @@ void mips3_device::generate_update_cycles(drcuml_block &block, compiler_state &c
 		// to protect a critical section) or while already inside another
 		// exception - landing an interrupt somewhere the interpreter/real
 		// hardware never would, exactly the kind of gap that could tear a
-		// multi-field kernel update (as seen in the mutex_wake flags/next
-		// -pointer inconsistency this session traced this bug to).
+		// multi-field kernel update (e.g. an inconsistent mutex_wake
+		// flags/next-pointer pair).
 		UML_TEST(block, CPR032(COP0_Status), SR_IE);                            // test    [Status],SR_IE
 		UML_JMPc(block, COND_Z, skip);                                          // jmp     skip,Z
 		UML_TEST(block, CPR032(COP0_Status), SR_EXL | SR_ERL);                  // test    [Status],SR_EXL | SR_ERL
 		UML_JMPc(block, COND_NZ, skip);                                         // jmp     skip,NZ
 #endif
-		// TEMPORARY probe (2026-07-27): delivery is about to happen (the
-		// EXL/ERL guard above already passed) - I0/I1 haven't been set to
-		// their delivery values yet, so a CALLC here is safe, the real
-		// UML_MOV(I0,param)/UML_MOV(I1,cycles) right after freshly
-		// overwrite whatever this probe's own call may have clobbered.
 		UML_MOV(block, I0, param);                                              // mov     i0,nextpc
 		UML_MOV(block, I1, compiler.cycles);                                    // mov     i1,cycles
 		UML_CALLH(block, *m_exception_norecover[EXCEPTION_INTERRUPT]);          // callh   interrupt_norecover
@@ -3000,7 +2776,7 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 			UML_MOV(block, mem(&m_core->arg0), desc->pc);              // mov     [arg0],desc->pc
 			UML_CALLC(block, cfunc_printf_debug, this);                            // callc   printf_debug
 		}
-		// Measured 2026-08-23: this stub is the origin of 96.2% of all
+		// This stub is the origin of 96.2% of all
 		// arrivals at the shared handler's skip branch - by far the
 		// dominant driver of TLB-mismatch recompiles. See that handler
 		// for what now happens there instead of a blind recompile.
@@ -3034,14 +2810,12 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 				UML_MOV(block, mem(&m_core->arg0), desc->pc);          // mov     [arg0],desc->pc
 				UML_CALLC(block, cfunc_printf_debug, this);                        // callc   printf_debug
 			}
-			// NOTE (2026-08-23): an earlier version of the refresh fix
-			// stashed tlbtable[pc>>12] into m_core here so the shared
-			// handler could compare it against the live entry. That
-			// compare could never be true: the EXHc below fires only
-			// when live != baked, and the handler re-reads that same
-			// entry with nothing running in between, so the two can only
-			// ever differ. It also cost a store on every execution of
-			// this guard, not just on mismatches. Removed.
+			// Nothing is stashed here for the shared handler to compare
+			// against the live entry: the EXHc below fires only when
+			// live != baked, and the handler re-reads that same entry
+			// with nothing running in between, so such a compare could
+			// never match - and the store would cost on every execution
+			// of this guard.
 #ifdef MAME_SGI_RECOMPILE_STUDY_DIAG
 			if (recompile_study_traced(desc->pc, true))
 			{
@@ -3069,7 +2843,7 @@ void mips3_device::generate_sequence_instruction(drcuml_block &block, compiler_s
 				UML_MOV(block, mem(&m_core->arg0), desc->pc);          // mov     [arg0],desc->pc
 				UML_CALLC(block, cfunc_printf_debug, this);                        // callc   printf_debug
 			}
-			// Measured 2026-08-23: unreachable in practice. A desc whose
+			// Unreachable in practice. A desc whose
 			// fetch fails to translate gets compiler_page_fault() set by
 			// the frontend, and that is tested earlier in this function
 			// and returns, so this branch never actually dispatches.
@@ -3245,8 +3019,8 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 
 
 /*-------------------------------------------------
-    generate_likely_branch_skip_fixup - cc1 flake fix
-    (2026-09-10). BEQL/BNEL/BLEZL/BGTZL ("branch
+    generate_likely_branch_skip_fixup - BEQL/BNEL/
+    BLEZL/BGTZL ("branch
     likely") annul their delay slot when not taken.
     The not-taken path (the caller's own `skip:` label,
     reached via UML_JMPc) does nothing further and just
@@ -3264,15 +3038,13 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
     fault, so desc->pc+8 never gets its own descriptor in
     that compile at all, and whatever OTHER, unrelated
     address the frontend independently discovered next
-    (observed live: this same branch's own TAKEN target,
-    reached via a separate branch-target worklist entry)
-    silently takes its place in the live sequence. This
-    is the confirmed root cause of the cc1 <built-in>
-    "predicate's answer is empty" flake (2026-09-10) -
-    live-instrumented, 100% correlation across 30
-    explicit-flush cycles: the not-taken path redispatches
-    to the branch's own taken target regardless of the
-    real, correctly-evaluated branch outcome.
+    (e.g. this same branch's own TAKEN target, reached
+    via a separate branch-target worklist entry)
+    silently takes its place in the live sequence. The
+    not-taken path then runs the branch's taken target
+    regardless of the correctly evaluated branch outcome
+    (seen in the guest as an intermittent cc1
+    "<built-in>" "predicate's answer is empty" error).
 
     Fix: when the frontend ALREADY knows (at compile
     time - this is information drcfe.ipp has already
@@ -3553,8 +3325,6 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			return true;
 
 		case 0x37:  /* LD - MIPS III */
-			// DISABLED (2026-07-29): never gated, same pattern as the other
-			// COMPILETIME diagnostics found tonight.
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);                        // add     i0,<rsreg>,SIMMVAL
 			UML_CALLH(block, *m_read64[m_core->mode >> 1]); // callh   read64
 			if (RTREG != 0)
@@ -3754,14 +3524,8 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 			return true;
 
 		case 0x3f:  /* SD - MIPS III */
-			// DISABLED (2026-07-29): never gated, same pattern as the other
-			// COMPILETIME diagnostics found tonight.
 			UML_ADD(block, I0, R32(RSREG), SIMMVAL);                        // add     i0,<rsreg>,SIMMVAL
 			UML_DMOV(block, I1, R64(RTREG));                                // dmov    i1,<rtreg>
-			// DISABLED (2026-07-28): see cfunc_interrupt_delivery_probe's
-			// comment - this was the worst offender of the four, firing on
-			// every 64-bit store anywhere in the kernel, unconditionally,
-			// all night.
 			UML_CALLH(block, *m_write64[m_core->mode >> 1]);    // callh   write64
 			if (!in_delay_slot)
 				generate_update_cycles(block, compiler, desc->pc + 4, true);
@@ -4127,10 +3891,10 @@ bool mips3_device::generate_special(drcuml_block &block, compiler_state &compile
 			return true;
 
 		case 0x1a:  /* DIV - MIPS I */
-			// FIX (2026-07-30): both UML backends make DIVS a no-op on a
-			// zero divisor, leaving I0/I1 untouched - previously whatever
-			// scratch value an earlier instruction happened to leave there,
-			// then unconditionally sign-extended into LO/HI regardless. The
+			// Both UML backends make DIVS a no-op on a
+			// zero divisor, leaving I0/I1 holding whatever scratch value an
+			// earlier instruction left there, which would then be
+			// sign-extended into LO/HI. The
 			// interpreter (mips3.cpp) guards with `if (RTVAL32)` and leaves
 			// LO/HI unchanged on divide-by-zero. Pre-seed I0/I1 from the
 			// current LO/HI so the skip case reproduces "unchanged" instead
@@ -4144,7 +3908,7 @@ bool mips3_device::generate_special(drcuml_block &block, compiler_state &compile
 			return true;
 
 		case 0x1b:  /* DIVU - MIPS I */
-			// FIX (2026-07-30): same as DIV above.
+			// Same as DIV above.
 			UML_MOV(block, I0, LO32);                                           // mov     i0,lo
 			UML_MOV(block, I1, HI32);                                           // mov     i1,hi
 			UML_DIVU(block, I0, I1, R32(RSREG), R32(RTREG));                    // divu    i0,i1,<rsreg>,<rtreg>
@@ -4490,52 +4254,31 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			return true;
 
 		case COP0_Status:
-			// TEMPORARY (2026-07-27): widened from one hardcoded PC
-			// (0x8801b6c8) to a range - the same logical vector has now
-			// been observed compiled at 0x8801b6c8, 0x8801b668, and
-			// 0x8801b638 (an earlier session) across different builds, as
-			// PCs shift with each fix. A fixed single address silently
-			// misses whichever sibling instance is actually live in a
-			// given build/run - confirmed directly tonight when a panic
-			// hit 0x8801b668 while this probe only watched 0x8801b6c8.
 #ifdef MAME_DRC_BUGFIXES
 			// The interrupt check for this instruction must happen before its
 			// store takes effect (with EPC = this instruction, it re-executes
 			// on return). generate_update_cycles uses I0/I1 as scratch, so
 			// preserve the value being stored across it.
 			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
-			// (An earlier version of this fix moved the store ahead of the
-			// interrupt check instead, to stop the check's I0/I1 scratch use
-			// clobbering the value being stored. That let the check see the
+			// (Moving the store ahead of the interrupt check instead, to
+			// stop the check's I0/I1 scratch use clobbering the value being
+			// stored, is wrong: it lets the check see the
 			// NEW Status - e.g. EXL just cleared and IE set - and deliver an
 			// interrupt with EPC pointing back at this mtc0, which then
-			// re-executed on return with whatever the handler had left in its
+			// re-executes on return with whatever the handler left in its
 			// source register; IRIX's vec_tlbmiss elocore_exl_3 sequence uses
 			// $k0, which exception_exit does not preserve, storing an address
 			// into Status. Preserving I0 in memory avoids both problems.)
-			// TEMPORARY probe (2026-07-27): stash I0 (the value about to be
-			// stored, unmodified since this instruction's own RTREG read)
-			// and desc->pc into memory now (a plain MOV, doesn't touch I0) -
-			// but the actual CALLC to inspect it is deferred to *after* I0's
-			// last real use below (the diff computation), since UML_CALLC
-			// can clobber scratch registers and I0 must survive intact
-			// through the real store and generate_update_mode - the exact
-			// clobber-ordering bug class this whole investigation started
-			// from. See func_status_store_probe's comment for what this is
-			// checking. Only needed by that probe family.
 			UML_MOV(block, I1, CPR032(COP0_Status));                            // mov     i1,[Status]
 			UML_MOV(block, CPR032(COP0_Status), I0);                            // mov     [Status],i0
 			generate_update_mode(block);                                        // <update mode>
 			UML_XOR(block, I0, I0, I1);                                         // xor     i0,i0,i1
 			UML_TEST(block, I0, 0x8000);                                        // test    i0,0x8000
 			UML_CALLCc(block, COND_NZ, cfunc_mips3com_update_cycle_counting, this);      // callc   mips3com_update_cycle_counting,mips.core,NZ
-			// DISABLED (2026-07-28): see cfunc_interrupt_delivery_probe's
-			// comment - hooked on every COP0_Status store anywhere in the
-			// kernel, unconditionally, all night.
 #else
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_MOV(block, I1, CPR032(COP0_Status));                            // mov     i1,[Status]
 			UML_MOV(block, CPR032(COP0_Status), I0);                            // mov     [Status],i0
 			generate_update_mode(block);                                        // <update mode>
@@ -4560,11 +4303,11 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			// on return). generate_update_cycles uses I0/I1 as scratch, so
 			// preserve the value being stored across it.
 			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
 			UML_MOV(block, CPR032(COP0_Count), I0);                             // mov     [Count],i0
 #else
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_MOV(block, CPR032(COP0_Count), I0);                             // mov     [Count],i0
 #endif
 			UML_CALLC(block, cfunc_get_cycles, this);                           // callc   cfunc_get_cycles,mips3
@@ -4584,11 +4327,11 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			// on return). generate_update_cycles uses I0/I1 as scratch, so
 			// preserve the value being stored across it.
 			UML_DMOV(block, mem(&m_core->cop0_store_value), I0);               // dmov    [cop0_store_value],i0
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_DMOV(block, I0, mem(&m_core->cop0_store_value));               // dmov    i0,[cop0_store_value]
 			UML_MOV(block, CPR032(COP0_Compare), I0);                           // mov     [Compare],i0
 #else
-			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (TEMPORARY diag_tag, 2026-07-27)
+			generate_update_cycles(block, compiler, desc->pc, !in_delay_slot, true, desc->pc);  // <subtract cycles> (diag_tag)
 			UML_MOV(block, CPR032(COP0_Compare), I0);                           // mov     [Compare],i0
 #endif
 			UML_AND(block, CPR032(COP0_Cause), CPR032(COP0_Cause), ~0x8000);    // and     [Cause],[Cause],~0x8000
@@ -4603,8 +4346,8 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			return true;
 
 		case COP0_EntryHi:
-			// FIX (2026-07-30): EntryHi has its own dedicated case that
-			// bypasses default entirely. Both MTCz and DMTCz callers now
+			// EntryHi has its own dedicated case that
+			// bypasses default entirely. Both MTCz and DMTCz callers
 			// prepare I0 as a correctly-widened 64-bit value (MTCz
 			// zero-extends, DMTCz uses the real 64-bit register - see each
 			// caller), so this always stores the full 64 bits, matching
@@ -4621,7 +4364,7 @@ bool mips3_device::generate_set_cop0_reg(drcuml_block &block, compiler_state &co
 			return true;
 
 		default:
-			// FIX (2026-07-30): both MTCz and DMTCz now prepare I0 as a
+			// Both MTCz and DMTCz prepare I0 as a
 			// correctly-widened 64-bit value before reaching here (MTCz
 			// zero-extends its 32-bit source, matching the interpreter's
 			// set_cop0_reg(reg, RTVAL32) implicitly zero-extending into its
@@ -4764,16 +4507,12 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 		UML_JMPc(block, COND_Z, cop0_ok);                                   // jz      cop0_ok (kernel - COP0 always usable)
 		if (desc->pc == 0x8801205c)
 		{
-			// TEMPORARY probe (2026-07-27): 0x8801205c is splhi()-style
-			// (real mfc0 Status / mask / mtc0, per an earlier
-			// disassembly), reached from every interrupt-priority-level
-			// change throughout the kernel. If this ever legitimately
-			// traps here (live mode non-kernel, SR_COP0 clear) it means
-			// Status/mode are genuinely wrong at this instant, not just a
-			// stale-compiled-mode caching artifact - the gate above already
-			// reads mode live via mem(&m_core->mode), so any trap past this
-			// point can no longer be explained by the compile-time-baking
-			// bug already fixed elsewhere in this file.
+			// Probe hook (emits nothing): 0x8801205c is a splhi()-style
+			// mfc0 Status / mask / mtc0 sequence in the IRIX kernel,
+			// reached from every interrupt-priority-level change. Since
+			// the gate above reads mode live via mem(&m_core->mode), a
+			// trap past this point means Status/mode are genuinely wrong
+			// at this instant, not a stale compile-time mode.
 		}
 		UML_TEST(block, CPR032(COP0_Status), SR_COP0);                      // test    [Status],SR_COP0
 		UML_EXHc(block, COND_Z, *m_exception[EXCEPTION_BADCOP], 0);         // exh     cop,0,Z
@@ -4811,14 +4550,14 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 			return true;
 
 		case 0x04:  /* MTCz */
-			// FIX (2026-07-30): was UML_DSEXT (sign-extend). The interpreter's
+			// Zero-extend, not sign-extend: the interpreter's
 			// MTCz calls set_cop0_reg(RDREG, RTVAL32) - RTVAL32 is a uint32_t,
 			// implicitly zero-extended into the uint64_t parameter - so a
 			// 32-bit mtc0 always zero-extends into the full 64-bit COP0
-			// register. Sign-extending here fed a wrong-width value into the
-			// now-widened COP0 register writes below (generate_set_cop0_reg's
-			// EntryHi and default cases, and this switch is the only source
-			// of I0 for a plain MTCz).
+			// register. Sign-extending would feed a wrong value into the
+			// 64-bit COP0 register writes in generate_set_cop0_reg's EntryHi
+			// and default cases (this is the only source of I0 for a plain
+			// MTCz).
 			UML_DAND(block, I0, R32(RTREG), 0xffffffff);                        // dand    i0,<rtreg>,0xffffffff
 			generate_set_cop0_reg(block, compiler, desc, RDREG);                // <set cop0 reg>
 			return true;

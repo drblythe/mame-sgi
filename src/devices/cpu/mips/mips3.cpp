@@ -8,38 +8,23 @@
 
 ***************************************************************************/
 
-// TEMPORARY diagnostic (2026-08-13): triggers a one-shot machine().save()
-// at total_cycles() >= this value, from inside execute_run() itself - lets
-// the -state save/restore corruption investigation (the mousetest_state/
-// pausecheck/racecheck saves) repro against an early
-// PROM-execution moment (seconds of real boot, not 6+ minutes to login),
-// instead of always needing a full boot to reach a save point. Undefined
-// by default - set to a real cycle count (e.g. 1000, 10000) to arm it for
-// one test run.
-// DISABLED (2026-08-18) - the -state save/restore investigation this was
-// built for is done, and has since had a clean resume result too. Was
-// left armed well past its intended one-shot use, silently doing a real
-// unconditional disk write (a full save-state) partway through every
-// single boot test since 2026-08-13, not just the one deliberate run it
-// was meant for. Commented out, not deleted - reusable for a future
-// investigation session, set to a real cycle count to re-arm.
+// Diagnostic: triggers a one-shot machine().save() at total_cycles() >=
+// this value, from inside execute_run() itself - lets -state save/restore
+// problems be reproduced against an early PROM-execution moment (seconds
+// of boot rather than minutes to a login prompt). Undefined by default;
+// set to a real cycle count to arm it for one run. Do not leave it armed:
+// every run then performs a full save-state disk write partway through.
 // #define MAME_SGI_EARLY_SAVE_DIAG 2829794
 
 
-// TEMPORARY diagnostic (2026-08-14): periodic PC/SR/Cause/k0/k1 trace, every
+// Diagnostic: periodic PC/SR/Cause/k0/k1 trace, every
 // MAME_SGI_PC_TRACE_STEP cycles within [LO,HI], printed from inside
-// execute_run(). Built to directly diff a continuous boot's execution trace
-// against a -state reload's trace (same cycle range, same source CHD -
-// confirmed empirically deterministic run-to-run: repeated single-shot
-// saves at the same requested cycle threshold, and the eret-race window
-// diagnostic's first-hit cycle, have both reproduced to the exact cycle
-// across independent runs today) to find the first point of actual
-// DIVERGENCE, rather than bisecting on the eventual observable failure
-// (which the 2026-08-14 investigation found can be tens of
-// millions of cycles downstream of whatever actually went wrong - a
-// bisection on failure alone can't distinguish "this save point is the
-// problem" from "this save point just takes longer to reach the same
-// pre-existing problem"). Undefined by default.
+// execute_run(). Used to diff a continuous boot's execution trace against
+// a -state reload's trace over the same cycle range (boots from the same
+// CHD are deterministic to the exact cycle run-to-run) and find the first
+// point of actual divergence. Bisecting on the eventual observable failure
+// instead is unreliable, since that failure can show up tens of millions
+// of cycles after whatever actually went wrong. Undefined by default.
 // #define MAME_SGI_PC_TRACE_DIAG
 #ifdef MAME_SGI_PC_TRACE_DIAG
 #define MAME_SGI_PC_TRACE_LO 2833334
@@ -47,9 +32,8 @@
 #define MAME_SGI_PC_TRACE_STEP 20
 #endif
 
-// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - see
-// diag_compile_stall_total_ns's comment in mips3.h for the full
-// motivation. Real host wall-clock timing around execute_run()'s own
+// Diagnostic - see diag_compile_stall_total_ns's comment in mips3.h for
+// the motivation. Real host wall-clock timing around execute_run()'s own
 // code_compile_block()/code_flush_cache() call sites - the events that
 // freeze the entire single emulation thread in real time regardless of
 // guest cycle accounting. Off by default (two std::chrono reads per
@@ -57,23 +41,16 @@
 // deliberate measurement run, not left on for ordinary play).
 // #define MAME_SGI_STALL_DURATION_DIAG
 #include <chrono>
-// Lowered from 50ms to 10ms (2026-09-16, same day) after the user pointed
-// out 50ms was calibrated for the wrong goal - "would a human perceive a
-// stutter" - not "does the guest's clock (ds1386.cpp's RTC ticks at
-// attotime::from_hz(100), confirmed directly) stay tracking host real
-// time." That question turns out to have no meaningful per-event
-// threshold at all (every ns of stall is equally, permanently additive
-// drift, since the throttle-sleep mechanism tying the virtual attotime
-// timeline to real seconds only ever slows an over-fast run down, never
-// speeds an under-fast one back up, even under `-nothrottle`) - the
-// right metric for THAT is the _total field, not this
-// threshold. This threshold instead answers the complementary question:
-// can a single stall discretely miss a transient real-world event (Bug
-// B's actual mechanism - a host keyboard pulse needs the host SDL
-// input-polling loop, which runs once per emulated frame, to run within
-// some real-time window to be caught at all) - 10ms matches the
-// confirmed 100Hz guest tick period, a tighter and more defensible bar
-// than an arbitrary "human-perceptible" guess.
+// Per-event stall threshold. Drift of the guest clock (ds1386.cpp's RTC
+// ticks at attotime::from_hz(100)) against host real time has no
+// meaningful per-event threshold: every ns of stall is permanently
+// additive drift, because throttling only ever slows an over-fast run
+// down and never speeds an under-fast one back up, even under
+// -nothrottle. The _total field measures that. This threshold instead
+// answers whether a single stall can miss a transient real-world event,
+// such as a host key press that the once-per-frame SDL input poll must
+// see within some real-time window. 10ms matches the 100Hz guest tick
+// period.
 //
 // Defined unconditionally (not nested inside MAME_SGI_STALL_DURATION_DIAG's
 // own #ifdef above) because device_stop()'s clean-exit summary print
@@ -173,31 +150,18 @@
 #define IS_FR1      (SR & SR_FR)
 
 /* size of the execution code cache */
-// Bumped 4x from the stock 32MB (2026-07-28): a gdb-captured hang during
-// IRIX boot (SGI Indy, deep into the SCSI-probe/reconfigure phase) showed
-// the same PC (elocore_exl_3) being recompiled twice in a row with
-// different compile-time state moments apart, and two separate
-// interrupts of the same hang landed in completely different subsystems
-// (nscsi_bus_device::ctrl_w, then asmjit's own x86 assembler) - both
-// consistent with code-cache eviction/recompilation thrashing rather
-// than a genuine guest-level infinite loop, given -nodrc (no cache to
-// thrash) gets through this same boot phase without issue. Testing
-// whether a larger cache alone resolves it before looking for a root
-// cause in the eviction/sizing logic itself.
+// With the stock 32MB, IRIX boot on the SGI Indy could hang deep in the
+// SCSI-probe/reconfigure phase: the same PC (elocore_exl_3) was
+// recompiled repeatedly with different compile-time state, and
+// interrupting the hang landed in unrelated subsystems
+// (nscsi_bus_device::ctrl_w, asmjit's x86 assembler) - code-cache
+// eviction/recompilation thrashing rather than a guest-level loop, since
+// -nodrc gets through the same phase. A 4x larger cache (128MB) fixes it.
 //
-// Tested 4x again (2026-08-08, briefly, reverted): even a healthy,
-// low-redundancy boot still flushes 15-17 times (2026-08-01
-// baseline) - tried a 512MB cache to see whether cache-size
-// pressure explains a meaningful share of DRC Compilation's ~28-32%-
-// of-busy-time cost (g_profiler, 2026-08-08). Result: flush count did
-// drop 4x (16 -> 4 for a full boot), but wall time was unchanged
-// (151.9s -> 153.2s, within noise) - with 1M+ sequences compiled per
-// boot, avoiding a handful of flush-driven recompiles is statistically
-// negligible against that volume. Confirms DRC Compilation's cost is
-// dominated by genuine first-time compilation, not cache-pressure-
-// driven redundancy - unlike the 2026-07-28 bump above, which fixed an
-// actual pathological thrashing hang, not just ordinary flush count.
-// Reverted to 128MB; a bigger cache alone isn't the lever here.
+// Going a further 4x (512MB) cuts a full boot's cache flushes from ~16 to
+// 4 but leaves wall time unchanged (within noise): with 1M+ sequences
+// compiled per boot, DRC compilation cost is dominated by first-time
+// compilation, not flush-driven recompiles. So 128MB is enough.
 // The SGI drivers set 128MB (set_drc_cache_mb), which is what ended that
 // hang; other systems keep upstream's 32MB.
 #define DRC_CACHE_SIZE              (32 * 1024 * 1024)
@@ -379,7 +343,7 @@ void mips3_device::device_stop()
 	if (m_stale_stub_container_recompiles)
 		osd_printf_verbose("MAME_SGI_STALE_STUB_FIX summary: container_recompiles=%llu\n", (unsigned long long)m_stale_stub_container_recompiles);
 
-	// TEMPORARY diagnostic (2026-08-01): dump before m_drcfe/m_drcuml
+	// Diagnostic: dump before m_drcfe/m_drcuml
 	// (and the drc_cache they depend on) get torn down below. See
 	// mips3.h's comment on m_diag_usermode_recompile_counts for the
 	// full mechanism/hypothesis. Unconditionally safe when empty -
@@ -411,13 +375,10 @@ void mips3_device::device_stop()
 	}
 
 	// Clean-exit summary for MAME_SGI_TLB_MISMATCH_REFRESH_FIX -
-	// see diag_tlb_mismatch_skip_total's comment in mips3.h. This used to
-	// be a live, self-rate-limited stderr print inside code_compile_block()
-	// (mips3drc.cpp); moved here 2026-09-11 per this project's hygiene
-	// convention of not leaving diagnostics printing during ordinary play
-	// once a live per-event/per-threshold trace is no longer needed. The
-	// fix's own counters (incremented in static_generate_tlb_mismatch())
-	// are untouched - only this reporting moved.
+	// see diag_tlb_mismatch_skip_total's comment in mips3.h. Reported once
+	// at exit rather than printed live from code_compile_block()
+	// (mips3drc.cpp), so nothing prints during ordinary play. The fix's
+	// counters are incremented in static_generate_tlb_mismatch().
 	if (m_core->diag_tlb_mismatch_skip_total != 0)
 	{
 		osd_printf_verbose(
@@ -440,12 +401,12 @@ void mips3_device::device_stop()
 				100.0 * double(m_core->diag_nocode_refresh_hits) / double(m_core->diag_nocode_skip_total));
 	}
 
-	// Clean-exit summary for MAME_SGI_STALL_DURATION_DIAG (QoS
-	// follow-up) - see diag_compile_stall_total_ns's comment in mips3.h.
-	// Real host wall-clock time the single emulation thread spent inside
-	// code_compile_block()/code_flush_cache(), the events Bug B's 373.9ms
-	// console freeze was traced to - a different axis from
-	// the instructions/cycles-based perf_ab_stats.sh comparisons above.
+	// Clean-exit summary for MAME_SGI_STALL_DURATION_DIAG - see
+	// diag_compile_stall_total_ns's comment in mips3.h. Real host
+	// wall-clock time the single emulation thread spent inside
+	// code_compile_block()/code_flush_cache(), which can freeze the
+	// console for hundreds of milliseconds - a different axis from
+	// instruction/cycle counts.
 	if (m_core->diag_compile_stall_event_count != 0)
 	{
 		osd_printf_verbose(
@@ -478,7 +439,7 @@ void mips3_device::device_stop()
 				m_core->diag_null_seqlast_count, m_core->diag_null_seqlast_last_pc);
 	}
 
-	// TEMPORARY diagnostic (2026-08-01): sanity check for the
+	// Diagnostic: sanity check for the
 	// dispatch_mode fix - see mips3.h's comment on
 	// m_diag_kernel_dispatch_mode_values for what a non-{0,1} result
 	// would mean.
@@ -656,7 +617,7 @@ void mips3_device::mame_sgi_postload_diag()
 
 void mips3_device::mame_sgi_presave_diag()
 {
-	// TEMPORARY (2026-08-14): the save-side mirror of
+	// Diagnostic hook: the save-side mirror of
 	// mame_sgi_postload_diag()'s stack_slot read - runs synchronously via
 	// register_presave(), immediately before the save is actually
 	// serialized, so this is the true live value at the exact moment of
@@ -5446,8 +5407,7 @@ void mips3_device::execute_run()
 		// reload: total_cycles() resumes from the saved value, so a reload
 		// whose save already crossed MAME_SGI_EARLY_SAVE_DIAG would
 		// otherwise re-fire schedule_save() on its very first execute_run()
-		// call - confirmed live 2026-08-13 to wedge the Lua console's FIFO
-		// input loop mid-resume. Only arm the trigger on a run that
+		// call, which wedges the Lua console's FIFO input loop mid-resume. Only arm the trigger on a run that
 		// actually starts below the threshold (a genuine fresh boot).
 		static bool s_mame_sgi_first_call = true;
 		static bool s_mame_sgi_early_save_done = false;
@@ -5526,7 +5486,7 @@ void mips3_device::execute_run()
 #ifdef MAME_SGI_STALL_DURATION_DIAG
 				{
 					uint64_t const raw_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - compile_stall_start).count();
-					// Fix (2026-09-17): code_compile_block() may have hit its
+					// code_compile_block() may have hit its
 					// own internal abort_compilation retry (mips3drc.cpp),
 					// which flushes and regenerates the entire static
 					// handler set - real work, but not "compiling this
@@ -5622,24 +5582,18 @@ void mips3_device::execute_run()
 			m_core->icount = 0;
 
 #ifdef MAME_SGI_PC_TRACE_DIAG
-		// TEMPORARY (2026-08-14): true per-instruction resolution for the
-		// same narrow-window trace as execute_run()'s own hook above -
-		// that one is limited to execute_run()'s own (coarse) re-entry
-		// granularity, since DRC can run a whole compiled block between
-		// re-entries. The interpreter's dispatch loop has no such gap -
-		// every single instruction passes through here - so switch to
-		// -nodrc for this specific narrow-window investigation to get
-		// true single-instruction resolution (already confirmed the bug
-		// reproduces identically under -nodrc, so this is a valid
-		// substitution for this specific narrow window).
+		// Per-instruction resolution for the same narrow-window trace as
+		// execute_run()'s own hook above - that one is limited to
+		// execute_run()'s coarse re-entry granularity, since DRC can run a
+		// whole compiled block between re-entries. Every instruction passes
+		// through the interpreter's dispatch loop, so run with -nodrc to
+		// get single-instruction resolution.
 		{
 			uint64_t cyc = total_cycles();
-			// TEMPORARY (2026-08-14): PC-match variant - fire on every visit
-			// to the jr $ra epilogue at 0xbfc1174c specifically, across a
-			// broad cycle safety range, rather than a narrow cycle window -
-			// used to find where a CONTINUOUS boot's own visit(s) to this
-			// exact instruction land, for comparison against the -state
-			// reload's corrupted $ra=0 there.
+			// PC-match variant - fire on every visit to the jr $ra epilogue
+			// at 0xbfc1174c across a broad cycle range, rather than a narrow
+			// cycle window, to compare a continuous boot's visits to this
+			// instruction against a -state reload's corrupted $ra=0 there.
 			if (cyc <= 6000000 && m_core->pc == 0xbfc1174c)
 			{
 				osd_printf_verbose("MAME_PC_TRACE_INSN: cyc=%llu PC=%08X SR=%08X Cause=%08X k0=%08X%08X k1=%08X%08X sp=%08X%08X ra=%08X%08X\n",

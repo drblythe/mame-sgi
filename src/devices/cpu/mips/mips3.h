@@ -28,13 +28,11 @@ MIPS III/IV emulator.
 
 #include <bitset>
 
-// TEMPORARY diagnostic (2026-08-17) - see debug_get_codeptr/
-// debug_scan_for_immediate's own comments below. Self-defined here
-// (not via sgi.lua's defines{} block) because this header compiles as
-// part of the shared "optional" project (used by every MAME subtarget,
-// not just sgi), which sgi.lua's defines{} block never reaches - see
-// tools/build_profiled.sh-adjacent build notes / the project's own
-// build-verify convention for this exact gotcha.
+// Diagnostic - see debug_get_codeptr/debug_scan_for_immediate's own
+// comments below. Defined here rather than via sgi.lua's defines{} block
+// because this header compiles as part of the shared "optional" project
+// (used by every MAME subtarget, not just sgi), which sgi.lua's
+// defines{} block never reaches.
 #define MIPS3_DEBUG_HELPERS
 
 // WAIT (R4600/R4700/R5000) idles until the next scheduled event instead of
@@ -377,13 +375,11 @@ public:
 	// recompiler's cache is flushed on the next execute_run.
 	void set_idle_pc(offs_t pc, uint32_t opcode);
 
-	// TEMPORARY diagnostic (2026-08-17) - host-gdb-callable helpers for
-	// live investigation of a specific compiled DRC block, without
-	// needing manual PIE/ASLR address math (drcuml_state::get_codeptr's
-	// own wrapper gets inlined away in an optimized build, and computing
-	// the real runtime address by hand from `nm`'s static address once
-	// already caused a real SIGSEGV in this exact investigation,
-	// 2026-08-16). noinline guarantees a real,
+	// Diagnostic - host-gdb-callable helpers for live inspection of a
+	// specific compiled DRC block, without manual PIE/ASLR address math
+	// (drcuml_state::get_codeptr's own wrapper gets inlined away in an
+	// optimized build, and computing the runtime address by hand from
+	// `nm`'s static address is error-prone). noinline guarantees a real,
 	// callable symbol regardless of optimization level. Not compiled in
 	// by default (see MIPS3_DEBUG_HELPERS below) since this is purely a
 	// debugging aid with no purpose in a normal build.
@@ -509,17 +505,17 @@ protected:
 
 		uint32_t        mode;                       /* current global mode */
 
-		// MAME_SGI_DISPATCH_MODE_ASID_FIX (2026-08-01): separate DRC
+		// MAME_SGI_DISPATCH_MODE_ASID_FIX: separate DRC
 		// hash-dispatch key, distinct from `mode` above. `mode` alone
 		// (privilege+FR, no ASID) is what the DRC hash table has always
 		// keyed compiled blocks on, which works fine for KERNEL-mode code
 		// (kseg0/1 is direct-mapped, genuinely ASID-independent) but
 		// causes real cross-process thrashing for USER/SUPER code, which
-		// is TLB/ASID-mapped: confirmed live, one hot USER-mode PC
+		// is TLB/ASID-mapped: without it, one hot USER-mode PC was
 		// recompiled 129,873 times in a single boot as competing
 		// short-lived rc-script processes evicted each other's cached
 		// code at shared conventional virtual addresses (74% of all
-		// USER-mode compiles in that run were pure redundant work).
+		// USER-mode compiles in that boot were redundant).
 		// Encoding: kernel
 		// gets a fixed sentinel (just the FR bit, asid-component=0) that
 		// never varies with the live ASID - that constancy is what keeps
@@ -537,25 +533,19 @@ protected:
 		// encoding and meaning.
 		uint32_t        dispatch_mode;
 
-		// TEMPORARY diagnostic (2026-09-16, QoS follow-up) - real
-		// host wall-clock (not guest-cycle) duration of each
+		// Diagnostic (MAME_SGI_STALL_DURATION_DIAG) - real host wall-clock
+		// (not guest-cycle) duration of each
 		// code_compile_block()/code_flush_cache() call from execute_run().
-		// Motivation: this project's scheduler is purely cycle-count-driven
+		// MAME's scheduler is purely cycle-count-driven
 		// (device_scheduler::timeslice() advances every device's clock from
-		// icount alone, never host time - confirmed 2026-09),
-		// so a compile/flush event doesn't distort the GUEST's own notion
-		// of elapsed time, but it does freeze the entire single emulation
-		// thread in REAL time - already measured once, ad hoc, as a 373.9ms
-		// freeze directly correlated with a full drc_cache flush (the
-		// console "Bug B" stall) via two separate indirect diagnostics
-		// (MAME_SGI_KBD_SCAN_RATE_DIAG and a compile-rate counter)
-		// matched by timestamp after the fact - no direct instrument existed
-		// for this until now. This is a genuinely different axis from
-		// perf_ab_stats.sh's aggregate instructions/cycles comparison, which
-		// can't distinguish "374ms in one lump" from "374ms spread across
-		// many small pieces" - only a real wall-clock stall-duration measure
-		// can see that difference, which is exactly what a segmented DRC
-		// cache would need to demonstrate its value.
+		// icount alone, never host time), so a compile/flush event doesn't
+		// distort the guest's own notion of elapsed time, but it does
+		// freeze the entire single emulation thread in real time - e.g. a
+		// full drc_cache flush has been seen to freeze the console for
+		// ~374ms. Aggregate instruction/cycle counts can't distinguish
+		// "374ms in one lump" from "374ms spread across many small
+		// pieces"; only a wall-clock stall-duration measure can, which is
+		// what a segmented DRC cache would need to demonstrate its value.
 		// _over_threshold_count counts events exceeding
 		// MAME_SGI_STALL_DIAG_THRESHOLD_NS (mips3.cpp) - the DoS-relevant
 		// bucket a human would perceive as a stutter/dropped input, as
@@ -569,8 +559,7 @@ protected:
 		uint32_t        diag_flush_stall_over_threshold_count;
 		uint32_t        diag_flush_stall_event_count;
 
-		// Fix (2026-09-17, QoS follow-up, found while interpreting
-		// stall_ab_stats.sh's pearson_r/outlier output): code_compile_block()
+		// code_compile_block()
 		// (mips3drc.cpp) has a third code_flush_cache() call site - the
 		// abort_compilation catch block inside its own while(!succeeded)
 		// retry loop, hit whenever the near/permanent cache runs out mid-
@@ -578,19 +567,19 @@ protected:
 		// (mips3.cpp) times as "flush". That call regenerates the ENTIRE
 		// static handler set (entry point, nocode/out_of_cycles/tlb_mismatch,
 		// ~14 exception handlers, memory accessors for 3 modes - ~50+ real
-		// codegen blocks) every time, but its cost was previously silently
-		// folded into whatever compile call happened to trigger it -
-		// producing outliers like "instructions=1, ns=13ms" and diluting
-		// diag_compile_corr_*'s correlation, while diag_flush_stall_* stayed
+		// codegen blocks) every time. Untimed, its cost would be folded
+		// into whatever compile call happened to trigger it - producing
+		// outliers like "instructions=1, ns=13ms" and diluting
+		// diag_compile_corr_*'s correlation, while diag_flush_stall_* stays
 		// near-zero despite drc_cache's own flush_count() reaching ~10-11/
-		// boot. code_compile_block() now times this call site itself (same
+		// boot. code_compile_block() therefore times this call site itself (same
 		// MAME_SGI_STALL_DURATION_DIAG chrono pattern as execute_run()'s two
 		// sites) and accumulates the result here; execute_run() reads it
 		// back right after code_compile_block() returns and subtracts it
 		// from that call's own elapsed time before feeding diag_compile_
 		// stall_*/diag_compile_corr_*, so "compile" reflects only describe_
-		// code()+codegen cost and "flush" finally captures this dominant,
-		// previously-invisible mechanism. Reset to 0 by execute_run() after
+		// code()+codegen cost and "flush" captures this dominant
+		// mechanism. Reset to 0 by execute_run() after
 		// each read; accumulates (rather than overwrites) in case the retry
 		// loop hits abort_compilation more than once in a single call.
 		uint64_t        diag_last_compile_flush_ns;
@@ -608,8 +597,8 @@ protected:
 		uint32_t        diag_null_seqlast_count;
 		uint32_t        diag_null_seqlast_last_pc;
 
-		// Standing counters (2026-08-22, not a temporary diagnostic -
-		// this is the fix itself, MAME_SGI_TLB_MISMATCH_REFRESH_FIX):
+		// Standing counters for MAME_SGI_TLB_MISMATCH_REFRESH_FIX (part of
+		// the fix itself, not a temporary diagnostic):
 		// how often static_generate_tlb_mismatch()'s skip branch
 		// was able to redispatch through the hash table instead of
 		// falling through to EXECUTE_MISSING_CODE (refresh_hits -
@@ -630,8 +619,7 @@ protected:
 		// word-aligned PC. See static_generate_tlb_mismatch().
 		uint32_t        tlb_mismatch_retry_pc;
 
-		// Standing counters (2026-09-16, QoS investigation -
-		// MAME_SGI_NOCODE_REFRESH_FIX): the shared nocode handler
+		// Standing counters for MAME_SGI_NOCODE_REFRESH_FIX: the shared nocode handler
 		// (static_generate_nocode_handler) is the universal fallthrough for
 		// every UML_HASHJMP miss in this file, not just the tlb_mismatch
 		// path above - static_dispatch_key() bakes its resolved key as a
@@ -639,7 +627,7 @@ protected:
 		// writability classification changes after that jump was compiled
 		// (routine under ASID switches), producing a hash miss even though
 		// valid code already exists under the CURRENT resolved key.
-		// Measured before this fix (2026-09-16): 99.985% of arrivals at pc=0x0fac5ffc's compile were
+		// Measured without this fix: 99.985% of arrivals at pc=0x0fac5ffc's compile were
 		// exactly this - a "key_mismatch" (resolved-key code already
 		// present, raw/stale key missed). Same shape, same fix pattern as
 		// diag_tlb_mismatch_skip_total/refresh_hits above - see
@@ -799,7 +787,7 @@ protected:
 	bool            m_isdrc;
 	bool            m_interp_running = false;   // interpreter execute_run() active (guest FP rounding applied to the host)
 
-	// TEMPORARY diagnostic (2026-08-01): validating a theory about
+	// Diagnostic: validates a theory about
 	// USER-mode (application) code recompilation during multi-process
 	// operation (rc-script boot phase and beyond) - the DRC hash table
 	// key is (mode, virtual pc) with no ASID/process discrimination, and
@@ -880,7 +868,7 @@ protected:
 	struct recompile_study_log_entry { uint32_t pc; uint32_t req; uint64_t cycles; };
 	std::vector<recompile_study_log_entry> m_recompile_study_log;
 
-	// TEMPORARY diagnostic (2026-08-01): sanity check for the
+	// Diagnostic: sanity check for the
 	// dispatch_mode fix above - every KERNEL-privilege compile
 	// (dispatch_mode < 4, i.e. asid-component bits clear) should produce
 	// exactly one of only two possible values (0 or 1, differing only by
@@ -1013,38 +1001,33 @@ private:
 	void generate_update_mode(drcuml_block &block);
 	// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2 (mips3drc.cpp): host-side
 	// (compile-time) writability check for a statically-known target PC
-	// - IRIX's own kernel uses exactly this signal (execmap(), $IRIXSRC)
+	// - IRIX's own kernel uses exactly this signal (execmap() in its kernel source)
 	// to decide MAP_SHARED (read-only) vs MAP_PRIVATE (writable), so it's
 	// used the same way here to decide whether a dispatch needs ASID
 	// folded into its key at all. Cheap: a single VTLB table lookup, no
 	// TLB miss handling - matches the live-VTLB-check idiom already used
 	// in static_generate_tlb_mismatch() for the same table.
 	//
-	// REVERTED (2026-08-07): tried restricting FETCH_ALLOWED-awareness to
-	// the delay-slot page only, reasoning that pc's own page is always
-	// pre-verified fetchable. That reasoning only holds for
-	// code_compile_block()'s own `pc` (entered solely via
-	// EXECUTE_MISSING_CODE, i.e. a HASHJMP just proved pc fetchable by
-	// attempting it) - it does NOT hold for static_dispatch_key()/
-	// live_dispatch_key()/generate_select_dispatch_key(), all of which
-	// evaluate a *future, not-yet-attempted* target's page, with nothing
-	// guaranteeing it's currently mapped. Reintroduced the exact same
-	// failure class this whole investigation is about, just on the
-	// target's own page instead of the delay page - a genuinely-unmapped
-	// own page (indistinguishable from a legitimately-shared one under
-	// WRITE_ALLOWED alone) got misclassified as shareable, poisoning the
-	// shared key with a degenerate page-fault stub. Reproduced a real
-	// livelock immediately (2026-08-06/07) - reverted to
-	// FETCH_ALLOWED-aware for both pages, the proven-safe version.
-	// page_shareable() used for both pc and pc+4 in dispatch_page_writable()
-	// below.
+	// page_shareable() must be FETCH_ALLOWED-aware for both pc's own page
+	// and the delay-slot page. It is not safe to assume pc's own page is
+	// already known fetchable: that holds only for code_compile_block()'s
+	// own `pc` (entered solely via EXECUTE_MISSING_CODE, i.e. a HASHJMP
+	// just proved pc fetchable by attempting it), not for
+	// static_dispatch_key()/live_dispatch_key()/
+	// generate_select_dispatch_key(), which evaluate a future,
+	// not-yet-attempted target's page with nothing guaranteeing it is
+	// mapped. Under WRITE_ALLOWED alone a genuinely unmapped page is
+	// indistinguishable from a legitimately shared one, so it would be
+	// misclassified as shareable and poison the shared key with a
+	// degenerate page-fault stub, causing a livelock. Used for both pc and
+	// pc+4 in dispatch_page_writable() below.
 	bool page_shareable(offs_t p) const noexcept
 	{
 		vtlb_entry const entry = vtlb_table()[p >> 12];
 		return (entry & (FETCH_ALLOWED | WRITE_ALLOWED)) == FETCH_ALLOWED;
 	}
 	// dispatch_page_writable(pc) itself checks pc's own page AND pc+4
-	// (2026-08-06 "Fix 1"): a compiled block also depends on its delay
+	// (with MAME_SGI_DISPATCH_TWO_PAGE_CHECK): a compiled block also depends on its delay
 	// slot's page if pc is a branch/jump - always exactly pc+4 in the
 	// MIPS ISA, so this is a pure function of pc alone, safe to apply
 	// unconditionally even when pc isn't actually a branch (pc+4 is then
@@ -1053,36 +1036,31 @@ private:
 	// nothing and is always correct to require). This one function is
 	// the single choke point every registration/lookup site in this file
 	// funnels through (directly, or via static_dispatch_key()/
-	// live_dispatch_key() below). Two earlier, narrower attempts
-	// (2026-08-06) instead special-cased the fix at the registration
-	// site only, causing a registration/lookup key mismatch and an infinite
-	// EXECUTE_MISSING_CODE/recompile livelock. generate_select_
+	// live_dispatch_key() below). Applying the check at the registration
+	// site only would cause a registration/lookup key mismatch and an
+	// infinite EXECUTE_MISSING_CODE/recompile livelock. generate_select_
 	// dispatch_key() (mips3drc.cpp) is the one call site that can't
 	// route through this host-side function (it needs the equivalent
 	// check emitted as JIT'd runtime code for targets not known until
 	// the guest is actually running) - kept in lockstep with this
 	// definition by hand; if this function's logic changes, that one
 	// must change with it.
-	// A/B toggle (2026-08-06, reverted to off 2026-08-07) - undefined to
-	// run dispatch_page_writable() (and generate_select_dispatch_key()'s
-	// matching JIT'd codegen, mips3drc.cpp) on the original single-page,
-	// WRITE_ALLOWED-only check (pre-2026-08-06, the 2026-08-02
-	// baseline config: 13-15 flushes for a full boot). The two-page,
-	// FETCH_ALLOWED-aware check is the *more correct* one (closes a real
-	// delay-slot race, 2026-08-06), but 2026-08-07 00:14-00:52
-	// measurements showed that FETCH_ALLOWED-awareness itself - not page
-	// count - is what's expensive: a single-page variant that kept
-	// FETCH_ALLOWED (`ab_singlepage2`, still calling page_shareable())
-	// was just as slow (415s) as the two-page version (424s) at the
-	// `/.oldtmp` milestone, both ~4x over the ~93-105s baseline. Only
-	// dropping FETCH_ALLOWED entirely - not disabling ASID_FIX==2 itself,
-	// a separate, older fix for cross-process DRC cache thrashing, kept
-	// on either way - restores the fast pacing. The delay-slot race this
-	// trades back in has never been observed to cause anything worse than
-	// an extra, self-correcting recompile (a stale stub throws EXH, a
-	// fresh compile follows) - never a crash or wrong result - so until
-	// the epoch/generation-counter redesign (2026-08-07, "Fix 3")
-	// lands, paying the smaller known cost is the better trade.
+	// Toggle, undefined by default: dispatch_page_writable() (and
+	// generate_select_dispatch_key()'s matching JIT'd codegen,
+	// mips3drc.cpp) then use the single-page, WRITE_ALLOWED-only check
+	// (13-15 flushes for a full boot). The two-page, FETCH_ALLOWED-aware
+	// check is the more correct one (it closes a delay-slot race), but
+	// FETCH_ALLOWED-awareness itself - not page count - is expensive: a
+	// single-page FETCH_ALLOWED-aware variant was as slow as the two-page
+	// version, both ~4x slower to reach the same point in boot. Only
+	// dropping FETCH_ALLOWED entirely restores the fast pacing (ASID_FIX==2
+	// itself, the cross-process DRC cache thrashing fix, stays on either
+	// way). The delay-slot race this trades back in has never been
+	// observed to cause anything worse than an extra, self-correcting
+	// recompile (a stale stub throws EXH, a fresh compile follows) - never
+	// a crash or wrong result - so until an epoch/generation-counter
+	// redesign replaces this, paying the smaller known cost is the better
+	// trade.
 	// Re-define to switch back to the FETCH_ALLOWED-aware, two-page,
 	// slower-but-more-correct behavior.
 // #define MAME_SGI_DISPATCH_TWO_PAGE_CHECK

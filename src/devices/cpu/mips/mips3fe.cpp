@@ -13,14 +13,14 @@
 
 #include "mips3com.h"
 
-// TEMPORARY (2026-08-02): same toggle/rationale as mips3drc.cpp's own
+// Same toggle/rationale as mips3drc.cpp's own
 // MAME_SGI_HOST_DEBUG_NOOPT - disables optimization for this file's
 // *host* C++ compilation only (compile-time DRC frontend logic:
 // describe_code()/build_sequence()/describe(), all in drcfe.ipp which
 // gets included here), so host-gdb breakpoints/locals resolve reliably
 // instead of landing in the wrong inlined frame under -O3. No effect on
-// JIT-generated guest code. Undefined by default - only enable for a
-// deliberate host-gdb investigation session.
+// JIT-generated guest code. Undefined by default - only enable when
+// debugging the frontend under host gdb.
 // #define MAME_SGI_HOST_DEBUG_NOOPT
 #ifdef MAME_SGI_HOST_DEBUG_NOOPT
 #pragma GCC optimize("O0")

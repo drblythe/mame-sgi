@@ -24,29 +24,24 @@
 #define PRINTF_TLB              (0)
 #define USE_ABI_REG_NAMES       (1)
 
-// (2026-07-24): tested with this set to (1) to check whether the DRC's
-// $v0/$v1/$a0 fast-register caching (m_regmap[2/3/4], see mips3.cpp's
-// device_start) is implicated in a reproducible DRC-only mutex/kernel-fault
-// corruption bug - the crash reproduced with a byte-for-byte identical
-// signature either way, cleanly ruling this mechanism out. Reverted to (0).
-//
-// TEMPORARY (2026-09-04): set to (1) again for a different bug -
-// the intermittent guest cc1 "<built-in> predicate's answer is empty"
-// flake. A second Opus review (2026-09-04) traced the mechanism to $v0's fast-mapped host register
-// (r15/UML I4) going stale relative to m_core->r[2] across a
-// load_fast_iregs() reload triggered by an EXECUTE_MISSING_CODE
-// recompile - this flag removes the fast-mapping entirely as the most
-// direct possible confirmation. CONFIRMED (2026-09-04): 260/260 clean
-// runs of cc1_null_loop.sh with this set to (1), vs a ~10% natural
-// failure rate normally - full decisive confirmation. Left at (0) so the
-// fast-register path stays in use.
+// Setting this to (1) removes the DRC's $v0/$v1/$a0 fast-register
+// caching (m_regmap[2/3/4], see mips3.cpp's device_start). Useful as a
+// diagnostic toggle:
+// - A DRC-only mutex/kernel-fault corruption crash reproduced with an
+//   identical signature either way, so fast registers were not its cause.
+// - The intermittent guest cc1 "<built-in> predicate's answer is empty"
+//   failure was caused by $v0's fast-mapped host register (r15/UML I4)
+//   going stale relative to m_core->r[2] across a load_fast_iregs()
+//   reload triggered by an EXECUTE_MISSING_CODE recompile. With this set
+//   to (1), 260 of 260 runs of a repeated cc1 compile loop were clean,
+//   versus a ~10% failure rate normally.
+// Left at (0) so the fast-register path stays in use.
 #define DISABLE_FAST_REGISTERS          (0)
 #define SINGLE_INSTRUCTION_MODE         (0)
 
-// TEMPORARY diagnostic (2026-07-24): enabled to log EPC/Cause/BadVAddr/PC
-// for every non-interrupt/non-syscall exception, hunting the source of a
-// reproducible DRC-only KERNEL FAULT/SEGV panic with BadVAddr=0. Revert
-// to (0) once that investigation concludes.
+// Diagnostic: when (1), logs EPC/Cause/BadVAddr/PC for every
+// non-interrupt/non-syscall exception (useful for tracing a guest
+// KERNEL FAULT/SEGV panic back to its faulting access). Keep at (0).
 #define PRINTF_EXCEPTIONS               (0)
 #define PRINTF_MMU                      (0)
 
