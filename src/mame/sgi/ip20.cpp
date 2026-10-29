@@ -35,6 +35,9 @@
 #include "bus/nscsi/cd.h"
 #include "bus/nscsi/hd.h"
 
+#include "sound/dac.h"
+#include "speaker.h"
+
 #include "hpc1.h"
 #include "int2.h"
 #include "kbd.h"
@@ -73,6 +76,8 @@ public:
 		, m_eth(*this, "eth")
 		, m_scc(*this, "scc%u", 0U)
 		, m_dsp(*this, "dsp")
+		, m_dsp_ram(*this, "dsp_ram", 0x8000 * 4, ENDIANNESS_BIG)
+		, m_dac(*this, "dac%u", 0U)
 		, m_gfx(*this, "gfx")
 	{
 	}
@@ -91,7 +96,15 @@ protected:
 
 	template <u32 Base> u64 bus_error_r(offs_t offset, u64 mem_mask);
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
-	void dsp_miscsr_w(u32 data);
+	void dsp_miscsr_w(u8 data);
+	void dsp_irqa_update();
+	void dsp_p_map(address_map &map) ATTR_COLD;
+	void dsp_x_map(address_map &map) ATTR_COLD;
+	void dsp_y_map(address_map &map) ATTR_COLD;
+	u16 audio_portb_r();
+	void audio_portb_w(offs_t offset, u16 data, u16 mem_mask);
+	void audio_ssi_tx(offs_t offset, u32 data);
+	double audio_rate() const;
 	void vblank_w(int state);
 	void clearvri_w(int state);
 	TIMER_CALLBACK_MEMBER(idle_scan);
@@ -112,9 +125,21 @@ protected:
 	required_device<seeq8003_device> m_eth;
 	required_device_array<scc85c30_device, 3> m_scc;
 	required_device<dsp56001_device> m_dsp;
+	memory_share_creator<u32> m_dsp_ram;
+	required_device_array<dac_16bit_r2r_twos_complement_device, 2> m_dac;
 	required_device<sgi_lg1_device> m_gfx;
 
-	u32 m_dsp_miscsr = 0;
+	u8 m_dsp_miscsr = 0;
+	bool m_dsp_hpc_irq = false;
+
+	// audio board (HAL1): Actel register file on DSP port B, headphone
+	// gain MDACs, the channel of the next SSI word
+	u8 m_hal1_reg[16] = {};
+	u16 m_portb_in = 0;
+	u16 m_portb_out = 0;
+	u8 m_mdac[2] = {};
+	u8 m_ssi_channel = 0;
+	u16 m_ssi_left = 0;
 	bool m_vblank = false;
 	bool m_vr_enable = false;
 	bool m_vr_latch = false;
@@ -124,16 +149,32 @@ protected:
 void ip20_state::machine_start()
 {
 	save_item(NAME(m_dsp_miscsr));
+	save_item(NAME(m_dsp_hpc_irq));
+	save_item(NAME(m_hal1_reg));
+	save_item(NAME(m_portb_in));
+	save_item(NAME(m_portb_out));
+	save_item(NAME(m_mdac));
+	save_item(NAME(m_ssi_channel));
+	save_item(NAME(m_ssi_left));
 	save_item(NAME(m_vblank));
 	save_item(NAME(m_vr_enable));
 	save_item(NAME(m_vr_latch));
 
 	m_idle_scan = timer_alloc(FUNC(ip20_state::idle_scan), this);
+
+	// one DAC write per sample
+	for (auto &dac : m_dac)
+		dac->set_stream_sample_rate(48000);
 }
 
 void ip20_state::machine_reset()
 {
-	m_dsp_miscsr = 0;
+	std::fill(std::begin(m_hal1_reg), std::end(m_hal1_reg), 0);
+	m_portb_in = 0;
+	m_portb_out = 0x4000;
+	m_ssi_channel = 0;
+	for (auto &dac : m_dac)
+		dac->write(0);
 
 	if (auto *const mips3 = dynamic_cast<mips3_device *>(m_cpu.target()))
 	{
@@ -208,29 +249,145 @@ void ip20_state::clearvri_w(int state)
 	}
 }
 
-// HPC1 miscellaneous control and status: bit 0 holds the DSP56001 in reset.
-// The DSP56001 isn't emulated. The boot PROM decides whether the audio board
-// is present by loading a short program into the DSP's SRAM, writing
-// 0xffffffff to the mailbox word at the start of the SRAM and releasing
-// reset; within 50us the program sets the mailbox to 1 (then 2 once the boot
-// tune has played) and stores the audio board's revision key in the next
-// word, bit 7 clear when the board is present. Without that answer the PROM
-// lists no audio controller and IRIX treats the machine as a VME-based V50.
-// Answer that one probe as the program would; other DSP loads are left alone.
-void ip20_state::dsp_miscsr_w(u32 data)
+// HPC1 miscellaneous control and status: bit 0 holds the DSP56001 in reset,
+// bit 1 drives /IRQA to the level in bit 2.
+void ip20_state::dsp_miscsr_w(u8 data)
 {
-	bool const start = BIT(m_dsp_miscsr, 0) && !BIT(data, 0);
+	bool const release = BIT(m_dsp_miscsr, 0) && !BIT(data, 0);
 	m_dsp_miscsr = data;
 
-	if (start)
+	m_dsp->set_input_line(INPUT_LINE_RESET, BIT(data, 0) ? ASSERT_LINE : CLEAR_LINE);
+	dsp_irqa_update();
+
+	if (BIT(data, 0))
 	{
-		address_space &space = m_cpu->space(AS_PROGRAM);
-		if ((space.read_dword(0x1fbe'0000) & 0x00ff'ffff) == 0x00ff'ffff)
-		{
-			space.write_dword(0x1fbe'0000, 2);
-			space.write_dword(0x1fbe'0004, 0x0a);
-		}
+		// the DSP drives the audio board's control lines: reset stops it
+		m_hal1_reg[10] = 0;
+		m_dsp->set_ssi_rate(0);
 	}
+	else if (release)
+	{
+		// the boot PROM gives a program it just started 50us to answer
+		// through the SRAM: let the DSP catch up with the MIPS
+		m_cpu->abort_timeslice();
+		machine().scheduler().perfect_quantum(attotime::from_usec(200));
+	}
+}
+
+// /IRQA: the HPC1's DSP interrupt, or forced by MISCSR
+void ip20_state::dsp_irqa_update()
+{
+	bool const forced = BIT(m_dsp_miscsr, 1) && !BIT(m_dsp_miscsr, 2);
+	m_dsp->set_input_line(dsp56001_device::IRQA_LINE, (forced || m_dsp_hpc_irq) ? ASSERT_LINE : CLEAR_LINE);
+}
+
+// The DSP's external buses reach the 32K-word SRAM the MIPS sees at
+// 0x1fbe0000: Y addresses through A0-A14, P and X with A14 inverted, so
+// P/X:$C000-$FFFF and Y:$8000-$BFFF are the first 16K words and
+// Y:$C000-$FFFF the second. Y:$FFE0-$FFED are the HPC1's DSP interface
+// registers, Y:$FFFC/$FFFD the headphone gain MDACs.
+void ip20_state::dsp_p_map(address_map &map)
+{
+	map(0x0000, 0xffff).lrw32(
+		NAME([this](offs_t offset) { return m_dsp_ram[(offset & 0x7fff) ^ 0x4000]; }),
+		NAME([this](offs_t offset, u32 data) { m_dsp_ram[(offset & 0x7fff) ^ 0x4000] = data & 0x00ff'ffffU; }));
+}
+
+void ip20_state::dsp_x_map(address_map &map)
+{
+	dsp_p_map(map);
+}
+
+void ip20_state::dsp_y_map(address_map &map)
+{
+	map(0x0000, 0xffff).lrw32(
+		NAME([this](offs_t offset) { return m_dsp_ram[offset & 0x7fff]; }),
+		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset & 0x7fff] = data & 0x00ff'ffffU; }));
+	map(0xffe0, 0xffed).rw(m_hpc, FUNC(hpc1_device::dsp_r), FUNC(hpc1_device::dsp_w));
+	map(0xfffc, 0xfffd).lrw32(
+		NAME([this](offs_t offset) { return m_mdac[offset]; }),
+		NAME([this](offs_t offset, u32 data)
+		{
+			m_mdac[offset] = data;
+			m_dac[offset]->set_output_gain(ALL_OUTPUTS, (data & 0xff) / 256.0);
+		}));
+}
+
+// Port B is the bus to the audio board's Actel: bits 0-7 data, bits 8-11
+// register, bit 13 set for a write (clear: the Actel drives the register
+// onto the data bits), bit 14 the active-low write strobe. Reads, as SGI's
+// audio microcode uses them (no documentation of the Actel is known):
+// register 5 is the board's revision key (bit 7 clear when the board is
+// present), register 8 status (bits 2 and 3 busy after a command, bits 0-3
+// the interrupt cause), register 3 received data. Nothing is busy or
+// pending here, and no data arrives. Register 10 is the clock control:
+// bit 0 starts the clocks ("go"), and the SSI word clock runs from then,
+// left channel first, at the sample rate from the other bits (as IRIX's
+// rates set them): a 48 kHz base, or 44.1 kHz with bit 2, divided by bits
+// 4-6 plus one, by 1.5 more with bit 1. Bit 3 selects the AES clock, here
+// taken as 48 kHz with no AES input (the boot PROM's tune, which sets it
+// together with bit 2, is computed for 48 kHz).
+u16 ip20_state::audio_portb_r()
+{
+	return m_portb_in;
+}
+
+void ip20_state::audio_portb_w(offs_t offset, u16 data, u16 mem_mask)
+{
+	unsigned const reg = (data >> 8) & 15;
+
+	if (BIT(data, 13))
+	{
+		if (BIT(m_portb_out, 14) && !BIT(data, 14))
+		{
+			bool const was_running = BIT(m_hal1_reg[10], 0);
+			m_hal1_reg[reg] = data & 0xff;
+
+			if (reg == 10 && BIT(data, 0))
+			{
+				// two words (left, right) per sample, one DAC write per
+				// sample
+				double const rate = audio_rate();
+				for (auto &dac : m_dac)
+					dac->set_stream_sample_rate(u32(rate + 0.5));
+				if (!was_running)
+					m_ssi_channel = 0;
+				m_dsp->set_ssi_rate(u32(rate * 2 + 0.5));
+			}
+			else if (reg == 10)
+				m_dsp->set_ssi_rate(0);
+		}
+		m_portb_in = 0;
+	}
+	else
+		m_portb_in = (reg == 5) ? 0x0a : 0x00;
+
+	m_portb_out = data;
+}
+
+// One word per slot from the SSI, left and right in turn, 24 bits with the
+// sample in the most significant bits. Both DACs change together when the
+// right word arrives, as a codec latches a whole frame.
+void ip20_state::audio_ssi_tx(offs_t offset, u32 data)
+{
+	if (!m_ssi_channel)
+		m_ssi_left = u16(data >> 8);
+	else
+	{
+		m_dac[0]->write(m_ssi_left);
+		m_dac[1]->write(u16(data >> 8));
+	}
+	m_ssi_channel ^= 1;
+}
+
+double ip20_state::audio_rate() const
+{
+	u8 const clock = m_hal1_reg[10];
+	double rate = (BIT(clock, 2) && !BIT(clock, 3)) ? 44100.0 : 48000.0;
+	rate /= ((clock >> 4) & 7) + 1;
+	if (BIT(clock, 1))
+		rate = rate * 2.0 / 3.0;
+	return rate;
 }
 
 // Nothing answers in these ranges: the MC times out, records the address
@@ -285,9 +442,6 @@ void ip20_state::cpu_map(address_map &map)
 	map(0x1fa0'0000, 0x1fa1'ffff).rw(m_mc, FUNC(sgi_mc_device::read), FUNC(sgi_mc_device::write));
 
 	map(0x1fb8'0000, 0x1fb8'ffff).m(m_hpc, FUNC(hpc1_device::map));
-	map(0x1fb8'01b0, 0x1fb8'01b3).lrw32(
-		NAME([this]() { return m_dsp_miscsr; }),
-		NAME([this](u32 data) { dsp_miscsr_w(data); }));
 	map(0x1fb8'0100, 0x1fb8'011f).m(m_eth, FUNC(seeq8003_device::map)).umask32(0xff);
 	map(0x1fb8'0120, 0x1fb8'0127).rw(m_scsi, FUNC(scsi_ctrl_device::indir_r), FUNC(scsi_ctrl_device::indir_w)).umask32(0xff00);
 	map(0x1fb8'01c0, 0x1fb8'01ff).m(m_int, FUNC(sgi_int2_device::map)).umask32(0xff);
@@ -298,7 +452,10 @@ void ip20_state::cpu_map(address_map &map)
 	map(0x1fb8'0e00, 0x1fb8'0e7f).rw(m_rtc, FUNC(dp8572a_device::read), FUNC(dp8572a_device::write)).umask32(0xff);
 	map(0x1fbd'0000, 0x1fbd'0003).lr32([]() { return 0x0000'8000; }, "board_rev"); // board revision register
 
-	map(0x1fbe'0000, 0x1fbf'ffff).ram().share("dsp_ram"); // 3xTC55328J-35 (24 bits x 32k)
+	// DSP SRAM, 3xTC55328J-35 (24 bits x 32k), one word per 32 bits
+	map(0x1fbe'0000, 0x1fbf'ffff).lrw32(
+		NAME([this](offs_t offset) { return m_dsp_ram[offset]; }),
+		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset] = data & 0x00ff'ffffU; }));
 
 	map(0x1fc0'0000, 0x1fc7'ffff).rom().region("prom", 0);
 }
@@ -364,6 +521,11 @@ void ip20_state::ip20(machine_config &config)
 	SGI_HPC1(config, m_hpc);
 	m_hpc->set_gio(m_cpu, AS_PROGRAM);
 	m_hpc->set_enet(m_eth);
+	m_hpc->dsp_miscsr_w().set(FUNC(ip20_state::dsp_miscsr_w));
+	m_hpc->dsp_irq_w().set([this](int state) { m_dsp_hpc_irq = state; dsp_irqa_update(); });
+	m_hpc->cpu_dsp_irq_w().set(m_int, FUNC(sgi_int2_device::lio1_w<sgi_int2_device::LIO1_DSP>));
+	m_hpc->dsp_ram_r().set([this](offs_t offset) { return m_dsp_ram[offset & 0x7fff]; });
+	m_hpc->dsp_ram_w().set([this](offs_t offset, u32 data) { m_dsp_ram[offset & 0x7fff] = data & 0x00ff'ffffU; });
 	m_hpc->int_w().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_ETHERNET>));
 	m_hpc->dma_r_cb<0>().set(m_scsi, FUNC(scsi_ctrl_device::dma_r));
 	m_hpc->dma_w_cb<0>().set(m_scsi, FUNC(scsi_ctrl_device::dma_w));
@@ -482,6 +644,17 @@ void ip20_state::ip20(machine_config &config)
 	m_scc[2]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<2>));
 
 	DSP56001(config, m_dsp, 20_MHz_XTAL);
+	m_dsp->set_mode(2); // reset at P:$E000
+	m_dsp->set_addrmap(AS_PROGRAM, &ip20_state::dsp_p_map);
+	m_dsp->set_addrmap(AS_DATA, &ip20_state::dsp_x_map);
+	m_dsp->set_addrmap(AS_IO, &ip20_state::dsp_y_map);
+	m_dsp->portb_r().set(FUNC(ip20_state::audio_portb_r));
+	m_dsp->portb_w().set(FUNC(ip20_state::audio_portb_w));
+	m_dsp->ssi_tx().set(FUNC(ip20_state::audio_ssi_tx));
+
+	SPEAKER(config, "speaker", 2).front();
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[0], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[1], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
 
 	SGI_LG1(config, m_gfx);
 	m_gfx->write_vblank().set(FUNC(ip20_state::vblank_w));
@@ -504,10 +677,10 @@ ROM_END
 #define rom_indigo_r4400m rom_indigo_r4000
 } // anonymous namespace
 
-// The Indigo has no sound (the DSP56001 is not connected) and imperfect LG1
-// graphics, but MACHINE_NO_SOUND and MACHINE_IMPERFECT_GRAPHICS are left off
-// for now: their startup warning needs a keypress on every boot, which stops
-// unattended test runs.
+// The Indigo's LG1 graphics and its sound (no audio input or AES) are
+// imperfect, but MACHINE_IMPERFECT_GRAPHICS and MACHINE_IMPERFECT_SOUND are
+// left off for now: their startup warning needs a keypress on every boot,
+// which stops unattended test runs.
 //   YEAR  NAME          PARENT  COMPAT  MACHINE       INPUT  CLASS       INIT        COMPANY             FULLNAME             FLAGS
 COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", 0)
 COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", 0)
