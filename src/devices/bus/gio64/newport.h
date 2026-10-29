@@ -72,17 +72,15 @@
  *************************************/
 
 // Small fixed-size (MAX_RECTS) list of disjoint-ish rectangles tracking
-// the Newport compositor's dirty region. Was a single running bounding
-// box until a 2026-09-25 measurement showed why that was costing real
-// precision: an independently-moving cursor plus separately-updating
+// the Newport compositor's dirty region. A single running bounding box
+// loses precision: an independently-moving cursor plus separately-updating
 // windows produce widely-separated dirty regions that a single bbox
-// coalesces into something close to the whole screen - confirmed live,
-// not just theorized (a perf record trace found it). Kept behind the
-// same narrow add_rect()/valid()/clear() interface every caller already used, so rb2_device,
-// vc2_device, and newport_base_device's own compositor all benefit
-// without their own call sites changing shape - only the few sites that
-// need to iterate per-rect (the rb2_dirty->frame_dirty top_scanline
-// conversion, and screen_update()'s own row-range loop) were touched.
+// coalesces into something close to the whole screen (seen in a perf
+// record trace). The narrow add_rect()/valid()/clear() interface is the
+// same as for a single box, so rb2_device, vc2_device and
+// newport_base_device's compositor use it unchanged; only the sites that
+// iterate per-rect (the rb2_dirty->frame_dirty top_scanline conversion,
+// and screen_update()'s row-range loop) deal with the list.
 //
 // add_rect() always GROWS an existing slot or a fresh one - it never
 // shrinks or drops coverage. When a new rect doesn't overlap/touch any
@@ -195,12 +193,10 @@ private:
  *
  *************************************/
 
-// Named-counter registry for triggered measurement (2026-09-25).
-// Motivation: this project repeatedly drew wrong
-// conclusions from perf/diagnostic windows that turned out to still be
-// dominated by boot/login/window-creation transients, because a fixed
-// sleep/settle delay was treated as a validated proxy for "the system
-// has reached steady state" - it wasn't. This lets a script (or a human,
+// Named-counter registry for triggered measurement. A fixed sleep or
+// settle delay is not a reliable sign that the guest has reached steady
+// state: perf/diagnostic windows chosen that way can still be dominated
+// by boot/login/window-creation transients. This lets a script (or a human,
 // via gdb in interactive use) explicitly bracket an interval instead of
 // guessing a delay: reset the counters right when the interval should
 // start, run the guest workload, dump them right when it should end.
@@ -213,8 +209,7 @@ private:
 // an interactive debugger window, because MAME's own gdbstub backend
 // (src/osd/modules/debugger/debuggdbstub.cpp) bridges GDB's "monitor
 // <text>" command straight to debugger_console::execute_command(). A
-// script can launch with "-debug -debugger gdbstub" (already supported
-// by this project's own boot_test.sh) and drive it with e.g.
+// script can launch with "-debug -debugger gdbstub" and drive it with e.g.
 // `gdb -batch -ex "target remote :PORT" -ex "monitor sgistat reset"`.
 //
 // Deliberately separate from MAME's own save_item()/device_state_

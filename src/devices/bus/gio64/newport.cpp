@@ -52,36 +52,31 @@
 #endif
 
 
-// Originated as a TEMPORARY diagnostic (2026-09-17) - counting
-// per-frame contributions to frame_dirty (screen_update()'s own dirty
-// gathering) separately by source (rb2's real pixel writes vs vc2's
-// cursor-position/enable writes), to find why a visually-static screen
-// still marked dirty on every vblank. Promoted to a permanent, always-on
-// facility (2026-09-25) after this project's own repeated
-// experience this session that a fixed sleep/settle-time heuristic before
-// sampling is not a validated proxy for "the system has reached steady
-// state" - several perf measurements this session drew conclusions from
-// windows that turned out to still be dominated by boot/login/window-
-// creation transients. These counters (now unconditionally maintained,
-// negligible cost - a handful of integer increments) are readable/
-// resettable on demand via the "sgistat" debugger console command (see
-// mame_sgi_stat_registry below and device_start()'s own registration) -
-// reachable non-interactively through gdbstub's existing "monitor"
-// passthrough (debuggdbstub.cpp bridges GDB "monitor <text>" straight to
-// debugger_console::execute_command()), so a script can explicitly
-// bracket "reset, run guest workload, dump" instead of guessing a delay.
-// File-scope counters, not class members - avoids the exact ODR mistake
-// this session already made once with mc.h (a conditionally-compiled
-// member reached from multiple translation units); newport.h is single-
-// consumer here but there's no reason to risk it. `MAME_SGI_DIRTY_SOURCE_
-// DIAG` still exists purely for the OPTIONAL once-per-second osd_printf_
-// info dump further below - off by default, unrelated to whether the
-// counters themselves are maintained (they always are now).
+// Dirty-source and compositor work counters. They count contributions to
+// frame_dirty (screen_update()'s dirty gathering) separately by source
+// (rb2 pixel writes vs vc2 cursor-position/enable writes), which shows why
+// a visually static screen can still be marked dirty on every vblank, plus
+// how much work screen_update() actually does. A fixed sleep before
+// sampling is not a reliable sign that the guest has reached steady state
+// (boot, login and window-creation transients can dominate the window), so
+// the counters are always maintained (a handful of integer increments)
+// and can be read and reset on demand with the "sgistat" debugger console
+// command (see mame_sgi_stat_registry below and the registration in
+// device_start()). The command is reachable non-interactively through
+// gdbstub's "monitor" passthrough (debuggdbstub.cpp forwards GDB
+// "monitor <text>" to debugger_console::execute_command()), so a script
+// can bracket "reset, run guest workload, dump" instead of guessing a
+// delay.
+// The counters are file-scope variables rather than class members, which
+// avoids ODR problems from a conditionally compiled member reached from
+// several translation units. MAME_SGI_DIRTY_SOURCE_DIAG only enables the
+// optional once-per-second osd_printf_info dump further below; it is off
+// by default and does not affect whether the counters are maintained.
 #include <chrono>
 // #define MAME_SGI_PENDING_RECTS_DIAG
 namespace {
 
-	// Cumulative-since-last-"sgistat reset" counters (2026-09-25) -
+	// Counters cumulative since the last "sgistat reset". They are
 	// separate variables from the pair above on purpose,
 	// specifically so the optional per-frame print diagnostic's own
 	// reset-every-print behavior can never zero these out from under a
@@ -104,80 +99,59 @@ namespace {
 	uint64_t g_mame_sgi_stat_screen_update_skips = 0;
 	uint64_t g_mame_sgi_stat_mark_full_dirty_calls = 0;
 	uint64_t g_mame_sgi_stat_mark_xmap_slot_calls = 0;
-	// Added 2026-09-27 to check a specific hypothesis: does IRIX's real GL
-	// swap path wait on REX3's vertical-retrace interrupt (STATUS_VRINT),
-	// such that screen_update() recomputes already land in sync with real
-	// guest buffer swaps "for free", without MAME needing to do anything
-	// deliberate to synchronize them? vblank_events counts every emulated
-	// vblank (vc2_device::vblank_w(1), unconditional); vrint_asserts
-	// counts only the subset that actually reached the guest as a real
-	// interrupt (newport_base_device::vrint_w(1), gated on VC2's own
-	// per-guest VRINT-enable bit) - comparing the two tells us whether
-	// the guest has the interrupt enabled at all, and comparing
-	// vrint_asserts against screen_update_recomputes tells us whether
-	// they're actually correlated 1:1 (consistent with the guest waiting
-	// on it before swapping) or not.
+	// Vertical-retrace counters, for checking whether IRIX's GL swap path
+	// waits on REX3's vertical-retrace interrupt (STATUS_VRINT), so that
+	// screen_update() recomputes land in sync with guest buffer swaps
+	// without MAME doing anything to synchronize them. vblank_events
+	// counts every emulated vblank (vc2_device::vblank_w(1),
+	// unconditional); vrint_asserts counts only the subset that reached
+	// the guest as an interrupt (newport_base_device::vrint_w(1), gated on
+	// VC2's VRINT-enable bit). Comparing the two shows whether the guest
+	// has the interrupt enabled at all; comparing vrint_asserts against
+	// screen_update_recomputes shows whether they correlate 1:1
+	// (consistent with the guest waiting on it before swapping).
 	uint64_t g_mame_sgi_stat_vblank_events = 0;
 	uint64_t g_mame_sgi_stat_vrint_asserts = 0;
 }
 
 
-// TEMPORARY diagnostic (2026-09-22) - NOT a real fix.
-// mark_full_dirty() always marks the whole 1344x1088 raw-buffer
-// region dirty, so screen_update()'s row-range clip (row_start_y/
-// row_end_y, below) does nothing while any double-buffered app is
-// actively swapping - every frame reprocesses all ~1088 rows through
-// the per-pixel DID/XMAP interpretation loop, not just the rows a
-// small app window actually occupies. Before building the real
-// precise DID/VT-mapped dirty rect (a nontrivial reverse-lookup
-// through two levels of indirection),
-// this substitutes a hardcoded, deliberately-wrong small rect
-// (roughly a single 300x300 GLUT window's footprint, generously
-// rounded) wherever mark_full_dirty() would normally use the full
-// screen bounds, purely to measure the *ceiling* on possible savings
-// via a perf stat A/B against an otherwise-identical run. Wrong for
-// any real content outside that rect (would show stale pixels) -
-// exists only to get a real before/after number before committing to
-// the real fix, per this file's own established measure-before-
-// touching discipline.
-// MEASUREMENT DONE (2026-09-22): n=5 perf stat A/B
-// under sustained test/wave.cpp -db swapping showed -24.4% instructions,
-// -17.4% cycles (both p<0.0001) versus the unmodified full-screen path -
-// a real, statistically significant ceiling, not noise. The real precise
-// DID/VT-mapped dirty rect is now approved to build; leave this #define
-// OFF (diagnostic-only, wrong for real content outside its hardcoded
-// box) - kept here only as the harness this measurement used, not a
-// fallback implementation.
+// Measurement harness, disabled by default - not a real code path.
+// A full-screen dirty mark covers the whole 1344x1088 raw-buffer region,
+// so screen_update()'s row-range clip (row_start_y/row_end_y, below) does
+// nothing while a double-buffered app is swapping: every frame
+// reprocesses all ~1088 rows through the per-pixel DID/XMAP
+// interpretation loop, not just the rows a small app window occupies.
+// When defined, this substitutes a hardcoded, deliberately wrong small
+// rect (roughly one 300x300 GLUT window's footprint, generously rounded)
+// wherever mark_full_dirty() would use the full screen bounds, to measure
+// the ceiling on possible savings from a precise dirty rect against an
+// otherwise identical build. It shows stale pixels for any content
+// outside that rect. Measured under sustained test/wave.cpp -db swapping
+// (n=5 perf stat A/B): -24.4% instructions and -17.4% cycles (both
+// p<0.0001) versus the full-screen path. Leave OFF.
 // #define MAME_SGI_DIRTY_RECT_SMALLRECT_EXPERIMENT
 
-// TEMPORARY diagnostic (2026-09-22) - NOT a real fix, and NOT
-// the small-rect experiment above. That experiment measured the ceiling
-// on possible savings with a deliberately-wrong hardcoded rect; this one
-// measures the REAL XMAP-slot-precise fix (mark_dirty_for_xmap_slot(),
-// see newport.h) against the pre-fix baseline behavior it replaced
-// (mark_full_dirty() unconditionally on every XMAP mode-register write),
-// with everything else in the tree held constant - isolates this one
-// change's actual measured effect from the earlier ceiling estimate.
-// When defined, the three XMAP write call sites in rex3_w() fall back to
-// mark_full_dirty() instead of the real per-slot version, reproducing the
-// baseline this fix replaced. Built as binary A ("xmap_baseline") for a
-// dirtyrect_ab.sh run against an otherwise-identical binary B built with
-// this left undefined ("xmap_precise" - the real, currently-shipping
-// fix). Leave OFF in any committed build - this exists only as an A/B
-// measurement harness, not a real code path choice.
+// Measurement harness, disabled by default - not a real code path, and
+// separate from the small-rect experiment above. That experiment measures
+// the ceiling on possible savings with a deliberately wrong hardcoded
+// rect; this one measures the XMAP-slot-precise dirty marking
+// (mark_dirty_for_xmap_slot(), see newport.h) against the baseline it
+// replaced (mark_full_dirty() on every XMAP mode-register write), with
+// everything else held constant. When defined, the three XMAP write call
+// sites in rex3_w() fall back to mark_full_dirty() instead of the per-slot
+// version. Build once with it defined (baseline) and once without
+// (precise) and compare the two binaries. Leave OFF in normal builds.
 // #define MAME_SGI_XMAP_DIRTY_BASELINE_MEASUREMENT
 
 
-// TEMPORARY diagnostic (2026-09-25) - NOT a real fix. Prints a
-// running histogram, once/second, of how many distinct dirty rects
-// m_pending_dirty actually holds per real recompute (0 = full-recompute
-// fallback, i.e. m_pending_dirty wasn't valid this call). Answers a
-// concrete question before committing to the N=4 choice: for a realistic
-// desktop workload (test/wave.cpp -db plus whatever else is on screen -
-// a blinking cursor, at minimum), how many separate regions actually
-// show up in practice? If real workloads rarely exceed 2, MAX_RECTS=4
-// has real headroom; if they regularly hit 4 (and therefore the fold-
-// into-cheapest-slot fallback), that's a sign MAX_RECTS should grow.
+// Diagnostic, disabled by default. Prints a running histogram, once per
+// second, of how many distinct dirty rects m_pending_dirty holds per real
+// recompute (0 = full-recompute fallback, i.e. m_pending_dirty wasn't
+// valid this call). Shows how many separate regions a realistic desktop
+// workload (test/wave.cpp -db plus whatever else is on screen - a
+// blinking cursor, at minimum) produces. If workloads rarely exceed 2,
+// MAX_RECTS=4 has headroom; if they regularly hit 4 (and therefore the
+// fold-into-cheapest-slot fallback), MAX_RECTS should grow.
 // #define MAME_SGI_RECT_COUNT_STATS_DIAG
 
 
@@ -191,11 +165,9 @@ namespace {
 #define LOG_REJECTS     (1U << 8)
 #define LOG_ALL         (LOG_UNKNOWN | LOG_VC2 | LOG_CMAP | LOG_XMAP | LOG_REX3 | LOG_RAMDAC | LOG_COMMANDS | LOG_REJECTS)
 
-// VERBOSE/LOG_VC2/LOG_XMAP diagnostic (2026-09-22) used and
-// reverted: confirmed live during test/wave.cpp -db's steady swap that
+// With LOG_VC2/LOG_XMAP enabled during test/wave.cpp -db's steady swap,
 // XMAP mode-table writes fire frequently (~100/s, all to one shared
-// slot) while VC2 RAM-word writes never fire at all. Left OFF (0) as the
-// default.
+// slot) while VC2 RAM-word writes do not fire at all. Off (0) by default.
 #define VERBOSE         (0)
 #include "logmacro.h"
 
@@ -215,8 +187,8 @@ inline bool normal_planes_zero(uint32_t table_entry, uint32_t pix)
 }
 } // anonymous namespace
 
-// TEMPORARY diagnostic (2026-08-17) - passive watch for a candidate
-// mechanism behind a reported desktop black-to-white text/icon-color
+// Diagnostic, disabled by default - passive watch for a candidate
+// mechanism behind an intermittent desktop black-to-white text/icon-color
 // regression (the "color race").
 // get_default_color() substitutes m_color_vram (the REX3 "VRAM
 // Fastclear Color" register - see its own log message a few hundred
@@ -231,24 +203,18 @@ inline bool normal_planes_zero(uint32_t table_entry, uint32_t pix)
 // CONSEQUENTIAL (color_vram != src - if they already match, no
 // visible difference exists regardless of which is "correct"), to
 // stay low-volume and high-signal rather than firing on every
-// legitimate fastclear. Meant to run passively in the background
-// during unrelated $f20 debugging - if the color artifact recurs,
-// this file will have caught the exact register state and screen
-// coordinates at the moment it happened, without needing a dedicated
-// repro session. Self-defined here, not via sgi.lua's defines{}
-// block, since this file compiles as part of the shared "optional"
-// project (see scripts/src/bus.lua), which sgi.lua's SGI-only
-// defines{} block never reaches - see the project's own build-verify
-// convention for this exact gotcha.
-// DISABLED (2026-08-17) - the investigation concluded with no recurrence of
-// the color regression ever logged here across the whole investigation.
-// The one confirmed trigger (MAME_SGI_LWC1_DELAYSLOT_PROBE's fopen/
-// fclose I/O timing perturbation) is being disabled in this same
-// cleanup, so this diagnostic would have nothing left to passively
-// watch for going forward. The underlying color-race mechanism itself
-// remains unconfirmed/unresolved -
-// this is diagnostic cleanup, not a claim the regression is fixed.
-// Commented out, not deleted - reusable if the symptom recurs.
+// legitimate fastclear. Meant to run passively in the background: if
+// the color artifact recurs, the log holds the exact register state and
+// screen coordinates at the moment it happened. Defined here rather
+// than via sgi.lua's defines{} block, since this file compiles as part
+// of the shared "optional" project (see scripts/src/bus.lua), which
+// sgi.lua's SGI-only defines{} block never reaches.
+// No recurrence of the color regression was ever logged by this
+// diagnostic. The only confirmed trigger was the I/O timing perturbation
+// from MAME_SGI_LWC1_DELAYSLOT_PROBE's fopen/fclose, which is also
+// disabled. The color-race mechanism itself remains unconfirmed; the
+// regression is not known to be fixed. Left commented out for reuse if
+// the symptom recurs.
 // #define MAME_SGI_COLOR_SRC_DIAG
 #ifdef MAME_SGI_COLOR_SRC_DIAG
 static void color_src_diag_log(const char *fmt, ...)
@@ -324,7 +290,7 @@ static FILE *rex3_hostdata_diag_file(running_machine &machine)
 }
 #endif
 
-// TEMPORARY DIAGNOSTIC (2026-07-30/31), disabled by default. Times
+// Diagnostic, disabled by default. Times
 // newport_base_device::screen_update()'s own CPU cost (the per-pixel
 // software compositing loop below) in isolation, to compare directly
 // against the separate OSD blit-to-window cost measured alongside it in
@@ -342,10 +308,10 @@ namespace {
 }
 #endif
 
-// Real per-region dirty-rectangle tracking replaced the original
-// 2026-07-31 crude whole-board dirty-flag experiment (skip the full
-// per-pixel recompute only when NOTHING was written since the last one,
-// with no sense of *where*) - see newport_dirty_rect (newport.h),
+// Per-region dirty-rectangle tracking replaced an earlier whole-board
+// dirty flag (skip the full per-pixel recompute only when NOTHING was
+// written since the last one, with no sense of *where*) - see
+// newport_dirty_rect (newport.h),
 // rb2_device::store_pixel()/vc2_device::mark_cursor_dirty() for how
 // regions get marked, and newport_base_device::screen_update() for how
 // they're consumed. The double-buffer flicker the crude experiment hit
@@ -1956,7 +1922,7 @@ void newport_base_device::device_start()
 	machine().save().register_postload(save_prepost_delegate(FUNC(newport_base_device::lut_fold_invalidate), this));
 #endif
 
-	// Triggered stat-counter registry (2026-09-25) - see
+	// Triggered stat-counter registry - see
 	// mame_sgi_stat_registry's own comment in newport.h for the full
 	// rationale. Counter registration always happens (cheap, and lets
 	// "sgistat dump" work even without -debug, if ever called some other
@@ -2269,14 +2235,13 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// the cursor's position is inherently a display concept, never a
 		// framebuffer write. Converting rb2_dirty here, before the two
 		// are merged into one rectangle, keeps that distinction intact;
-		// converting the merged result afterward (tried and reverted
-		// live, 2026-09-19) applies the same offset to both regardless
-		// of which one actually needs it, corrupting the cursor's own
-		// erase/redraw box whenever it - not a pixel write - ends up
-		// deciding the merged rectangle's bounds, producing exactly the
-		// "stale pointer image / delayed position update" seen live.
+		// converting the merged result afterward applies the same offset
+		// to both regardless of which one actually needs it, corrupting
+		// the cursor's own erase/redraw box whenever it - not a pixel
+		// write - ends up deciding the merged rectangle's bounds, which
+		// shows up as a stale pointer image / delayed position update.
 		// Converted per-rect, not via rb2_dirty's own aggregate x0()/y0()/
-		// x1()/y1() - the N-rect upgrade (2026-09-25) means
+		// x1()/y1(), because
 		// rb2_dirty can hold multiple disjoint regions (e.g. wave's own
 		// window plus an unrelated desktop element drawing elsewhere at
 		// the same time); converting the AGGREGATE bbox instead of each
@@ -2350,7 +2315,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// framebuffer RAM corresponds to the first visible display row - a
 	// pan/scroll register, not a drawing-coordinate offset (that's
 	// m_x_window/m_y_window, applied on the write side in output_pixel()).
-	// Confirmed live (2026-09-19, low-resolution NVRAM-default boot):
+	// Observed with a low-resolution NVRAM-default boot:
 	// IRIX's kernel programs this to a real, non-zero value (255, after a
 	// transition sequence 1023->682->341->0->1023->255 during the PROM-
 	// to-kernel handoff) while drawing through a matching non-zero
@@ -2371,7 +2336,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// which underlying framebuffer row backs any given line.
 	constexpr int RB2_MAX_ROW = 1088 - 1;
 	// top_scanline itself (including the 0x3ff "no panning configured"
-	// sentinel check - stuck-observed live, 2026-09-19, on a normal,
+	// sentinel check - observed stuck at that value on a normal,
 	// correctly-configured indy_4610 boot, where m_x_window/m_y_window
 	// stayed at their neutral no-offset baseline the entire time despite
 	// it, which a real "pan 1023 rows" instruction wouldn't be
@@ -2397,7 +2362,7 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 	// relative from the start. No further conversion needed - used
 	// directly as bitmap-row bounds.
 	// Row ranges to walk this recompute - one per disjoint dirty rect
-	// (the N-rect upgrade, 2026-09-25: m_pending_dirty can now
+	// (m_pending_dirty can
 	// hold up to newport_dirty_rect::MAX_RECTS separate regions instead
 	// of always coalescing into one bounding box), each intersected with
 	// cliprect. Gaps between ranges (e.g. an unrelated desktop element
