@@ -98,6 +98,7 @@ protected:
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
 	void dsp_miscsr_w(u8 data);
 	void dsp_irqa_update();
+	u32 dsp_counter_r();
 	void dsp_p_map(address_map &map) ATTR_COLD;
 	void dsp_x_map(address_map &map) ATTR_COLD;
 	void dsp_y_map(address_map &map) ATTR_COLD;
@@ -304,6 +305,7 @@ void ip20_state::dsp_y_map(address_map &map)
 		NAME([this](offs_t offset) { return m_dsp_ram[offset & 0x7fff]; }),
 		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset & 0x7fff] = data & 0x00ff'ffffU; }));
 	map(0xffe0, 0xffed).rw(m_hpc, FUNC(hpc1_device::dsp_r), FUNC(hpc1_device::dsp_w));
+	map(0xffe5, 0xffe5).r(FUNC(ip20_state::dsp_counter_r));
 	map(0xfffc, 0xfffd).lrw32(
 		NAME([this](offs_t offset) { return m_mdac[offset]; }),
 		NAME([this](offs_t offset, u32 data)
@@ -311,6 +313,39 @@ void ip20_state::dsp_y_map(address_map &map)
 			m_mdac[offset] = data;
 			m_dac[offset]->set_output_gain(ALL_OUTPUTS, (data & 0xff) / 256.0);
 		}));
+}
+
+// SGI's audio microcode (hdsp.lod) idles in a loop that reads the HPC1
+// counter until it reaches a deadline it keeps at Y:$C137:
+//   e164: clr b / move y:>$ffe5,b1 / sub a,b / move b1,b / tst b / jlt e164
+// Polling it costs nearly all of the DSP's instructions while no audio is
+// moving. When the counter is read from that loop, skip the rest of the
+// wait within the current timeslice, so interrupts are still taken on time.
+u32 ip20_state::dsp_counter_r()
+{
+	u32 const count = m_hpc->dsp_r(hpc1_device::DSPIF_COUNTER_OFFSET);
+
+	if (!machine().side_effects_disabled() && m_dsp->pcbase() == 0xe165)
+	{
+		static constexpr u32 loop[] = { 0x20001b, 0x5df000, 0x00ffe5, 0x20001c, 0x21af00, 0x20000b, 0x0af0a9, 0x00e164 };
+		bool match = true;
+		for (unsigned i = 0; match && i < std::size(loop); i++)
+			match = m_dsp_ram[((0xe164 + i) & 0x7fff) ^ 0x4000] == loop[i];
+
+		s32 const ticks = util::sext(m_dsp_ram[0xc137 & 0x7fff] - count, 24);
+		if (match && ticks > 0)
+		{
+			// GIO clock ticks to DSP instruction cycles
+			u64 const cycles = u64(ticks) * (m_dsp->clock() / 2) / 33'333'333;
+			// up to the timeslice's end or the DSP's next serial word, so
+			// its interrupts are taken on time
+			int const remaining = m_dsp->cycles_remaining();
+			if (remaining > 0)
+				m_dsp->eat_cycles(int(std::min<u64>({ cycles, u64(remaining), m_dsp->cycles_to_event() })));
+		}
+	}
+
+	return count;
 }
 
 // Port B is the bus to the audio board's Actel: bits 0-7 data, bits 8-11
