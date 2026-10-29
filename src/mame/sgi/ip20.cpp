@@ -100,6 +100,7 @@ protected:
 	template <u32 Base> u64 bus_error_r(offs_t offset, u64 mem_mask);
 	template <u32 Base> void bus_error_w(offs_t offset, u64 data, u64 mem_mask);
 	void dsp_miscsr_w(u8 data);
+	void dsp_probe_check();
 	void dsp_irqa_update();
 	u32 dsp_counter_r();
 	void dsp_p_map(address_map &map) ATTR_COLD;
@@ -138,6 +139,7 @@ protected:
 
 	u8 m_dsp_miscsr = 0;
 	bool m_dsp_hpc_irq = false;
+	bool m_dsp_probe = false;
 
 	// audio board (HAL1): Actel register file on DSP port B, headphone
 	// gain MDACs, the channel of the next SSI word
@@ -157,6 +159,7 @@ void ip20_state::machine_start()
 {
 	save_item(NAME(m_dsp_miscsr));
 	save_item(NAME(m_dsp_hpc_irq));
+	save_item(NAME(m_dsp_probe));
 	save_item(NAME(m_hal1_reg));
 	save_item(NAME(m_portb_in));
 	save_item(NAME(m_portb_out));
@@ -278,10 +281,30 @@ void ip20_state::dsp_miscsr_w(u8 data)
 	}
 	else if (release)
 	{
+		// the boot PROM's audio probe arms the mailbox with -1 first
+		m_dsp_probe = (m_cpu->pc() >> 20) == 0xbfc && m_dsp_ram[0] == 0x00ff'ffffU;
+
 		// the boot PROM gives a program it just started 50us to answer
 		// through the SRAM: let the DSP catch up with the MIPS
 		m_cpu->abort_timeslice();
 		machine().scheduler().perfect_quantum(attotime::from_usec(200));
+	}
+}
+
+// The boot PROM reads the mailbox once, 50us after starting its program,
+// and lists the audio board only if the DSP reached state 1 or 2 and the
+// Actel revision has bit 7 clear. IRIX treats an Indigo without audio as a
+// V50 (VME, no audio), and 6.5 then hangs early in boot, so say so here.
+void ip20_state::dsp_probe_check()
+{
+	m_dsp_probe = false;
+	u32 const state = m_dsp_ram[0];
+	u32 const rev = m_dsp_ram[1];
+	if ((state != 1 && state != 2) || BIT(rev, 7))
+	{
+		osd_printf_error("%s: the boot PROM's audio probe failed (DSP state %06x, Actel revision %06x): IRIX will see no audio and configure this Indigo as a V50 (VME)\n",
+			machine().describe_context(), state, rev);
+		popmessage("Audio probe failed: IRIX will treat this Indigo as a V50");
 	}
 }
 
@@ -497,7 +520,12 @@ void ip20_state::cpu_map(address_map &map)
 
 	// DSP SRAM, 3xTC55328J-35 (24 bits x 32k), one word per 32 bits
 	map(0x1fbe'0000, 0x1fbf'ffff).lrw32(
-		NAME([this](offs_t offset) { return m_dsp_ram[offset]; }),
+		NAME([this](offs_t offset)
+		{
+			if (offset == 0 && m_dsp_probe && !machine().side_effects_disabled())
+				dsp_probe_check();
+			return m_dsp_ram[offset];
+		}),
 		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset] = data & 0x00ff'ffffU; }));
 
 	map(0x1fc0'0000, 0x1fc7'ffff).rom().region("prom", 0);
