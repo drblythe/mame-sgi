@@ -314,7 +314,7 @@ TIMER_CALLBACK_MEMBER(hpc3_device::do_pbus_dma)
 		// m_codeca_clock/m_codecb_clock config defaults to 0, i.e. "not yet
 		// configured" - see hal2_device::get_rate()), but this rearm path
 		// re-queries the same rate on every sample without any guard at
-		// all. Confirmed live 2026-08-14: a -state reload can resume a
+		// all. A -state reload can resume a
 		// channel mid-transfer at the exact instant PROM's HAL2
 		// bresenham-clock-generator config (m_bres_clock_inc/_modctrl/_freq,
 		// each written by a separate register write - see

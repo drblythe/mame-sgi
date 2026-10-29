@@ -29,31 +29,20 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// ON by default since 2026-09-30. Registers the MIPS3 DRC's
-// add_fastram() fast path for main RAM once PROM's boot-time autosizing
-// settles. Four real correctness bugs were found and fixed along the
-// way (stale JIT code after a runtime fastram change; flushing
-// synchronously from inside a device register write; a missing/wrong
-// endianness byte-lane swizzle in mips3drc.cpp's fastram accessor for
-// sizes 1/2/4; the same bug's size==8 counterpart, which was the cause
-// of a TLB-miss infinite loop). Re-measured end to end before flipping this on:
-// boot-to-login shows a real, statistically significant ~10% reduction
-// in total instructions and ~6% in cycles (n=5 each side, Welch's
-// t-test p<0.0001 on both) - a universal win, every boot. A steady-
-// state GL/REX3-heavy workload (test/wave.cpp -db) showed no
-// significant change either way in handler_entry_read/write_memory
-// <3,0>'s own share of samples (~7.2% both configurations, confirmed at
-// two different sample durations) - fastram doesn't regress that case,
-// it just doesn't move the needle on this specific metric for it either
-// (plausibly because that profiled window's <3,0> traffic is dominated
-// by concurrent background guest activity - X server, scheduler - not
-// wave's own already-JIT-compiled steady-state loop; not fully
-// confirmed). Net: a real, broad win with no observed downside -
-// matching this project's own established pattern (see nwd33c9x.h's
-// MAME_SGI_SCSI_COARSE_SCHEDULE) of keeping a feature like this
-// switchable rather than hardcoding it unconditionally, should a
-// regression turn up later that this specific re-measurement didn't
-// cover.
+// On by default. Registers the MIPS3 DRC's add_fastram() fast path for
+// main RAM once PROM's boot-time autosizing settles. Correct operation
+// depends on: discarding stale JIT code after a runtime fastram change;
+// not flushing synchronously from inside a device register write; and
+// the correct endianness byte-lane swizzle in mips3drc.cpp's fastram
+// accessor for all access sizes (1/2/4 and 8 - a wrong size-8 swizzle
+// causes a TLB-miss infinite loop). Measured effect: about 10% fewer
+// host instructions and 6% fewer cycles to boot to login. A steady-state
+// GL/REX3-heavy workload showed no change in the share of time spent in
+// handler_entry_read/write_memory<3,0> (about 7% either way), likely
+// because that traffic comes from background guest activity (X server,
+// scheduler) rather than the already-compiled workload loop. Kept
+// switchable (like nwd33c9x.h's MAME_SGI_SCSI_COARSE_SCHEDULE) so it can
+// be turned off if a regression turns up.
 #define MAME_SGI_RAM_FASTRAM
 
 // Diagnostic, disabled by default: trace of DMA register writes and of each
@@ -190,24 +179,21 @@ void sgi_mc_device::device_start()
 
 	// MAME_SGI_RAM_SAVESTATE_FIX: allocate installed memory here (once, for
 	// the device's whole lifetime) rather than in device_reset() - moved so
-	// save_pointer() below can register it. Confirmed live 2026-08-14 that
-	// main system RAM was NEVER part of the save-state schema at all:
-	// device_reset() re-allocated m_ram[] fresh
+	// save_pointer() below can register it. Without this, main system RAM
+	// is not part of the save state at all: device_reset() re-allocated
+	// m_ram[] fresh
 	// (make_unique value-initializes to zero) every device_reset() -
 	// including the implicit one every -state LOAD performs on a brand-new
 	// process - with no save_pointer() registration anywhere, so a -state
 	// reload resumed CPU/COP0/device register state exactly as saved while
-	// guest RAM silently reset to all-zero. Traced via a real repro: a
-	// return address correctly saved on the stack in a continuous boot read
-	// back as exactly 0x00000000 after a -state reload at the identical
-	// program point (same $sp, same PC) - the CPU/register side of the save
-	// was perfect; the RAM byte simply was never written at load time.
+	// guest RAM silently reset to all-zero (for example, a return address
+	// saved on the stack read back as 0x00000000 after a -state reload at
+	// the same program point).
 	//
 	// Can't size these from the real SIMMS config here: ioport_port::read()
 	// throws ("Input ports cannot be read at init time!", ioport.cpp) until
 	// ioport_manager::m_safe_to_read goes true, which happens well after
-	// device_start() - confirmed live the hard way, this device_start()
-	// call itself crashed the first version of this fix. save_pointer()
+	// device_start() (reading it from device_start() crashes). save_pointer()
 	// must run before device_start() finishes (registration closes
 	// immediately after - running_machine::start(), machine.cpp), so there
 	// is no ordering that lets both a real ioport-sized allocation and
@@ -221,39 +207,33 @@ void sgi_mc_device::device_start()
 	// TWICE from this same buffer (once per rank, at different offsets),
 	// so even the highest NAMED INPUT_PORTS_START(mc) CONFSETTING,
 	// "4x32M" (dual-rank), needs 2x its own 64MB inst_size = 128MB from
-	// a SINGLE bank - confirmed live 2026-09-27 via direct instrumentation
-	// of memcfg_w()'s install loop (this project's own default config,
-	// bank A only, computed size=0x04000000 ranks=2 max_byte_offset=
-	// 0x07ffffff = exactly 128MB). An earlier version of this comment
-	// claimed "128MB total, well above the real option table" - wrong on
-	// both counts (128MB total from ONE bank alone here, and every raw
-	// field value the ioport can hold - including two, 0x7/0xf, no
+	// a SINGLE bank (with the default config, bank A only: size=0x04000000,
+	// ranks=2, max_byte_offset=0x07ffffff = exactly 128MB). Every raw field
+	// value the ioport can hold - including two, 0x7/0xf, that no
 	// CONFSETTING names but the bit-width still represents - tops out at
-	// exactly 256MB, matching this allocation with zero headroom to
-	// spare). device_reset() below is unchanged apart from no longer
+	// exactly 256MB, matching this allocation with no headroom to spare. device_reset() below is unchanged apart from no longer
 	// (re)allocating - it still reads the real SIMMS config and still
 	// only install_ram()-maps the configured subset of each now-always-
 	// present buffer; unused bytes just sit there unmapped and harmless,
 	// like any oversized host allocation.
 	//
-	// MAME_SGI_RAM_CALLOC_FIX (2026-09-27): calloc(), not make_unique<u8[]>.
+	// MAME_SGI_RAM_CALLOC_FIX: calloc(), not make_unique<u8[]>.
 	// make_unique<u8[]>(n)'s value-initialization compiles to an explicit,
 	// unconditional byte-by-byte zero-write loop (confirmed via
 	// disassembly) - it touches, and thus makes host-resident, every one
 	// of these 4x256MB=1GB bytes immediately at device_start() time,
 	// regardless of how much of it any bank's own CONFSETTING ever maps
-	// into the guest's address space. Measured live: RSS for this
-	// allocation was a constant 1GB no matter what RAM was actually
-	// configured. calloc() is specified to return zeroed memory too (the
+	// into the guest's address space: RSS for this allocation is a
+	// constant 1GB no matter what RAM is actually configured. calloc() is specified to return zeroed memory too (the
 	// guest-visible content is identical either way - RAM still starts
 	// zeroed, this is not a determinism change), but glibc recognizes a
 	// calloc() request this large is serviced by a fresh mmap() (which
 	// the kernel already guarantees is zero-filled) and skips the
-	// redundant touch - pages this project's own default config never
+	// redundant touch - pages the default config never
 	// maps (3 of 4 banks, plus the untouched remainder of bank A's own
 	// 256MB reservation above its real 128MB) stay as the shared,
 	// non-resident zero-page until something actually writes to them.
-	// Confirmed live: RSS for this allocation dropped to ~128MB, matching
+	// With calloc(), RSS for this allocation drops to ~128MB, matching
 	// what's actually mapped, with zero change to install_ram(), the
 	// CONFSETTING menu, or save-state round-tripping (save_pointer()
 	// below registers the same full-size buffer regardless of allocator,

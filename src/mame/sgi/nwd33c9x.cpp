@@ -36,10 +36,10 @@
 #define VERBOSE         (0)
 #include "logmacro.h"
 
-// TEMPORARY diagnostic (2026-10-10): when $MAME_SGI_SCSI_LOG names
-// a file, log each command start (with the CDB for select-and-transfer) and
-// each interrupt raised or held back, with emulated time, to find a request
-// that never completes.
+// Diagnostic, compiled out by default (uncomment the #define below to
+// enable): when $MAME_SGI_SCSI_LOG names a file, log each command start
+// (with the CDB for select-and-transfer) and each interrupt raised or held
+// back, with emulated time, to find a request that never completes.
 // #define MAME_SGI_SCSI_LOG_DIAG
 
 #ifdef MAME_SGI_SCSI_LOG_DIAG
@@ -521,8 +521,7 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 	// MAME's "-hard1"/"-hard2"/... media options are auto-numbered by
 	// creation order among same-interface devices, not by slot index/tag
 	// - creating slot 1 first keeps "-hard1" meaning what it already
-	// means for every existing test tool (tools/boot_test.sh,
-	// tools/disk_benchmark.sh) and this project's own IRIX install
+	// means for existing command lines and IRIX installs
 	// (SCSI ID 1 is the boot disk, baked into the guest's own PROM/NVRAM
 	// hardware inventory - not something the MAME-side config can freely
 	// renumber). m_disk_image[i] itself is unaffected by creation order
@@ -534,9 +533,9 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 	// directly (-hard2 -> ID 2, ..., -hard7 -> ID 7) - ID 0 is the only
 	// one that can't line up this way, since slot 1 has to be created
 	// first (above) and nothing else can occupy "-hard1". Put it LAST
-	// instead of second (2026-09-28: the previous order's -hard2->ID0/
-	// -hard3->ID2 mismatch was found live while attaching an auxiliary
-	// test disk at a specific SCSI ID by CLI number alone): "-hard2" is
+	// instead of second (putting it second would shift every later
+	// option, -hard2->ID0/-hard3->ID2, which is easy to get wrong when
+	// attaching a disk at a specific SCSI ID by CLI number): "-hard2" is
 	// far likelier to get reached for than "-hard8", so this is the
 	// smaller-surprise placement for the one ID that has to be the
 	// exception.
@@ -549,7 +548,7 @@ void nwd33c9x_device::device_add_mconfig(machine_config &config)
 	// disk target was. m_aux_bridge occupies refid 0 (our own initiator
 	// presence on this bus); connectors 1-7 offer the same "cdrom" option
 	// indy_indigo2.cpp's stock scsibus does, defaulting to none except
-	// slot 6 (matching this project's existing default boot media layout).
+	// slot 6 (matching the driver's existing default boot media layout).
 	// Capture NSCSI_BUS's own return reference directly (matching
 	// indy_indigo2.cpp's identical "scsibus" pattern) rather than relying
 	// on a separately-declared required_device<nscsi_bus_device> finder
@@ -1912,18 +1911,16 @@ void nwd33c9x_device::clear_drq()
 	}
 }
 
-// CORRECTED 2026-09-20, live-boot finding: the unscaled 1-cycle
-// delay_arb_poll() below reproduced machine/wd33c9x.cpp's own documented
-// SCALE=0 failure exactly (repeated SCSI_STATUS_SELECTION_TIMEOUT, PROM
+// An unscaled 1-cycle delay_arb_poll() reproduces machine/wd33c9x.cpp's
+// own documented SCALE=0 failure exactly (repeated SCSI_STATUS_SELECTION_TIMEOUT, PROM
 // "Unable to boot" loop) - ARB_RELEASE_BUSY's poll interval must be wide
 // enough for the target's real 400ns bus-settle delay
 // (T_TARGET_SELECT_WAIT_BUS_SETTLE) to actually fire before the
 // initiator's own arbitration timeout gives up. This is a correctness
-// requirement, not a boot-time optimization - the earlier note here
-// conflated it with
-// the separate, narrower finding that widening SCALE further (50->500)
-// doesn't measurably change boot time once *some* adequate margin exists.
-// MAME_SGI_SCSI_DELAY_EXPERIMENT/MAME_SGI_SCSI_DELAY_SCALE restored below,
+// requirement, not a boot-time optimization; separately, widening SCALE
+// further (50->500) doesn't measurably change boot time once *some*
+// adequate margin exists.
+// MAME_SGI_SCSI_DELAY_EXPERIMENT/MAME_SGI_SCSI_DELAY_SCALE used below,
 // matching machine/wd33c9x.cpp's own currently-enabled value (SCALE=500).
 TIMER_CALLBACK_MEMBER(nwd33c9x_device::update_step)
 {
@@ -2285,18 +2282,16 @@ void nwd33c9x_device::t_target_recv_byte()
 		}
 #endif
 		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
-			// See t_target_send_buffer_byte()'s identical fix (2026-10-01)
-			// for the full rationale - same two bugs, mirrored for this
+			// See t_target_send_buffer_byte()'s identical handling
+			// for the full rationale - same two requirements, mirrored for this
 			// direction: (1) keep the initiator's own per-byte bookkeeping
 			// (its INIT_XFR_WAIT_REQ parked state and S_REQ re-arm) live
 			// instead of frozen, and (2) explicitly mirror
 			// T_TARGET_WAIT_DATA_OUT_BYTE's own m_t_state transition,
 			// which this loop's self-recursion bypasses the same way the
-			// DATA_IN direction's did. NOT independently boot-verified in
-			// this direction yet (the confirmed failure was a DATA_IN
-			// disk read) - same mechanism, applied for consistency rather
-			// than left asymmetric, but treat with the same caution until
-			// a real disk-write path exercises it.
+			// DATA_IN direction's did. Less thoroughly tested than the
+			// DATA_IN direction - same mechanism, applied for consistency
+			// rather than left asymmetric.
 			if (data_fifo_full())
 				break;
 			// set_drq() synchronously drives dma_w() (confirmed live via
@@ -2314,25 +2309,21 @@ void nwd33c9x_device::t_target_recv_byte()
 	// Mirrors T_TARGET_WAIT_DATA_OUT_BYTE's own check - see
 	// t_target_send_buffer_byte()'s identical fix for the full rationale.
 	//
-	// Root-caused 2026-10-01 (side-by-side arbitration/command-phase
-	// trace, after the first version of this guard caused a NEW bug):
-	// unlike t_target_send_buffer_byte() (only ever reached via T_BC_
+	// Unlike t_target_send_buffer_byte() (only ever reached via T_BC_
 	// DATA_IN, where m_t_data_buffer_size is always genuinely set for
 	// whichever buffer that action named), this function is ALSO called
 	// for CDB and message-byte reception (T_TARGET_WAIT_CMD_BYTE/
 	// T_TARGET_WAIT_MSG_BYTE) - contexts that decide their own completion
 	// via t_command_done()/S_ATN, never via m_t_data_buffer_size, which
 	// sits stale there (left over from whatever SBUF_BLOCK transfer size
-	// came before). The unconditional version of this guard fired
+	// came before). An unconditional version of this guard would fire
 	// whenever a CDB byte position happened to coincide with that stale
-	// size-1 (observed live: a prior 8-byte transfer left size=8, and
-	// the very next command's CDB byte 7 triggered this mid-command),
-	// forcing T_TARGET_NEXT_CONTROL partway through CDB reception and
+	// size-1 (e.g. a prior 8-byte transfer leaves size=8, and the next
+	// command's CDB byte 7 triggers it mid-command), forcing T_TARGET_NEXT_CONTROL partway through CDB reception and
 	// corrupting it - visible as an infinite REQ/ACK oscillation between
 	// the initiator and target, never reaching the data phase at all.
-	// Scoping to SBUF_BLOCK (matching the fast path's own eligibility
-	// above, which is the only reason this guard needs to exist at all)
-	// fixes it.
+	// Hence the scoping to SBUF_BLOCK (matching the fast path's own
+	// eligibility above, which is the only reason this guard exists).
 	if (m_t_data_buffer_id == SBUF_BLOCK && m_t_data_buffer_pos == m_t_data_buffer_size - 1)
 		m_t_state = T_TARGET_NEXT_CONTROL;
 #endif
@@ -2388,13 +2379,11 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 		}
 #endif
 		while (m_t_data_buffer_pos < m_t_data_buffer_size - 1 && m_transfer_count > 1) {
-			// Root-caused 2026-10-01 (single-command isolation): the
-			// original version
-			// of this loop skipped the initiator-side per-byte bookkeeping
-			// entirely, not just the timer/scheduler overhead the already-
-			// shipped MAME_SGI_SCSI_COARSE_SCHEDULE feature already strips
-			// out - m_i_state froze at INIT_XFR_WAIT_REQ for the whole
-			// fast-tracked stretch. This version re-derives, directly, the
+			// This loop must not skip the initiator-side per-byte
+			// bookkeeping entirely, only the timer/scheduler overhead
+			// (as MAME_SGI_SCSI_COARSE_SCHEDULE already does) - otherwise
+			// m_i_state freezes at INIT_XFR_WAIT_REQ for the whole
+			// fast-tracked stretch. It re-derives, directly, the
 			// exact net effect of the real per-byte walk's INIT_XFR guard
 			// (data_fifo_full()/m_drq_state check) and INIT_XFR_WAIT_REQ's
 			// own re-arm (i_ctrl_wait(S_REQ,S_REQ)) and parked destination
@@ -2404,7 +2393,7 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 			if (data_fifo_full() || m_drq_state)
 				break; // mirrors INIT_XFR's own real guard - fall through to the real dance for this byte rather than press on incorrectly
 			data_fifo_push(t_get_data(m_t_data_buffer_id, m_t_data_buffer_pos++));
-			// set_drq() synchronously drives dma_r() (confirmed live via
+			// set_drq() synchronously drives dma_r() (verified with a
 			// host gdb backtrace - hpc3_device::scsi0_drq() calls back
 			// into dma_r() before this returns), draining the fifo and
 			// decrementing m_transfer_count before the next iteration.
@@ -2413,9 +2402,7 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 			set_i_state(INIT_XFR_WAIT_REQ);
 		}
 	}
-	// Root-caused 2026-10-01 (single-command isolation):
-	// T_TARGET_WAIT_DATA_IN_BYTE's
-	// own dispatch in t_step() is normally the ONLY place that sets
+	// T_TARGET_WAIT_DATA_IN_BYTE's own dispatch in t_step() is normally the ONLY place that sets
 	// m_t_state to T_TARGET_NEXT_CONTROL once m_t_data_buffer_pos reaches
 	// the last index, and it does so BEFORE calling this function for the
 	// final byte. The fast loop above calls this function's own tail
@@ -2424,10 +2411,10 @@ void nwd33c9x_device::t_target_send_buffer_byte()
 	// is still T_TARGET_WAIT_DATA_IN_BYTE when the final byte's own real
 	// dance completes, t_step() re-enters T_TARGET_WAIT_DATA_IN_BYTE one
 	// more time, and sends a bogus extra byte one past the end of the
-	// buffer, still claiming S_PHASE_DATA_IN - the second, erroneous REQ
-	// pulse that was corrupting the exchange (confirmed directly: this
-	// pulse is what the initiator's INIT_XFR_WAIT_REQ decision sees with
-	// m_transfer_count already at 0, which is specifically what signals
+	// buffer, still claiming S_PHASE_DATA_IN - a second, erroneous REQ
+	// pulse that corrupts the exchange (this pulse is what the
+	// initiator's INIT_XFR_WAIT_REQ decision sees with m_transfer_count
+	// already at 0, which is specifically what signals
 	// SCSI_STATUS_UNEXPECTED_PHASE). Mirrors T_TARGET_WAIT_DATA_IN_BYTE's
 	// own check exactly, run here instead since this function is what's
 	// now deciding when the current chunk is really finished.
@@ -2575,7 +2562,7 @@ void nwd33c9x_device::t_scsi_message()
 
 // Ported from bus/nscsi/hd.cpp's scsi_command(), trimmed of the optional
 // seek-timing model (set_seek_timing()/seek_time() - not exercised by
-// this project's default machine config). Structure and byte-for-byte
+// the default machine config). Structure and byte-for-byte
 // output kept identical to the original, including its MODE_SENSE_6 page-
 // length quirks (transcribed line-for-line, not recomputed, to avoid
 // introducing a fresh counting bug in a section this fiddly).

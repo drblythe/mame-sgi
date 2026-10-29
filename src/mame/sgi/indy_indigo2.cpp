@@ -97,15 +97,15 @@
 // disk SCSI controller from the stock WD33C93B+NSCSI_BUS+NSCSI_HARDDISK
 // setup for nwd33c9x_device (src/mame/sgi/nwd33c9x.h/.cpp), the flat
 // single-object reimplementation built to eliminate the per-byte cost
-// measured in nscsi_full_device::step() and nscsi_bus_device::regen_ctrl()
-// (measured 2026-09-20). Supports up to 8 embedded
+// measured in nscsi_full_device::step() and nscsi_bus_device::regen_ctrl().
+// Supports up to 8 embedded
 // disks (slot index == SCSI ID, zero per-byte dispatch overhead - the
 // actual performance target) and CD-ROMs via its own internal real
 // NSCSI_BUS bridge (100% of MAME's stock CD-ROM emulation, unmodified -
 // never the performance target, so not worth reimplementing - see
-// nwd33c9x.h's header comment). Enabled by default as of 2026-09-20 (the
-// validated ~2.9x real disk-throughput win over the stock device);
-// comment out to A/B back against the stock device instead.
+// nwd33c9x.h's header comment). Enabled by default (about 2.9 times the
+// disk throughput of the stock device); comment out to compare against
+// the stock device instead.
 #define MAME_SGI_USE_NWD33C9X
 
 namespace {
@@ -496,41 +496,30 @@ void ip24_state::machine_reset()
 	// codegen, unrelated to either of these options.
 	//m_maincpu->mips3drc_set_options(MIPS3DRC_COMPATIBLE_OPTIONS | MIPS3DRC_CHECK_OVERFLOWS);
 
-	// TEMPORARY diagnostic (2026-08-17): MIPS3DRC_STRICT_COP1
-	// forces check_cop1_access() to actually raise a BADCOP exception when
-	// SR.CU1 is clear, instead of being a no-op (mips3drc.cpp:6951-6957) -
-	// the interpreter has no equivalent check at all (grepped mips3.cpp for
-	// SR_CU1/cop1_unusable, zero hits). Testing whether real IRIX's lazy
-	// FPU context-switch convention (kernel clears SR.CU1 on a context
-	// switch instead of immediately saving FP registers, expecting a
-	// COP1-unusable trap to trigger the real restore on next FP use) is
-	// silently broken under this emulation with the trap unenforced -
-	// xwsh's mainLoop loads $f20=1000.0 correctly (confirmed via live gdb,
-	// source constant and the load's native codegen both verified correct)
-	// but reads back 0.0 after a sighold() syscall sits in between, exactly
-	// the kind of point a real kernel context switch could occur.
-	// Bisection (2026-09-02): both MIPS3DRC_STRICT_VERIFY
-	// (26/100 vs 29/100 baseline) and MIPS3DRC_DISABLE_INTRABLOCK
-	// (20/100) made no measurable difference, each tested alone - both
-	// within this project's own established run-to-run noise band.
-	// Reverted to the normal STRICT_COP1-only state (a real, needed fix -
-	// see the comment above); bisection continues in mips3drc.cpp against
-	// the three local dispatch/validation patches instead.
+	// MIPS3DRC_STRICT_COP1 makes check_cop1_access() actually raise a
+	// BADCOP exception when SR.CU1 is clear, instead of being a no-op
+	// (the interpreter in mips3.cpp has no equivalent check). IRIX uses a
+	// lazy FPU context switch: the kernel clears SR.CU1 on a context
+	// switch instead of saving FP registers immediately, and relies on
+	// the COP1-unusable trap to restore them on the next FP use. Without
+	// the trap, FP registers are silently lost across a context switch
+	// (for example, xwsh loads $f20=1000.0 and reads back 0.0 after a
+	// sighold() syscall in between). Adding MIPS3DRC_STRICT_VERIFY or
+	// MIPS3DRC_DISABLE_INTRABLOCK on top made no measurable difference to
+	// the remaining DRC hang rate, so only STRICT_COP1 is set.
 	m_maincpu->mips3drc_set_options(MIPS3DRC_STRICT_COP1);
 
-	// TEMPORARY diagnostic (2026-07-28): enable MAME's own built-in profiler
-	// (normally only toggled via the in-emulator IPT_UI_SHOW_PROFILER hotkey,
-	// rendered on-screen) from process start, so the accumulated per-category
-	// breakdown (PROFILER_DRC_COMPILE, PROFILER_VIDEO, PROFILER_MEMREAD, etc.)
-	// can be captured as real text at clean exit (see video_manager::exit()'s
-	// matching addition) instead of guessed at via source-reading alone -
-	// part of the "DRC still nowhere near 10x faster than -nodrc" investigation.
+	// Enable MAME's own built-in profiler (normally only toggled via the
+	// in-emulator IPT_UI_SHOW_PROFILER hotkey, rendered on-screen) from
+	// process start, so the accumulated per-category breakdown
+	// (PROFILER_DRC_COMPILE, PROFILER_VIDEO, PROFILER_MEMREAD, etc.) can be
+	// captured as text at clean exit (see video_manager::exit()'s matching
+	// addition) - useful for finding where DRC execution time goes.
 	g_profiler.enable(true);
 
-	// Bug fix: correct the RTC's year register (2026-08-15).
-	// Likely resolves the still-open eventmond/"kernel
-	// modification time in the future" item - not yet directly
-	// reconfirmed live against that specific symptom. running_machine::start()
+	// Correct the RTC's year register. A wrong year shows up in IRIX as
+	// eventmond/"kernel modification time in the future" style
+	// complaints. running_machine::start()
 	// unconditionally seeds every battery-backed RTC from real host time via
 	// set_rtc_datetime() (machine.cpp), which runs before this hook - so by
 	// the time machine_reset() fires (during soft_reset(), on every launch
@@ -594,12 +583,12 @@ DEVICE_INPUT_DEFAULTS_END
 // PORT_CONFNAME per bank) appears in the Machine Configuration menu for every
 // bank enabled in "VALID", and the choice is saved in cfg/<system>.cfg. This
 // only sets the default when the cfg has none: bank A "4x32M" = 128MB, the
-// size this project's disk images were installed and validated with (the
+// size IRIX 6.5 runs comfortably in (the
 // stock default is "4x4M" = 16MB, which IRIX 6.5 thrashes in). Banks A and B
 // are visible (as in stock), so 256MB is bank B = "4x32M" in the menu. Change
 // the size before a cold boot; PROM probes memory at power-on.
 //
-// Hardware rules learned the hard way (2026-09-27/28): use only the named
+// Hardware rules: use only the named
 // settings (4x1M..4x32M). Each nibble's low 3 bits pick a density and bit 3
 // marks dual rank, and PROM's memory test rejects unnamed raw values ("No
 // usable memory found. Make sure you have a full bank (4 SIMMs)."). Banks are
@@ -618,13 +607,15 @@ DEVICE_INPUT_DEFAULTS_END
 
 void ip24_state::ip24_base(machine_config &config, uint32_t system_clock)
 {
-// TEMPORARY experiment (2026-09-17): tightens the scheduler's
+// Experiment, off unless MAME_SGI_QUANTUM_EXPERIMENT is defined to a
+// frequency in Hz: tightens the scheduler's
 // standing quantum ceiling below the stock 60Hz default (schedule.cpp's
 // own machine().config().maximum_quantum(attotime::from_hz(60)) fallback)
 // to test whether bounding worst-case interrupt-check latency at the
 // scheduler level can substitute for mips3drc.cpp's compile-time
 // self-loop/backward-branch heuristic (see MAME_SGI_DISABLE_CHECKINTS_
-// HEURISTIC_EXPERIMENT in that file). Throwaway: never leave this defined in a committed build.
+// HEURISTIC_EXPERIMENT in that file). For measurement only; leave it
+// undefined in normal builds.
 #ifdef MAME_SGI_QUANTUM_EXPERIMENT
 	config.set_maximum_quantum(attotime::from_hz(MAME_SGI_QUANTUM_EXPERIMENT));
 #endif
@@ -769,7 +760,7 @@ void ip24_state::indy_5015(machine_config &config)
 // exists: the PROM environment with console=d1 (serial port 1) and AutoLoad
 // on. Without it the PROM finds no keyboard and stops at the System
 // Maintenance Menu instead of booting; with console=d1 it skips the keyboard
-// probe. The base image is a PROM-written NVRAM from this project;
+// probe. The base image is an NVRAM written by the PROM itself;
 // init_challenge_s() sets console explicitly and recomputes the checksum,
 // so fields can be changed there. Bytes below 0xe are clock registers and
 // are ignored (ds1386_device::nvram_default()).

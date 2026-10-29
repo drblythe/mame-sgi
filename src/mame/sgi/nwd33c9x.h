@@ -6,12 +6,12 @@
  * SGI-only, single-object reimplementation of the WD33C93B initiator
  * (machine/wd33c9x.cpp) plus a fixed, embedded disk target (bus/nscsi/hd.cpp,
  * built on machine/nscsi_hle.cpp's generic SCSI target state machine) that
- * this project's Indy driver actually pairs it with.
+ * the Indy driver actually pairs it with.
  *
  * Profiling found the real per-byte cost of the stock two-object design
  * was not scheduler overhead (already fixed by
  * MAME_SGI_SCSI_COARSE_SCHEDULE in wd33c9x.cpp) but nscsi_full_device's own
- * step() logic (~148ns/byte, measured 2026-09-20) plus
+ * step() logic (measured at ~148ns/byte) plus
  * nscsi_bus_device::regen_ctrl()'s per-notification vtable-override check
  * and dispatch loop - both structural consequences of the initiator and
  * target living in separate, polymorphic, bus-mediated objects. This device
@@ -41,7 +41,7 @@
  *     never a real fix, and already found to produce no measurable win.
  *     Arbitration polling here uses the real, unscaled delay.
  *   - hd.cpp's optional cylinder-aware seek-timing model (set_seek_timing/
- *     seek_time) - not exercised by this project's default machine config,
+ *     seek_time) - not exercised by the default machine config,
  *     can be ported later if a phase needs it.
  *
  * Kept identical to the stock design:
@@ -66,8 +66,7 @@
 // machine/wd33c9x.h for the full rationale - unchanged here.
 #define MAME_SGI_SCSI_COARSE_SCHEDULE
 
-// Scoped 2026-09-29, implemented 2026-09-30, enabled by default
-// 2026-10-01 after three real bugs were found and fixed: fast path for
+// Enabled by default. Fast path for
 // coarse-eligible BURST DATA_IN/DATA_OUT transfers - skips the per-byte
 // REQ/ACK state-machine walk (~7 switch-dispatch hops/byte, each a real
 // host function call) for the repetitive MIDDLE section of a transfer.
@@ -78,8 +77,7 @@
 // in nwd33c9x.cpp (IRIX's real driver never inspects intermediate REQ/ACK
 // state in this mode).
 //
-// Confirmed LIVE (host gdb backtrace, both directions) before writing
-// this: step()'s set_drq()/dma_r() and the DATA_OUT dma_w() call are
+// Verified with a host gdb backtrace in both directions: step()'s set_drq()/dma_r() and the DATA_OUT dma_w() call are
 // fully SYNCHRONOUS, nested in one call chain from update_step()'s timer
 // callback through hpc3_device::scsi0_drq() - not a separately-timed,
 // asynchronous host-CPU-driven event the way a naive reading of the
@@ -87,15 +85,13 @@
 // loop safe to reason about at all.
 //
 // Restricted to SBUF_BLOCK (real disk sector reads/writes) only - the
-// task's own original scoping was about disk-read throughput, never
-// short command responses like INQUIRY/MODE_SENSE (SBUF_MAIN). PROM's own
-// power-on SCSI diagnostic issues a 36-byte INQUIRY in BURST mode, which
-// would otherwise also take the fast path; SBUF_BLOCK-only is both the
-// originally-intended scope and the fix for that. Revisit the SBUF_MAIN
-// case only with its own dedicated investigation, not as a side effect
-// of chasing the disk-read win.
+// goal is disk-read throughput, not short command responses like
+// INQUIRY/MODE_SENSE (SBUF_MAIN). PROM's own power-on SCSI diagnostic
+// issues a 36-byte INQUIRY in BURST mode, which would otherwise also take
+// the fast path; restricting to SBUF_BLOCK avoids that. Extending it to
+// SBUF_MAIN would need its own separate validation.
 //
-// Three real bugs found and fixed before this was trustworthy: (1) the fast loop must keep the initiator's own
+// Correctness requirements of the fast loop: (1) it must keep the initiator's own
 // per-byte bookkeeping (m_i_state parked at INIT_XFR_WAIT_REQ, its S_REQ
 // re-arm) live every iteration, not frozen; (2) t_target_send_buffer_byte()
 // (and the t_target_recv_byte() DATA_OUT mirror) must explicitly replicate
@@ -108,11 +104,11 @@
 // is stale leftover from whatever SBUF_BLOCK transfer came before and has
 // no business deciding completion there at all.
 //
-// A/B validated: boot-to-marker instructions -23.15%, cycles -13.90%,
-// branches -25.22% (all p<0.0001, n=5 each, tools/perf_ab_stats.sh); disk_benchmark.sh
-// throughput ~3.1x. Boot-to-login wall-clock itself is flat, consistent
-// with every other SCSI-path optimization this project has measured -
-// boot is dominated by non-disk cost, not disk bandwidth.
+// Measured effect: about 23% fewer host instructions, 14% fewer cycles
+// and 25% fewer branches to boot, and about 3.1 times the disk read
+// throughput. Boot-to-login wall-clock time is unchanged, as with other
+// SCSI-path optimizations - boot is dominated by non-disk cost, not disk
+// bandwidth.
 #define MAME_SGI_SCSI_BURST_FASTPATH
 
 
@@ -127,13 +123,13 @@
 
 class nwd33c9x_device;
 
-// Multiple CD-ROMs (2026-09-20): CD-ROM support was never the
+// Multiple CD-ROMs: CD-ROM support was never the
 // performance target of this device (only the boot disk's per-byte cost
 // was ever measured as a problem) and bus/nscsi/cd.cpp's real command set
 // is ~834 lines (audio playback, TOC/sub-channel data, several vendor
 // quirk variants) - porting it by hand the way hd.cpp was ported would be
 // a large amount of new, correctness-sensitive code for a device class
-// this project has never touched, for no performance benefit. Instead:
+// with no performance problem to solve. Instead:
 // each configured CD-ROM SCSI ID gets a REAL nscsi_cdrom_sgi_device
 // (100% of MAME's existing, correct CD-ROM emulation, completely
 // unmodified) living on a small, genuinely real NSCSI_BUS owned by this
@@ -303,7 +299,7 @@ private:
 	// to exactly two parties (this object's own initiator half "i" and
 	// target half "t") instead of a scanned array of up to 16 devices.
 	//
-	// Multiple drives/CD-ROMs (2026-09-20): which "other party" a given
+	// Multiple drives/CD-ROMs: which "other party" a given
 	// call routes to is decided once per SELECT/SELECT_TRANSFER command,
 	// synchronously, from the already-known DESTINATION_ID register (see
 	// start_command()) - m_t_active_disk holds the destination's slot
@@ -393,14 +389,14 @@ private:
 	int m_t_data_buffer_size;
 	int m_t_data_buffer_pos;
 
-	// Multiple drives (2026-09-20): up to NUM_DISK_SLOTS independently
+	// Multiple drives: up to NUM_DISK_SLOTS independently
 	// addressable embedded disks, slot index == SCSI ID (0..7, matching
-	// real SCSI addressing and this project's existing NSCSI_CONNECTOR
+	// real SCSI addressing and the driver's existing NSCSI_CONNECTOR
 	// convention) - no separate "set the ID" config call needed. Unlike
 	// m_t_cmdbuf/m_t_data_buffer_* above, sense_buffer/cur_lba/inquiry_data
 	// genuinely are per-target state on real hardware (each target chip
 	// remembers its own last error independently) and are kept per-slot
-	// here for the same reason, even though this project's own workload
+	// here for the same reason, even though typical IRIX workloads
 	// never actually interleaves commands to two different disks closely
 	// enough to observe the difference.
 	static constexpr int NUM_DISK_SLOTS = 8;
