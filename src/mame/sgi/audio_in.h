@@ -53,4 +53,48 @@ void convert_input(const int16_t frame[2], double step, input_converter &conv, f
 
 } // namespace sgi_audio_in
 
+// Stereo host input (route a microphone or other source to inputs 0-1)
+// converted to the guest's sample rate, one frame at a time. The stream
+// runs at the host rate: changing a stream's rate while it has inputs isn't
+// safe, so the conversion happens here.
+class sgi_audio_input_device : public device_t, public device_sound_interface
+{
+public:
+	sgi_audio_input_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock = 0);
+
+	// guest frames per second; 0 stops the conversion
+	void set_rate(u32 rate);
+
+	// linear gain before the ADC, per channel (default 1.0)
+	void set_gain(unsigned channel, double gain);
+
+	// the next frame at the guest rate; repeats the last one when the input
+	// has nothing yet
+	void read_frame(s16 frame[2]);
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+	virtual void sound_stream_update(sound_stream &stream) override;
+
+private:
+	sound_stream *m_stream = nullptr;
+	sgi_audio_in::frame_fifo m_fifo;
+	sgi_audio_in::input_converter m_conv;
+	u32 m_rate = 0;
+	s16 m_frame[2]{};
+	// frames kept between the host input and the guest, and the level that
+	// triggers a stream update: the input is brought up to date in batches
+	// rather than for every frame the guest reads
+	u32 m_lag = 0, m_low = 0;
+	bool m_running = false;
+	double m_gain[2]{ 1.0, 1.0 };
+	// the test tone build's sine pair (audio_in.cpp); declared in every
+	// build so the class layout doesn't depend on the option
+	double m_tone_hz[2]{};
+	double m_tone_phase[2]{};
+};
+
+DECLARE_DEVICE_TYPE(SGI_AUDIO_INPUT, sgi_audio_input_device)
+
 #endif // MAME_SGI_AUDIO_IN_H

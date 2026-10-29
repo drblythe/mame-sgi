@@ -8,6 +8,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+// MAME_SGI_AUDIO_INPUT_TEST_TONE: feed a sine pair (1 kHz left, 500 Hz
+// right, or MAMESGI_TEST_TONE_HZ=L,R) at half scale instead of the input,
+// for measuring the input path without host capture
 
 namespace {
 
@@ -156,3 +162,96 @@ void convert_input(const int16_t frame[2], double step, input_converter &conv, f
 }
 
 } // namespace sgi_audio_in
+
+DEFINE_DEVICE_TYPE(SGI_AUDIO_INPUT, sgi_audio_input_device, "sgi_audio_input", "SGI audio input")
+
+sgi_audio_input_device::sgi_audio_input_device(machine_config const &mconfig, char const *tag, device_t *owner, u32 clock)
+	: device_t(mconfig, SGI_AUDIO_INPUT, tag, owner, clock)
+	, device_sound_interface(mconfig, *this)
+{
+}
+
+void sgi_audio_input_device::device_start()
+{
+	m_stream = stream_alloc(2, 0, SAMPLE_RATE_INPUT_ADAPTIVE);
+
+	save_item(NAME(m_rate));
+	save_item(NAME(m_frame));
+	save_item(NAME(m_gain));
+	save_item(NAME(m_lag));
+	save_item(NAME(m_low));
+	save_item(NAME(m_running));
+
+#ifdef MAME_SGI_AUDIO_INPUT_TEST_TONE
+	m_tone_hz[0] = 1000.0;
+	m_tone_hz[1] = 500.0;
+	if (char const *const env = std::getenv("MAMESGI_TEST_TONE_HZ"))
+		std::sscanf(env, "%lf,%lf", &m_tone_hz[0], &m_tone_hz[1]);
+	osd_printf_info("%s: test tone %.1f Hz left, %.1f Hz right\n", tag(), m_tone_hz[0], m_tone_hz[1]);
+#endif
+}
+
+void sgi_audio_input_device::device_reset()
+{
+	m_fifo.clear();
+	m_conv.reset();
+	m_frame[0] = m_frame[1] = 0;
+	m_running = false;
+}
+
+void sgi_audio_input_device::set_rate(u32 rate)
+{
+	if (rate == m_rate)
+		return;
+	m_stream->update();
+	// audio converted at the old rate would play at the wrong speed
+	m_rate = rate;
+	m_fifo.clear();
+	m_conv.reset();
+	m_running = false;
+	m_lag = std::max<u32>(rate / 200, 8);   // 5ms
+	m_low = m_lag / 2;
+}
+
+void sgi_audio_input_device::set_gain(unsigned channel, double gain)
+{
+	if (gain == m_gain[channel & 1])
+		return;
+	m_stream->update();
+	m_gain[channel & 1] = gain;
+}
+
+void sgi_audio_input_device::sound_stream_update(sound_stream &stream)
+{
+	if (!m_rate || !stream.sample_rate())
+		return;
+	double const step = double(m_rate) / double(stream.sample_rate());
+	for (int i = 0; i < stream.samples(); i++)
+	{
+		s16 frame[2];
+		for (int ch = 0; ch < 2; ch++)
+		{
+#ifdef MAME_SGI_AUDIO_INPUT_TEST_TONE
+			frame[ch] = s16(std::clamp<double>(std::lround(16384.0 * m_gain[ch] * std::sin(m_tone_phase[ch])), -32768.0, 32767.0));
+			m_tone_phase[ch] = std::fmod(m_tone_phase[ch] + 2.0 * PI * m_tone_hz[ch] / stream.sample_rate(), 2.0 * PI);
+#else
+			frame[ch] = s16(std::clamp<double>(std::lround(stream.get(ch, i) * m_gain[ch] * 32767.0), -32768.0, 32767.0));
+#endif
+		}
+		sgi_audio_in::convert_input(frame, step, m_conv, m_fifo);
+	}
+}
+
+void sgi_audio_input_device::read_frame(s16 frame[2])
+{
+	// the stream produces frames up to the current time, so the guest reads
+	// m_lag frames behind it: updates then come every m_lag - m_low frames
+	if (m_fifo.count < m_low || !m_running)
+		m_stream->update();
+	if (!m_running)
+		m_running = m_fifo.count >= m_lag;
+	else if (!m_fifo.pop(m_frame))
+		m_running = false;
+	frame[0] = m_frame[0];
+	frame[1] = m_frame[1];
+}

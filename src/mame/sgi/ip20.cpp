@@ -38,6 +38,7 @@
 #include "sound/dac.h"
 #include "speaker.h"
 
+#include "audio_in.h"
 #include "hpc1.h"
 #include "int2.h"
 #include "kbd.h"
@@ -81,6 +82,7 @@ public:
 		, m_dsp_bank_hi(*this, "dsp_hi")
 		, m_dsp_bank_y(*this, "dsp_y")
 		, m_dac(*this, "dac%u", 0U)
+		, m_adc(*this, "adc")
 		, m_gfx(*this, "gfx")
 	{
 	}
@@ -109,6 +111,8 @@ protected:
 	u16 audio_portb_r();
 	void audio_portb_w(offs_t offset, u16 data, u16 mem_mask);
 	void audio_ssi_tx(offs_t offset, u32 data);
+	u32 audio_ssi_rx(offs_t offset);
+	void audio_input_level(unsigned reg);
 	double audio_rate() const;
 	void vblank_w(int state);
 	void clearvri_w(int state);
@@ -135,6 +139,7 @@ protected:
 	memory_bank_creator m_dsp_bank_hi; // SRAM words 0x4000-0x7fff
 	memory_bank_creator m_dsp_bank_y;  // all of the SRAM
 	required_device_array<dac_16bit_r2r_twos_complement_device, 2> m_dac;
+	required_device<sgi_audio_input_device> m_adc;
 	required_device<sgi_lg1_device> m_gfx;
 
 	u8 m_dsp_miscsr = 0;
@@ -149,6 +154,8 @@ protected:
 	u8 m_mdac[2] = {};
 	u8 m_ssi_channel = 0;
 	u16 m_ssi_left = 0;
+	u8 m_ssi_rx_channel = 0;
+	s16 m_adc_frame[2]{};
 	bool m_vblank = false;
 	bool m_vr_enable = false;
 	bool m_vr_latch = false;
@@ -166,6 +173,8 @@ void ip20_state::machine_start()
 	save_item(NAME(m_mdac));
 	save_item(NAME(m_ssi_channel));
 	save_item(NAME(m_ssi_left));
+	save_item(NAME(m_ssi_rx_channel));
+	save_item(NAME(m_adc_frame));
 	save_item(NAME(m_vblank));
 	save_item(NAME(m_vr_enable));
 	save_item(NAME(m_vr_latch));
@@ -186,7 +195,9 @@ void ip20_state::machine_reset()
 	std::fill(std::begin(m_hal1_reg), std::end(m_hal1_reg), 0);
 	m_portb_in = 0;
 	m_portb_out = 0x4000;
-	m_ssi_channel = 0;
+	m_ssi_channel = m_ssi_rx_channel = 0;
+	m_adc_frame[0] = m_adc_frame[1] = 0;
+	audio_input_level(0);
 	for (auto &dac : m_dac)
 		dac->write(0);
 
@@ -278,6 +289,7 @@ void ip20_state::dsp_miscsr_w(u8 data)
 		// the DSP drives the audio board's control lines: reset stops it
 		m_hal1_reg[10] = 0;
 		m_dsp->set_ssi_rate(0);
+		m_adc->set_rate(0);
 	}
 	else if (release)
 	{
@@ -409,7 +421,9 @@ void ip20_state::audio_portb_w(offs_t offset, u16 data, u16 mem_mask)
 			bool const was_running = BIT(m_hal1_reg[10], 0);
 			m_hal1_reg[reg] = data & 0xff;
 
-			if (reg == 10 && BIT(data, 0))
+			if (reg <= 1)
+				audio_input_level(reg);
+			else if (reg == 10 && BIT(data, 0))
 			{
 				// two words (left, right) per sample, one DAC write per
 				// sample
@@ -417,11 +431,15 @@ void ip20_state::audio_portb_w(offs_t offset, u16 data, u16 mem_mask)
 				for (auto &dac : m_dac)
 					dac->set_stream_sample_rate(u32(rate + 0.5));
 				if (!was_running)
-					m_ssi_channel = 0;
+					m_ssi_channel = m_ssi_rx_channel = 0;
+				m_adc->set_rate(u32(rate + 0.5));
 				m_dsp->set_ssi_rate(u32(rate * 2 + 0.5));
 			}
 			else if (reg == 10)
+			{
 				m_dsp->set_ssi_rate(0);
+				m_adc->set_rate(0);
+			}
 		}
 		m_portb_in = 0;
 	}
@@ -429,6 +447,27 @@ void ip20_state::audio_portb_w(offs_t offset, u16 data, u16 mem_mask)
 		m_portb_in = (reg == 5) ? 0x0a : 0x00;
 
 	m_portb_out = data;
+}
+
+// Registers 0 (left) and 1 (right) set the input level: bits 2-7 are an
+// AD7118 logarithmic attenuator's code, 1.5 dB per step, muted from 60 up
+// (IRIX writes its 0-255 input attenuation there). Register 0's bits 0-1
+// select the input, 1 line and 2 microphone (SGI's audio diagnostics);
+// both channels follow it here. The diagnostics put the gain ahead of the
+// attenuator at 13 to 15.6 dB from line out to line in, and 12.3 to 19.4
+// dB from headphone out to the microphone input. With the host input's
+// full scale as line out's, the ADC sees it 14.3 dB (line) or 15.8 dB
+// (microphone) up, less the attenuation.
+void ip20_state::audio_input_level(unsigned reg)
+{
+	double const front = BIT(m_hal1_reg[0], 1) ? 15.8 : 14.3;
+	for (unsigned ch = 0; ch < 2; ch++)
+	{
+		if (reg != ch && reg != 0)
+			continue;
+		unsigned const code = m_hal1_reg[ch] >> 2;
+		m_adc->set_gain(ch, (code >= 60) ? 0.0 : std::pow(10.0, (front - 1.5 * code) / 20.0));
+	}
 }
 
 // One word per slot from the SSI, left and right in turn, 24 bits with the
@@ -444,6 +483,17 @@ void ip20_state::audio_ssi_tx(offs_t offset, u32 data)
 		m_dac[1]->write(u16(data >> 8));
 	}
 	m_ssi_channel ^= 1;
+}
+
+// The ADC's words to the SSI, left then right like the DAC's, the 16-bit
+// sample in the most significant bits; a new frame for each left word.
+u32 ip20_state::audio_ssi_rx(offs_t offset)
+{
+	if (!m_ssi_rx_channel)
+		m_adc->read_frame(m_adc_frame);
+	u32 const data = u32(u16(m_adc_frame[m_ssi_rx_channel])) << 8;
+	m_ssi_rx_channel ^= 1;
+	return data;
 }
 
 double ip20_state::audio_rate() const
@@ -722,10 +772,18 @@ void ip20_state::ip20(machine_config &config)
 	m_dsp->portb_r().set(FUNC(ip20_state::audio_portb_r));
 	m_dsp->portb_w().set(FUNC(ip20_state::audio_portb_w));
 	m_dsp->ssi_tx().set(FUNC(ip20_state::audio_ssi_tx));
+	m_dsp->ssi_rx().set(FUNC(ip20_state::audio_ssi_rx));
 
 	SPEAKER(config, "speaker", 2).front();
 	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[0], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
 	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[1], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
+
+	// the audio board's stereo input (microphone or line in)
+	SGI_AUDIO_INPUT(config, m_adc);
+	microphone_device &mic(MICROPHONE(config, "mic", 2));
+	mic.front();
+	mic.add_route(0, m_adc, 1.0, 0);
+	mic.add_route(1, m_adc, 1.0, 1);
 
 	SGI_LG1(config, m_gfx);
 	m_gfx->write_vblank().set(FUNC(ip20_state::vblank_w));
