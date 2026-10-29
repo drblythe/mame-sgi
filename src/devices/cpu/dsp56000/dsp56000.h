@@ -32,6 +32,15 @@ public:
 	// for external clock and frame sync); transmits and receives one word
 	void ssi_slot();
 
+	// or clock the SSI from outside at a fixed word rate (0 stops it): the
+	// slots then happen at their exact cycles within the DSP's own
+	// execution, with no scheduler timer
+	void set_ssi_rate(u32 words_per_second);
+
+	// instruction cycles until the next internally clocked event (SSI slot
+	// or SCI timer), for idle skips that must not run past it
+	u32 cycles_to_event() const;
+
 	enum
 	{
 		DSP_PC = 1, DSP_SR, DSP_OMR, DSP_SP, DSP_LA, DSP_LC,
@@ -121,7 +130,7 @@ private:
 	void periph_w(u16 address, u32 data);
 	void portb_update();
 	void sci_timer_update();
-	TIMER_CALLBACK_MEMBER(sci_timer);
+	void advance();
 
 	// registers
 	u32 reg_r(unsigned dddddd);
@@ -189,7 +198,13 @@ private:
 
 	u8 m_mode_pins;
 
-	emu_timer *m_sci_timer;
+	// internally clocked events: instruction cycles per event and until the
+	// next one, in 32.32 fixed point; a period of 0 is stopped
+	u64 m_ssi_period;
+	s64 m_ssi_count;
+	u64 m_sci_period;
+	s64 m_sci_count;
+	u64 m_event_cycles; // total_cycles() at the last advance()
 
 	// emulation state
 	int m_icount;

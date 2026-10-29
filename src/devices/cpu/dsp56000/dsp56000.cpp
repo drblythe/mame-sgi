@@ -105,7 +105,10 @@ void dsp56000_device_base::device_start()
 	space(AS_DATA).specific(m_xmem);
 	space(AS_IO).specific(m_ymem);
 
-	m_sci_timer = timer_alloc(FUNC(dsp56000_device_base::sci_timer), this);
+	m_ssi_period = 0;
+	m_ssi_count = 0;
+	m_sci_period = 0;
+	m_sci_count = 0;
 
 	// Y data ROM: one cycle of a sine wave
 	for (unsigned i = 0; i < 256; i++)
@@ -181,6 +184,10 @@ void dsp56000_device_base::device_start()
 	save_item(NAME(m_ssr));
 	save_item(NAME(m_sccr));
 	save_item(NAME(m_host));
+	save_item(NAME(m_ssi_period));
+	save_item(NAME(m_ssi_count));
+	save_item(NAME(m_sci_period));
+	save_item(NAME(m_sci_count));
 
 	state_add(STATE_GENPC, "GENPC", m_pc).noshow();
 	state_add(STATE_GENPCBASE, "CURPC", m_ppc).noshow();
@@ -269,7 +276,7 @@ void dsp56000_device_base::reset_peripherals()
 	m_scr = 0;
 	m_ssr = 0x0003; // transmitter empty, transmit data register empty
 	m_sccr = 0;
-	m_sci_timer->adjust(attotime::never);
+	m_sci_period = 0;
 	portb_update();
 }
 
@@ -460,24 +467,77 @@ void dsp56000_device_base::portb_update()
 }
 
 // The SCI timer interrupts at the SCI baud rate clock divided by 16: the
-// oscillator divided by 64, by 8 more with SCP, and by CD + 1.
+// oscillator divided by 64, by 8 more with SCP, and by CD + 1 (half as many
+// instruction cycles).
 void dsp56000_device_base::sci_timer_update()
 {
 	if (BIT(m_scr, 13))
 	{
 		unsigned const cd = (m_sccr & 0x0fff) + 1;
 		unsigned const prescale = BIT(m_sccr, 13) ? 8 : 1;
-		attotime const period = clocks_to_attotime(u64(64) * prescale * cd);
-		if (m_sci_timer->expire().is_never() || m_sci_timer->period() != period)
-			m_sci_timer->adjust(period, 0, period);
+		u64 const period = (u64(32) * prescale * cd) << 32;
+		if (!m_sci_period)
+			m_sci_count = period;
+		m_sci_period = period;
 	}
 	else
-		m_sci_timer->adjust(attotime::never);
+		m_sci_period = 0;
 }
 
-TIMER_CALLBACK_MEMBER(dsp56000_device_base::sci_timer)
+void dsp56000_device_base::set_ssi_rate(u32 words_per_second)
 {
-	m_irq_pending |= 1U << (VEC_SCI_TMR >> 1);
+	if (!words_per_second)
+	{
+		m_ssi_period = 0;
+		return;
+	}
+
+	u64 const period = (u64(clock() / 2) << 32) / words_per_second;
+	if (!m_ssi_period)
+		m_ssi_count = period;
+	m_ssi_period = period;
+}
+
+u32 dsp56000_device_base::cycles_to_event() const
+{
+	s64 next = std::numeric_limits<s32>::max();
+	if (m_ssi_period)
+		next = std::min<s64>(next, (m_ssi_count + 0xffff'ffffLL) >> 32);
+	if (m_sci_period)
+		next = std::min<s64>(next, (m_sci_count + 0xffff'ffffLL) >> 32);
+	return u32(std::max<s64>(next, 1));
+}
+
+// Account the cycles executed since the last call to the internally clocked
+// events. Measured with total_cycles(): an aborted timeslice zeroes the
+// cycle count without time passing.
+void dsp56000_device_base::advance()
+{
+	u64 const now = total_cycles();
+	u64 const cycles = now - m_event_cycles;
+	m_event_cycles = now;
+	if (!cycles)
+		return;
+
+	if (m_ssi_period)
+	{
+		m_ssi_count -= s64(cycles << 32);
+		while (m_ssi_count <= 0 && m_ssi_period)
+		{
+			ssi_slot();
+			m_ssi_count += m_ssi_period;
+		}
+	}
+
+	if (m_sci_period)
+	{
+		m_sci_count -= s64(cycles << 32);
+		while (m_sci_count <= 0)
+		{
+			m_irq_pending |= 1U << (VEC_SCI_TMR >> 1);
+			m_sci_count += m_sci_period;
+		}
+	}
 }
 
 void dsp56000_device_base::ssi_slot()
@@ -506,7 +566,9 @@ void dsp56000_device_base::ssi_slot()
 	if (m_crb & CRB_RE)
 	{
 		if (m_ssisr & SSISR_RDF)
+		{
 			m_ssisr |= SSISR_ROE;
+		}
 
 		m_rx = m_ssi_rx(m_ssi_slot) & 0x00ffffffU;
 		m_ssisr |= SSISR_RDF;
@@ -2015,8 +2077,8 @@ void dsp56000_device_base::execute_one()
 	{
 		// a jump to itself (a halt, or polling a flag that only an
 		// interrupt or a peripheral clocked from outside can change) has
-		// nothing more to do this timeslice
-		m_icount = 0;
+		// nothing more to do until the next event
+		m_icount -= std::min<int>(m_icount, cycles_to_event());
 	}
 
 	if (rep_iteration)
@@ -2063,15 +2125,20 @@ void dsp56000_device_base::loop_end()
 
 void dsp56000_device_base::execute_run()
 {
+	m_event_cycles = total_cycles();
+
 	while (m_icount > 0)
 	{
+
 		if (!m_rep && !m_fast_irq)
 			interrupt_check();
 
 		if (m_wait)
 		{
-			m_icount = 0;
-			break;
+			// sleep until the next internal event, or the timeslice's end
+			m_icount -= std::min<int>(m_icount, cycles_to_event());
+			advance();
+			continue;
 		}
 
 		m_ppc = m_pc;
@@ -2080,7 +2147,7 @@ void dsp56000_device_base::execute_run()
 		// fast path for a repeated nop
 		if (m_rep && m_pc == m_rep_pc && fetch(m_pc) == 0)
 		{
-			u32 const n = std::min<u32>(m_lc ? m_lc : 0x10000, std::max(m_icount, 1));
+			u32 const n = std::min<u32>({ m_lc ? m_lc : 0x10000u, u32(std::max(m_icount, 1)), cycles_to_event() });
 			m_icount -= n;
 			m_lc -= n;
 			if (!m_lc)
@@ -2092,9 +2159,11 @@ void dsp56000_device_base::execute_run()
 				if ((m_sr & SR_LF) && u16(m_pc - 1) == m_la)
 					loop_end();
 			}
+			advance();
 			continue;
 		}
 
 		execute_one();
+		advance();
 	}
 }
