@@ -102,13 +102,15 @@ dsp56001_device::dsp56001_device(machine_config const &mconfig, char const *tag,
 void dsp56000_device_base::device_start()
 {
 	space(AS_PROGRAM).cache(m_pmem);
-	space(AS_DATA).specific(m_xmem);
-	space(AS_IO).specific(m_ymem);
+	space(AS_DATA).cache(m_xmem);
+	space(AS_IO).cache(m_ymem);
 
 	m_ssi_period = 0;
 	m_ssi_count = 0;
 	m_sci_period = 0;
 	m_sci_count = 0;
+	m_event_cycles = 0;
+	m_event_icount = std::numeric_limits<int>::min();
 
 	// Y data ROM: one cycle of a sine wave
 	for (unsigned i = 0; i < 256; i++)
@@ -256,6 +258,34 @@ void dsp56000_device_base::device_reset()
 	m_bcr = 0xffff;
 	m_ipr = 0;
 	reset_peripherals();
+
+	// banks are set up by now (machine_start runs before the first reset)
+	build_pages(space(AS_PROGRAM), m_page_pr, m_page_pw);
+	build_pages(space(AS_DATA), m_page_xr, m_page_xw);
+	build_pages(space(AS_IO), m_page_yr, m_page_yw);
+}
+
+// Direct pointers for the 256-word pages of a space that are plain memory
+// throughout (RAM, ROM or a bank, contiguous on the host): their accesses
+// skip the handlers. Other pages, and memory remapped after reset, go
+// through the address space.
+void dsp56000_device_base::build_pages(address_space &space, u32 *(&r)[256], u32 *(&w)[256])
+{
+	for (unsigned page = 0; page < 256; page++)
+	{
+		u32 *const rbase = static_cast<u32 *>(space.get_read_ptr(page << 8));
+		u32 *const wbase = static_cast<u32 *>(space.get_write_ptr(page << 8));
+		bool rok = rbase != nullptr, wok = wbase != nullptr;
+		for (unsigned i = 1; i < 256 && (rok || wok); i++)
+		{
+			if (rok && static_cast<u32 *>(space.get_read_ptr((page << 8) | i)) != rbase + i)
+				rok = false;
+			if (wok && static_cast<u32 *>(space.get_write_ptr((page << 8) | i)) != wbase + i)
+				wok = false;
+		}
+		r[page] = rok ? rbase : nullptr;
+		w[page] = wok ? wbase : nullptr;
+	}
 }
 
 void dsp56000_device_base::reset_peripherals()
@@ -330,6 +360,8 @@ u32 dsp56000_device_base::p_read(u16 address)
 	if (address < 0x200 && (m_omr & 3) != 3)
 		return m_pram[address];
 
+	if (u32 const *const page = m_page_pr[address >> 8])
+		return page[address & 0xff] & 0x00ffffffU;
 	return m_pmem.read_dword(address) & 0x00ffffffU;
 }
 
@@ -338,6 +370,8 @@ void dsp56000_device_base::p_write(u16 address, u32 data)
 	data &= 0x00ffffffU;
 	if (address < 0x200 && (m_omr & 3) != 3)
 		m_pram[address] = data;
+	else if (u32 *const page = m_page_pw[address >> 8])
+		page[address & 0xff] = data;
 	else
 		m_pmem.write_dword(address, data);
 }
@@ -351,6 +385,8 @@ u32 dsp56000_device_base::x_read(u16 address)
 	if (address >= 0xffc0)
 		return periph_r(address);
 
+	if (u32 const *const page = m_page_xr[address >> 8])
+		return page[address & 0xff] & 0x00ffffffU;
 	return m_xmem.read_dword(address) & 0x00ffffffU;
 }
 
@@ -363,6 +399,8 @@ void dsp56000_device_base::x_write(u16 address, u32 data)
 		; // data ROM
 	else if (address >= 0xffc0)
 		periph_w(address, data);
+	else if (u32 *const page = m_page_xw[address >> 8])
+		page[address & 0xff] = data;
 	else
 		m_xmem.write_dword(address, data);
 }
@@ -374,6 +412,8 @@ u32 dsp56000_device_base::y_read(u16 address)
 	if (address < 0x200 && BIT(m_omr, 2))
 		return m_yrom[address & 0xff];
 
+	if (u32 const *const page = m_page_yr[address >> 8])
+		return page[address & 0xff] & 0x00ffffffU;
 	return m_ymem.read_dword(address) & 0x00ffffffU;
 }
 
@@ -384,6 +424,8 @@ void dsp56000_device_base::y_write(u16 address, u32 data)
 		m_yram[address] = data;
 	else if (address < 0x200 && BIT(m_omr, 2))
 		; // data ROM
+	else if (u32 *const page = m_page_yw[address >> 8])
+		page[address & 0xff] = data;
 	else
 		m_ymem.write_dword(address, data);
 }
@@ -471,6 +513,8 @@ void dsp56000_device_base::portb_update()
 // instruction cycles).
 void dsp56000_device_base::sci_timer_update()
 {
+	advance();
+
 	if (BIT(m_scr, 13))
 	{
 		unsigned const cd = (m_sccr & 0x0fff) + 1;
@@ -482,23 +526,39 @@ void dsp56000_device_base::sci_timer_update()
 	}
 	else
 		m_sci_period = 0;
+
+	advance();
 }
 
 void dsp56000_device_base::set_ssi_rate(u32 words_per_second)
 {
+	// bring the counts up to now before changing them
+	advance();
+
 	if (!words_per_second)
-	{
 		m_ssi_period = 0;
-		return;
+	else
+	{
+		u64 const period = (u64(clock() / 2) << 32) / words_per_second;
+		if (!m_ssi_period)
+			m_ssi_count = period;
+		m_ssi_period = period;
 	}
 
-	u64 const period = (u64(clock() / 2) << 32) / words_per_second;
-	if (!m_ssi_period)
-		m_ssi_count = period;
-	m_ssi_period = period;
+	advance();
 }
 
 u32 dsp56000_device_base::cycles_to_event() const
+{
+	// while executing, the counts are only brought up to date when an
+	// event is due: measure from that deadline
+	if (executing() && m_event_icount != std::numeric_limits<int>::min())
+		return u32(std::max(m_icount - m_event_icount, 1));
+
+	return counted_cycles_to_event();
+}
+
+u32 dsp56000_device_base::counted_cycles_to_event() const
 {
 	s64 next = std::numeric_limits<s32>::max();
 	if (m_ssi_period)
@@ -516,9 +576,15 @@ void dsp56000_device_base::advance()
 	u64 const now = total_cycles();
 	u64 const cycles = now - m_event_cycles;
 	m_event_cycles = now;
-	if (!cycles)
-		return;
+	if (cycles)
+		advance_events(cycles);
 
+	// the next event is due when the icount reaches this
+	m_event_icount = (m_ssi_period || m_sci_period) ? m_icount - int(counted_cycles_to_event()) : std::numeric_limits<int>::min();
+}
+
+void dsp56000_device_base::advance_events(u64 cycles)
+{
 	if (m_ssi_period)
 	{
 		m_ssi_count -= s64(cycles << 32);
@@ -1973,13 +2039,6 @@ void dsp56000_device_base::execute_nonparallel(u32 op)
 
 void dsp56000_device_base::interrupt_check()
 {
-	// nothing can be pending: no latched source, no IRQ line asserted, no
-	// enabled SSI or SCI condition
-	if (!m_irq_pending && m_irqa_state == CLEAR_LINE && m_irqb_state == CLEAR_LINE
-		&& !((m_crb & CRB_RIE) && (m_ssisr & (SSISR_RDF | SSISR_ROE)))
-		&& !((m_crb & CRB_TIE) && (m_ssisr & (SSISR_TDE | SSISR_TUE))))
-		return;
-
 	// collect the level of each pending source: -1 masked or disabled
 	struct source { u8 vector; int level; };
 	source sources[16];
@@ -2126,11 +2185,11 @@ void dsp56000_device_base::loop_end()
 void dsp56000_device_base::execute_run()
 {
 	m_event_cycles = total_cycles();
+	advance();
 
 	while (m_icount > 0)
 	{
-
-		if (!m_rep && !m_fast_irq)
+		if (!m_rep && !m_fast_irq && irq_possible())
 			interrupt_check();
 
 		if (m_wait)
@@ -2164,6 +2223,12 @@ void dsp56000_device_base::execute_run()
 		}
 
 		execute_one();
-		advance();
+
+		// an event is due, or the timeslice was aborted (the icount zeroed)
+		if (m_icount <= m_event_icount)
+			advance();
 	}
+
+	// account the rest of the timeslice
+	advance();
 }

@@ -125,12 +125,16 @@ private:
 	void xy_write(bool y, u16 address, u32 data) { if (y) y_write(address, data); else x_write(address, data); }
 	u32 fetch(u16 address) { return p_read(address); }
 
+	void build_pages(address_space &space, u32 *(&r)[256], u32 *(&w)[256]);
+
 	// on-chip peripherals (X:$FFC0-$FFFF)
 	u32 periph_r(u16 address);
 	void periph_w(u16 address, u32 data);
 	void portb_update();
 	void sci_timer_update();
 	void advance();
+	void advance_events(u64 cycles);
+	u32 counted_cycles_to_event() const;
 
 	// registers
 	u32 reg_r(unsigned dddddd);
@@ -168,6 +172,15 @@ private:
 	void do_loop(u16 count, u16 last);
 	void rep_start(u16 count);
 	void interrupt_check();
+
+	// whether any interrupt source can be pending: a latched source, an IRQ
+	// line asserted, or an enabled SSI condition
+	bool irq_possible() const
+	{
+		return m_irq_pending || m_irqa_state != CLEAR_LINE || m_irqb_state != CLEAR_LINE
+			|| ((m_crb & 0x8000) && (m_ssisr & 0xa0)) // RIE: RDF, ROE
+			|| ((m_crb & 0x4000) && (m_ssisr & 0x50)); // TIE: TDE, TUE
+	}
 	void interrupt_take(u8 vector, unsigned level);
 	void reset_peripherals();
 
@@ -188,8 +201,13 @@ private:
 	address_space_config m_y_config;
 
 	memory_access<16, 2, -2, ENDIANNESS_BIG>::cache m_pmem;
-	memory_access<16, 2, -2, ENDIANNESS_BIG>::specific m_xmem;
-	memory_access<16, 2, -2, ENDIANNESS_BIG>::specific m_ymem;
+	memory_access<16, 2, -2, ENDIANNESS_BIG>::cache m_xmem;
+	memory_access<16, 2, -2, ENDIANNESS_BIG>::cache m_ymem;
+
+	// direct pointers to plain-memory pages, null for the others
+	u32 *m_page_pr[256], *m_page_pw[256];
+	u32 *m_page_xr[256], *m_page_xw[256];
+	u32 *m_page_yr[256], *m_page_yw[256];
 
 	devcb_read16 m_portb_r;
 	devcb_write16 m_portb_w;
@@ -205,6 +223,7 @@ private:
 	u64 m_sci_period;
 	s64 m_sci_count;
 	u64 m_event_cycles; // total_cycles() at the last advance()
+	int m_event_icount; // the icount at which the next event is due
 
 	// emulation state
 	int m_icount;
