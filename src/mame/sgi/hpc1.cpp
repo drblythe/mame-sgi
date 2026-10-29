@@ -7,7 +7,9 @@
  * TODO:
  *  - hpc1.5 (second-generation, includes little-endian support)
  *  - clean up ethernet interface, interrupt delay
- *  - pbus and dsp
+ *  - pbus
+ *  - dsp interface: dma timing, interrupt configuration and polarity,
+ *    the dsp's own interrupt sources 6 and 7, handshake receive
  */
 
 #include "emu.h"
@@ -67,6 +69,11 @@ hpc1_device::hpc1_device(const machine_config &mconfig, const char *tag, device_
 	, m_dma_r(*this, 0)
 	, m_dma_w(*this)
 	, m_eeprom_out(*this)
+	, m_dsp_miscsr_w(*this)
+	, m_dsp_irq_w(*this)
+	, m_cpu_dsp_irq_w(*this)
+	, m_dsp_ram_r(*this, 0)
+	, m_dsp_ram_w(*this)
 {
 }
 
@@ -94,11 +101,26 @@ void hpc1_device::device_start()
 	save_item(NAME(m_scsi_nbdp));
 	save_item(NAME(m_scsi_ctrl));
 
-	save_item(NAME(m_dsp_bc));
+	save_item(NAME(m_dspif));
+	save_item(NAME(m_cpu_intstat));
+	save_item(NAME(m_cpu_intmask));
+	save_item(NAME(m_dsp_intstat));
+	save_item(NAME(m_dsp_intmask));
+	save_item(NAME(m_dsp_intconf));
+	save_item(NAME(m_dsp_intpol));
+
+	m_dsp_dma_timer = timer_alloc(FUNC(hpc1_device::dspif_dma_done), this);
 
 	save_item(NAME(m_aux));
 
 	m_drq = 0;
+	std::fill(std::begin(m_dspif), std::end(m_dspif), 0);
+	m_cpu_intstat = 0;
+	m_cpu_intmask = 0;
+	m_dsp_intstat = 0;
+	m_dsp_intmask = 0;
+	m_dsp_intconf = 0;
+	m_dsp_intpol = 0;
 }
 
 void hpc1_device::device_reset()
@@ -109,6 +131,13 @@ void hpc1_device::device_reset()
 
 	m_scsi_nbdp = 0;
 	m_scsi_ctrl = 0;
+
+	// the DSP starts out held in reset
+	m_dsp_dma_timer->adjust(attotime::never);
+	m_cpu_intstat = 0;
+	m_dsp_intstat = 0;
+	dspif_update_irqs();
+	dspif_w(false, DSPIF_MISCSR, 0x01);
 }
 
 device_memory_interface::space_config_vector hpc1_device::memory_space_config() const
@@ -155,8 +184,7 @@ void hpc1_device::map(address_map &map)
 	//map(0x00b0, 0x00b3); // parallel next buffer descriptor (nbdp)
 	//map(0x00b4, 0x00b7); // parallel control (ctrl)
 
-	map(0x0180, 0x01b7).ram(); // dsp interface
-	map(0x0180, 0x0183).rw(FUNC(hpc1_device::dsp_bc_r), FUNC(hpc1_device::dsp_bc_w)).umask32(0xffff);
+	map(0x0180, 0x01b7).rw(FUNC(hpc1_device::mips_dspif_r), FUNC(hpc1_device::mips_dspif_w)); // dsp interface
 
 	map(0x01bc, 0x01bf).rw(FUNC(hpc1_device::aux_r), FUNC(hpc1_device::aux_w)).umask32(0xff);
 }
@@ -232,7 +260,212 @@ void hpc1_device::pbus_map(address_map &map)
     32k x 24bit dsp ram
     ram at c000
 */
-	map(0xffe0, 0xffe0).rw(FUNC(hpc1_device::dsp_bc_r), FUNC(hpc1_device::dsp_bc_w));
+}
+
+
+// DSP interface registers: the MIPS sees them at 0x1fb80180-0x1fb801b7, the
+// DSP at Y:$FFE0-$FFED, one register per word in the same order. Each side
+// has its own interrupt status and mask (offsets 8 and 9; writing a 0 bit
+// clears a status bit); the DSP side also has interrupt configuration and
+// polarity (10 and 11). The rest are shared. COUNTER is a free-running
+// 24-bit count of the GIO bus clock.
+//
+// MIPS side status: bit 0 DMA done, bit 1 the DSP wrote HANDTX, bit 2 the
+// DSP read HANDRX. DSP side status, as SGI's audio microcode uses it:
+// bit 0 DMA done, bit 5 the MIPS read HANDTX (the next word may be sent).
+// Either side's pending, unmasked status drives its interrupt line.
+//
+// DMA moves DMAWDCNT words between the SRAM, from the Y address in PBUSADD,
+// and GIO memory at the byte address GIOADDM:GIOADDL. DMACTRL bit 0 starts
+// it, bit 1 sets the direction (clear: MIPS to DSP), bit 2 folded mode (two
+// 16-bit SRAM words per 32-bit GIO word). From the DSP to the MIPS, MISCSR
+// bits 4-6 select sign extension of 8, 16 or 24 bits.
+u32 hpc1_device::dspif_r(bool dsp, offs_t offset)
+{
+	switch (offset)
+	{
+	case DSPIF_COUNTER:
+		return u32(machine().time().as_ticks(33'333'333)) & 0x00ff'ffffU;
+	case DSPIF_HANDTX:
+		if (!dsp && !machine().side_effects_disabled())
+		{
+			m_dsp_intstat |= 0x20;
+			dspif_update_irqs();
+		}
+		return m_dspif[offset];
+	case DSPIF_HANDRX:
+		if (dsp && !machine().side_effects_disabled())
+		{
+			m_cpu_intstat |= 0x04;
+			dspif_update_irqs();
+		}
+		return m_dspif[offset];
+	case DSPIF_CINTSTAT: return dsp ? m_dsp_intstat : m_cpu_intstat;
+	case DSPIF_CINTMASK: return dsp ? m_dsp_intmask : m_cpu_intmask;
+	case DSPIF_INTCONF: return dsp ? m_dsp_intconf : 0;
+	case DSPIF_INTPOL: return dsp ? m_dsp_intpol : 0;
+	default:
+		return (offset < DSPIF_COUNT) ? m_dspif[offset] : 0;
+	}
+}
+
+void hpc1_device::dspif_w(bool dsp, offs_t offset, u32 data)
+{
+	data &= 0x00ff'ffffU;
+
+	switch (offset)
+	{
+	case DSPIF_COUNTER:
+		return;
+	case DSPIF_HANDTX:
+		m_dspif[offset] = data;
+		if (dsp)
+		{
+			m_cpu_intstat |= 0x02;
+			dspif_update_irqs();
+		}
+		return;
+	case DSPIF_CINTSTAT:
+		if (dsp)
+			m_dsp_intstat &= data;
+		else
+			m_cpu_intstat &= data;
+		dspif_update_irqs();
+		return;
+	case DSPIF_CINTMASK:
+		if (dsp)
+			m_dsp_intmask = data;
+		else
+			m_cpu_intmask = data & 7;
+		dspif_update_irqs();
+		return;
+	case DSPIF_INTCONF:
+		if (dsp)
+			m_dsp_intconf = data;
+		return;
+	case DSPIF_INTPOL:
+		if (dsp)
+			m_dsp_intpol = data;
+		return;
+	case DSPIF_DMACTRL:
+		m_dspif[offset] = data & 7;
+		if (BIT(data, 0))
+			dspif_dma();
+		return;
+	case DSPIF_MISCSR:
+		m_dspif[offset] = data;
+		m_dsp_miscsr_w(u8(data));
+		return;
+	default:
+		if (offset < DSPIF_COUNT)
+			m_dspif[offset] = data;
+		return;
+	}
+}
+
+void hpc1_device::dspif_update_irqs()
+{
+	m_dsp_irq_w((m_dsp_intstat & m_dsp_intmask) ? 1 : 0);
+	m_cpu_dsp_irq_w((m_cpu_intstat & m_cpu_intmask) ? 1 : 0);
+}
+
+void hpc1_device::dspif_dma()
+{
+	u32 const words = m_dspif[DSPIF_DMAWDCNT] & 0xffff;
+	u32 gio = ((m_dspif[DSPIF_GIOADDM] & 0xffff) << 16) | (m_dspif[DSPIF_GIOADDL] & 0xffff);
+	u32 pbus = m_dspif[DSPIF_PBUSADD] & 0x7fff;
+	bool const to_mips = BIT(m_dspif[DSPIF_DMACTRL], 1);
+	bool const folded = BIT(m_dspif[DSPIF_DMACTRL], 2);
+	unsigned const sext = (m_dspif[DSPIF_MISCSR] >> 4) & 7;
+
+	auto extend = [sext](u32 v) -> u32
+	{
+		switch (sext)
+		{
+		case 7: return u32(s32(s8(v)));
+		case 6: return u32(s32(s16(v)));
+		case 4: return u32(util::sext(v, 24));
+		default: return v;
+		}
+	};
+
+	for (u32 i = 0; i < words; )
+	{
+		if (to_mips)
+		{
+			if (folded)
+			{
+				u32 const hi = m_dsp_ram_r((pbus + i) & 0x7fff) & 0xffff;
+				u32 const lo = (i + 1 < words) ? m_dsp_ram_r((pbus + i + 1) & 0x7fff) & 0xffff : 0;
+				m_gio->write_dword(gio, (hi << 16) | lo);
+				i += 2;
+			}
+			else
+			{
+				m_gio->write_dword(gio, extend(m_dsp_ram_r((pbus + i) & 0x7fff)));
+				i++;
+			}
+		}
+		else
+		{
+			u32 const data = m_gio->read_dword(gio);
+			if (folded)
+			{
+				m_dsp_ram_w((pbus + i) & 0x7fff, data >> 16);
+				if (i + 1 < words)
+					m_dsp_ram_w((pbus + i + 1) & 0x7fff, data & 0xffff);
+				i += 2;
+			}
+			else
+			{
+				m_dsp_ram_w((pbus + i) & 0x7fff, data & 0x00ff'ffffU);
+				i++;
+			}
+		}
+		gio += 4;
+	}
+
+	// a word every 250ns
+	m_dsp_dma_timer->adjust(attotime::from_nsec(250) * std::max<u32>(words, 1));
+}
+
+TIMER_CALLBACK_MEMBER(hpc1_device::dspif_dma_done)
+{
+	m_dspif[DSPIF_DMACTRL] &= ~1U;
+	m_cpu_intstat |= 0x01;
+	m_dsp_intstat |= 0x01;
+	dspif_update_irqs();
+}
+
+u32 hpc1_device::dsp_r(offs_t offset)
+{
+	return dspif_r(true, offset);
+}
+
+void hpc1_device::dsp_w(offs_t offset, u32 data)
+{
+	dspif_w(true, offset, data);
+}
+
+u32 hpc1_device::mips_dspif_r(offs_t offset)
+{
+	return dspif_r(false, offset);
+}
+
+void hpc1_device::mips_dspif_w(offs_t offset, u32 data)
+{
+	// MISCSR holds the DSP in reset, and the DSP writes the register too:
+	// apply the MIPS's write once the DSP has caught up, so a DSP write
+	// from earlier in emulated time cannot land after it and undo a reset
+	if (offset == DSPIF_MISCSR)
+		machine().scheduler().synchronize(timer_expired_delegate(FUNC(hpc1_device::mips_miscsr_sync), this), data);
+	else
+		dspif_w(false, offset, data);
+}
+
+TIMER_CALLBACK_MEMBER(hpc1_device::mips_miscsr_sync)
+{
+	dspif_w(false, DSPIF_MISCSR, u32(param));
 }
 
 void hpc1_device::scsi_nbdp_w(u32 data)

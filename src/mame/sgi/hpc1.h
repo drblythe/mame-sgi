@@ -29,6 +29,11 @@ public:
 	template <unsigned N> auto dma_w_cb() { return m_dma_w[N].bind(); }
 	auto eeprom_dati() { return m_eeprom_dati.bind(); }
 	auto eeprom_out() { return m_eeprom_out.bind(); }
+	auto dsp_miscsr_w() { return m_dsp_miscsr_w.bind(); }
+	auto dsp_irq_w() { return m_dsp_irq_w.bind(); }   // to the DSP (its IRQA)
+	auto cpu_dsp_irq_w() { return m_cpu_dsp_irq_w.bind(); } // to the MIPS
+	auto dsp_ram_r() { return m_dsp_ram_r.bind(); }   // DSP SRAM, by word
+	auto dsp_ram_w() { return m_dsp_ram_w.bind(); }
 
 	template <unsigned N> void write_drq(int state);
 	void write_int(int state);
@@ -40,6 +45,11 @@ public:
 	u32 scsi_dma_bulk_out(u8 *dst, u32 count);
 
 	void map(address_map &map) ATTR_COLD;
+
+	// DSP side of the DSP interface registers (DSP Y:$FFE0-$FFED)
+	static constexpr offs_t DSPIF_COUNTER_OFFSET = 5;
+	u32 dsp_r(offs_t offset);
+	void dsp_w(offs_t offset, u32 data);
 
 protected:
 	// device_t implementation
@@ -98,8 +108,33 @@ protected:
 	void scsi_nbdp_w(u32 data);
 	void scsi_ctrl_w(u32 data);
 
-	u16 dsp_bc_r() { return m_dsp_bc; }
-	void dsp_bc_w(u16 data) { m_dsp_bc = data; }
+	// DSP interface registers, shared by the MIPS and DSP sides
+	enum dspif_reg : unsigned
+	{
+		DSPIF_DMAWDCNT = 0,
+		DSPIF_GIOADDL,
+		DSPIF_GIOADDM,
+		DSPIF_PBUSADD,
+		DSPIF_DMACTRL,
+		DSPIF_COUNTER,
+		DSPIF_HANDTX,
+		DSPIF_HANDRX,
+		DSPIF_CINTSTAT,
+		DSPIF_CINTMASK,
+		DSPIF_INTCONF,
+		DSPIF_INTPOL,
+		DSPIF_MISCSR,
+		DSPIF_BURSTCTL,
+		DSPIF_COUNT
+	};
+	u32 dspif_r(bool dsp, offs_t offset);
+	u32 mips_dspif_r(offs_t offset);
+	void mips_dspif_w(offs_t offset, u32 data);
+	void dspif_update_irqs();
+	TIMER_CALLBACK_MEMBER(dspif_dma_done);
+	TIMER_CALLBACK_MEMBER(mips_miscsr_sync);
+	void dspif_w(bool dsp, offs_t offset, u32 data);
+	void dspif_dma();
 
 	u8 aux_r();
 	void aux_w(u8 data);
@@ -118,6 +153,11 @@ private:
 	devcb_read8::array<2> m_dma_r;
 	devcb_write8::array<2> m_dma_w;
 	devcb_write8 m_eeprom_out;
+	devcb_write8 m_dsp_miscsr_w;
+	devcb_write_line m_dsp_irq_w;
+	devcb_write_line m_cpu_dsp_irq_w;
+	devcb_read32 m_dsp_ram_r;
+	devcb_write32 m_dsp_ram_w;
 
 	u8 m_drq;
 
@@ -141,7 +181,14 @@ private:
 	u32 m_scsi_nbdp;     // scsi next buffer descriptor pointer
 	u32 m_scsi_ctrl;     // scsi control
 
-	u16 m_dsp_bc;
+	u32 m_dspif[DSPIF_COUNT];
+	u8 m_cpu_intstat;   // interrupt status and mask on the MIPS side
+	u8 m_cpu_intmask;
+	u32 m_dsp_intstat;  // on the DSP side, and its interrupt configuration
+	u32 m_dsp_intmask;
+	u32 m_dsp_intconf;
+	u32 m_dsp_intpol;
+	emu_timer *m_dsp_dma_timer;
 
 	u8 m_aux;
 };
