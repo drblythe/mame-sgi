@@ -755,4 +755,4 @@ ROM_END
 //   YEAR  NAME          PARENT  COMPAT  MACHINE       INPUT  CLASS       INIT        COMPANY             FULLNAME             FLAGS
 COMP(1992, indigo_r4000, 0,      0,      indigo_r4000, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4000", 0)
 COMP(1991, indigo_r4400, 0,      0,      indigo_r4400, 0,     ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400", 0)
-COMP(1991, indigo_r4400m, indigo_r4400, 0, indigo_r4400m, 0,  ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400 (MIPS III recompiler)", 0)
+COMP(1991, indigo_r4400m, indigo_r4400, 0, indigo_r4400m, 0,  ip20_state, empty_init, "Silicon Graphics", "IRIS Indigo R4400 (MIPS III recompiler)", MACHINE_SUPPORTS_SAVE)
