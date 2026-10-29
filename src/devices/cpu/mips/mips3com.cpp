@@ -337,6 +337,9 @@ uint32_t mips3_device::compute_config_register()
 
 uint32_t mips3_device::compute_prid_register()
 {
+	if (c_prid)
+		return c_prid;
+
 	switch (m_flavor)
 	{
 		case MIPS3_TYPE_R4000:

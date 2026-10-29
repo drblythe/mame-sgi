@@ -343,6 +343,8 @@ public:
 	void set_dcache_size(size_t dcache_size) { c_dcache_size = dcache_size; }
 	void set_secondary_cache_line_size(uint8_t secondary_cache_line_size) { c_secondary_cache_line_size = secondary_cache_line_size; }
 	void set_system_clock(uint32_t system_clock) { c_system_clock = system_clock; }
+	// processor revision identifier reported in PRId (default: the type's)
+	void set_prid(uint32_t prid) { c_prid = prid; }
 
 	TIMER_CALLBACK_MEMBER(compare_int_callback);
 
@@ -711,6 +713,7 @@ protected:
 	delegate<u32 (offs_t)> m_pr32;
 	std::function<const void * (offs_t)> m_prptr;
 	uint32_t        c_system_clock;
+	uint32_t        c_prid = 0;
 	uint32_t        m_cpu_clock;
 	emu_timer *     m_compare_int_timer;
 	uint32_t        m_tlb_seed;
