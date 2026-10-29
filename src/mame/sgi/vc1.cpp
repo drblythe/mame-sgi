@@ -60,7 +60,7 @@ u8 sgi_vc1_device::read(offs_t offset)
 	case REGISTER:
 		return m_reg[m_addr++];
 	case XMAP_MODE:
-		return m_xmap[m_addr++];
+		return m_xmap[m_addr++ & 0x7fU];
 	case EXT_RAM:
 		// reads step through the RAM like writes
 		{
@@ -200,7 +200,7 @@ void sgi_vc1_device::write(offs_t offset, u8 data)
 		m_addr++;
 		break;
 	case XMAP_MODE:
-		m_xmap[m_addr++] = data;
+		m_xmap[m_addr++ & 0x7fU] = data;
 		break;
 	case EXT_RAM:
 		m_ram[m_addr++ & 0x7fffU] = data;
