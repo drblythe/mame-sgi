@@ -77,6 +77,9 @@ public:
 		, m_scc(*this, "scc%u", 0U)
 		, m_dsp(*this, "dsp")
 		, m_dsp_ram(*this, "dsp_ram", 0x8000 * 4, ENDIANNESS_BIG)
+		, m_dsp_bank_lo(*this, "dsp_lo")
+		, m_dsp_bank_hi(*this, "dsp_hi")
+		, m_dsp_bank_y(*this, "dsp_y")
 		, m_dac(*this, "dac%u", 0U)
 		, m_gfx(*this, "gfx")
 	{
@@ -127,6 +130,9 @@ protected:
 	required_device_array<scc85c30_device, 3> m_scc;
 	required_device<dsp56001_device> m_dsp;
 	memory_share_creator<u32> m_dsp_ram;
+	memory_bank_creator m_dsp_bank_lo; // SRAM words 0-0x3fff
+	memory_bank_creator m_dsp_bank_hi; // SRAM words 0x4000-0x7fff
+	memory_bank_creator m_dsp_bank_y;  // all of the SRAM
 	required_device_array<dac_16bit_r2r_twos_complement_device, 2> m_dac;
 	required_device<sgi_lg1_device> m_gfx;
 
@@ -162,6 +168,10 @@ void ip20_state::machine_start()
 	save_item(NAME(m_vr_latch));
 
 	m_idle_scan = timer_alloc(FUNC(ip20_state::idle_scan), this);
+
+	m_dsp_bank_lo->set_base(&m_dsp_ram[0]);
+	m_dsp_bank_hi->set_base(&m_dsp_ram[0x4000]);
+	m_dsp_bank_y->set_base(&m_dsp_ram[0]);
 
 	// one DAC write per sample
 	for (auto &dac : m_dac)
@@ -289,9 +299,9 @@ void ip20_state::dsp_irqa_update()
 // registers, Y:$FFFC/$FFFD the headphone gain MDACs.
 void ip20_state::dsp_p_map(address_map &map)
 {
-	map(0x0000, 0xffff).lrw32(
-		NAME([this](offs_t offset) { return m_dsp_ram[(offset & 0x7fff) ^ 0x4000]; }),
-		NAME([this](offs_t offset, u32 data) { m_dsp_ram[(offset & 0x7fff) ^ 0x4000] = data & 0x00ff'ffffU; }));
+	// banks, so the DSP reads the SRAM directly (A15 isn't decoded)
+	map(0x0000, 0x3fff).mirror(0x8000).bankrw(m_dsp_bank_hi);
+	map(0x4000, 0x7fff).mirror(0x8000).bankrw(m_dsp_bank_lo);
 }
 
 void ip20_state::dsp_x_map(address_map &map)
@@ -301,9 +311,7 @@ void ip20_state::dsp_x_map(address_map &map)
 
 void ip20_state::dsp_y_map(address_map &map)
 {
-	map(0x0000, 0xffff).lrw32(
-		NAME([this](offs_t offset) { return m_dsp_ram[offset & 0x7fff]; }),
-		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset & 0x7fff] = data & 0x00ff'ffffU; }));
+	map(0x0000, 0x7fff).mirror(0x8000).bankrw(m_dsp_bank_y);
 	map(0xffe0, 0xffed).rw(m_hpc, FUNC(hpc1_device::dsp_r), FUNC(hpc1_device::dsp_w));
 	map(0xffe5, 0xffe5).r(FUNC(ip20_state::dsp_counter_r));
 	map(0xfffc, 0xfffd).lrw32(
