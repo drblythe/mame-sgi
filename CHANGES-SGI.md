@@ -16,6 +16,17 @@ built binaries.
   longer shows its warning screen at start-up. See README-SGI.md for the
   ROM set and the NVRAM settings it needs on first boot.
 
+- **IRIS Indigo** (`indigo_r4000` R4000 100 MHz, `indigo_r4400` R4400
+  150 MHz, LG1 graphics) runs IRIX 6.5.22 to the desktop: both models now
+  on the MIPS III recompiler (boot to login in about a minute instead of
+  six), LG1 drawing for the X server, IRIS GL and OpenGL, Ethernet, the
+  fast SCSI path, save states. Audio output and input through a new
+  DSP56000/DSP56001 core running SGI's own microcode, with the HPC1's DSP
+  interface and the audio board's clocks, input level and source.
+  Descriptions now give the CPU and its speed.
+- **DSP56000/DSP56001 core** (shared MAME code): the instruction set,
+  address generation, loops, interrupts and the SSI and SCI ports.
+
 ### Fixed
 
 - **Virtual TLB** (shared MAME code): unmapping a TLB entry counted it as a
@@ -46,6 +57,8 @@ built binaries.
 - **Indigo2 vertical retrace interrupt** reaches IRIX where its graphics
   driver expects it, so OpenGL programs no longer hang waiting for a buffer
   swap and save states resume.
+- **DSP56000 disassembler** (shared MAME code): MOVEP shows its peripheral
+  address and Tcc its register pair correctly.
 - **Newport picture and cursor framing** follow the video timing IRIX
   loads: on the Indigo2 the picture was off by six columns, with extra
   border, and the hardware cursor six columns left of the pointer.

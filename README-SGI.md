@@ -1,7 +1,8 @@
-# SGI Indy, Indigo2 and Challenge S: a fork of MAME 0.289
+# SGI Indy, Indigo, Indigo2 and Challenge S: a fork of MAME 0.289
 
 This is a fork of [MAME](https://github.com/mamedev/mame) 0.289 that makes
-the SGI Indy and Challenge S (IP24) and the Indigo2 (IP22) run IRIX 6.5
+the SGI Indy and Challenge S (IP24), the Indigo2 (IP22) and the Indigo
+(IP20) run IRIX 6.5
 well enough for regular use:
 boot to the desktop, run the window system, OpenGL and IRIS GL programs,
 networking, audio, SCSI disks, CD-ROMs and DAT tape, and save and restore
@@ -37,6 +38,8 @@ The tree builds two ways:
 | `indy_5015` | Indy, R5000 150 MHz |
 | `challenge_s` | Challenge S, R5000SC 180 MHz (new; no graphics, serial console) |
 | `indigo2_4415` | Indigo2, R4400 150 MHz, XL graphics (see [Indigo2](#indigo2)) |
+| `indigo_r4000` | IRIS Indigo, R4000 100 MHz, LG1 graphics (see [Indigo](#indigo)) |
+| `indigo_r4400` | IRIS Indigo, R4400 150 MHz, LG1 graphics |
 
 The Indy with IRIX 6.5 is what is tested most.
 
@@ -176,6 +179,20 @@ the PROM's Command Monitor (`setenv -f eaddr 08:00:69:xx:yy:zz`, exactly in
 that form; `setenv console d1`), then leave MAME normally so the EEPROM is
 saved. The machine has three RAM banks (Machine Configuration), 128 MB by
 default, and a second SCSI bus.
+
+### Indigo
+
+The Indigo needs its own IRIX installation: IRIX 6.5.22 is the last release
+that supports it, and MAME runs the installer from the CD images as the
+hardware does. The ROM set (`indigo_r4400.zip` or `indigo_r4000.zip` with
+`ip20prom.070-8116-005.bin`) and the keyboard's `sgi_kbd.zip` go in the
+ROM path. Both models run on the MIPS III recompiler (a build option,
+`MAME_SGI_IP20_R4000_INTERPRETER` in `src/mame/sgi/ip20.cpp`, selects
+MAME's separate R4000 interpreter instead). Its LG1 graphics show
+1024x768: with `-nomaximize` the window opens at that size. Audio, input
+and output, runs SGI's own DSP56001 microcode, as IRIX loads it. If the
+boot PROM's audio check fails, MAME says so: IRIX then takes the Indigo
+for a V50 (no audio, VME) and 6.5 hangs early in the boot.
 
 ### Save states
 
