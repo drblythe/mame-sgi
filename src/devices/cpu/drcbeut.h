@@ -194,7 +194,7 @@ private:
 	mutable uint64_t        m_value_memo_misses = 0;
 
 public:
-	// TEMPORARY diagnostic (2026-07-29): pure in-memory counters (no I/O,
+	// Diagnostic: pure in-memory counters (no I/O,
 	// negligible overhead) for get_value()'s signature scan - measuring
 	// real call volume and scan distance directly, rather than guessing,
 	// before deciding whether the cost is dominated by call frequency or

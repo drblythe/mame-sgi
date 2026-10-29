@@ -68,13 +68,10 @@ public:
 	// statistics - same output the destructor prints at teardown, exposed
 	// so callers can check cache health (flush count, permanent cache
 	// utilization) periodically during a run, not only when the process
-	// exits cleanly. A plain kill -9 (this project's usual way of ending
-	// a test run) skips the destructor entirely, so without this a real
-	// cache-thrashing regression (a full permanent cache and hundreds of
-	// flushes reached within seconds of boot, say) can run for an entire
-	// session without ever being visible (a ~5x regression on 2026-08-07
-	// would have been caught immediately by this print instead of after
-	// an extended, unrelated investigation).
+	// exits cleanly. A kill -9 skips the destructor entirely, so without
+	// this a real cache-thrashing regression (a full permanent cache and
+	// hundreds of flushes reached within seconds of boot, say) can run
+	// for a whole test run without ever being visible.
 	void print_statistics() noexcept;
 
 	// resets the running counters (flush count, max transient high-water

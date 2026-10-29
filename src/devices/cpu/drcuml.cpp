@@ -38,16 +38,16 @@
 #include "drcbec.h"
 #include "drcbex64.h"
 
-// TEMPORARY diagnostic (2026-08-17) - see drcuml_block::end()'s own
+// Diagnostic, compiled out by default - see drcuml_block::end()'s
 // comment below and drcbex64.cpp's matching MAME_SGI_DRC_LOG_FILTER_PC.
 // Kept as a separate #define here (not a shared header) since this file
 // is MAME's own generic DRC frontend, used by every core - a standing
 // filter would be surprising to anyone building any other target.
-// Enable only for a deliberate investigation session; must match the
+// Enable only for a deliberate investigation; must match the
 // value in drcbex64.cpp for -drc_log_uml and -drc_log_native to filter
 // consistently.
-// DISABLED (2026-08-17) - investigation concluded. Commented out, not
-// deleted - reusable for a future investigation session.
+// To enable, uncomment the define below and set it to the block entry
+// PC to log.
 // #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024c64
 
 #include "emuopts.h"
@@ -369,13 +369,12 @@ void drcuml_block::end()
 
 	// if we have a logfile, generate a disassembly of the block
 #ifdef MAME_SGI_DRC_LOG_FILTER_PC
-	// TEMPORARY diagnostic (2026-08-17) - same filter, same rationale,
+	// Diagnostic, compiled out by default - same filter, same rationale,
 	// as drcbex64.cpp's own MAME_SGI_DRC_LOG_FILTER_PC (see its comment
 	// there): -drc_log_uml's disassemble() call below has no filter of
 	// its own and logs every compiled block system-wide unconditionally,
 	// which for a full boot produced a multi-gigabyte-per-minute log
-	// file - confirmed live 2026-08-17, killed after ~6 minutes at 2.8GB
-	// and still growing. Mirrors the exact same OP_HASH scan already
+	// file (about 2.8GB after 6 minutes and still growing). Mirrors the exact same OP_HASH scan already
 	// used in drcbex64.cpp's generate() to decide per-block whether this
 	// specific compiled sequence is the one being investigated.
 	bool log_this_block = false;

@@ -229,7 +229,7 @@
 #include <vector>
 
 
-// TEMPORARY diagnostic (2026-08-02): -drc_log_native/-drc_log_uml's
+// Diagnostic, compiled out by default: -drc_log_native/-drc_log_uml's
 // per-block disassembly logging (generate(), below) is prohibitively
 // expensive to run for a whole boot - every compiled block across the
 // entire system gets fully disassembled and written out, not just the
@@ -241,13 +241,12 @@
 // pays none of that cost. Undefined by default - this file is MAME's
 // shared x64 DRC backend, used by every core, not sgi-specific; a
 // standing filter here would be surprising to anyone building any other
-// target. Enable only for a deliberate investigation session, and pass
+// target. Enable only for a deliberate investigation, and pass
 // -drc_log_native (and usually -drc_log_uml) on the command line as
 // before - this only narrows what that flag actually logs, doesn't
 // replace needing it.
-// DISABLED (2026-08-17) - investigation concluded, pinned PC no longer
-// relevant. Commented out, not deleted - reusable for a future
-// investigation session.
+// To enable, uncomment the define below and set it to the block entry
+// PC to log.
 // #define MAME_SGI_DRC_LOG_FILTER_PC 0x10024d14
 
 // Query the host cache line size once, when the back-end is constructed,
@@ -340,7 +339,7 @@ const Gp::Id int_register_map[REG_I_COUNT] =
 #ifdef _WIN32
 	Gp::kIdBx, Gp::kIdSi, Gp::kIdDi, Gp::kIdR12, Gp::kIdR13, Gp::kIdR14, Gp::kIdR15,
 #else
-	// 2026-09-07: REVERTED - adding Gp::kIdR8 as a 6th direct
+	// Gp::kIdR8 is deliberately absent: using it as a 6th direct
 	// integer register (to also fast-map $v1, testing whether the cc1
 	// flake's corruption is $v0-specific or generic to any fast-mapped register)
 	// broke emulation at a fundamental level: both a -state resume AND a
@@ -1308,7 +1307,7 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	a.cmovne(gpd(REG_PARAM1), gpd(REG_PARAM3));
 	a.mov(MABS(&m_near.nominalfmod), gpb_lo(REG_PARAM1));
 
-	// MAME_SGI_FMOD_ENTRY_RESYNC_FIX (2026-09-01): m_state.fmod (the cache
+	// MAME_SGI_FMOD_ENTRY_RESYNC_FIX: m_state.fmod (the cache
 	// op_setfmod/op_getfmod trust for whether a real ldmxcsr is needed) was
 	// never updated here or at the exit point below - only by op_setfmod
 	// itself, driven by a guest CTC1. Across an execute() return/re-enter
@@ -1330,11 +1329,11 @@ drcbe_x64::drcbe_x64(drcuml_state &drcuml, device_t &device, drc_cache &cache, u
 	// exit point's own existing care about not clobbering non-standard host
 	// state it doesn't understand.
 	//
-	// Toggle-numbered (not a plain #define) per this project's established
+	// Toggle-numbered (not a plain #define), following the fork's
 	// convention for changes in this exact code region (see mips3drc.cpp's
 	// MAME_SGI_TLB_MISMATCH_REFRESH_FIX) - three functionally-equivalent
-	// variants kept side by side while their relative perf cost is measured
-	// (2026-09-01), all validated correct (mxcsrtest clean under real load
+	// variants kept side by side to compare their perf cost, all
+	// validated correct (mxcsrtest clean under real load
 	// in each case):
 	//   1 = always write nominalfmod into m_state.fmod (except the 0xff
 	//       sentinel) - simplest, original fix. perf stat vs no-fix:
@@ -1577,7 +1576,7 @@ void drcbe_x64::generate(drcuml_block &block, const instruction *instlist, u32 n
 	m_invariant_block = block.invariant();
 
 #if defined(MAME_SGI_DRC_LOG_FILTER_PC)
-	// TEMPORARY diagnostic (2026-08-02) - see the macro's own comment
+	// Diagnostic, compiled out by default - see the macro's comment
 	// near the top of this file. Only this block's logging decision is
 	// affected; block_begin() above and the actual code generation below
 	// are completely unaffected either way.
