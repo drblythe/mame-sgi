@@ -1973,12 +1973,27 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
     static_generate_memory_mode_checks
 ------------------------------------------------------------------*/
 
-void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::code_handle &exception_addrerr, int &label, int mode)
+// Address errors: a user-mode access at or above 0x80000000, a supervisor
+// access outside its regions, and in every mode a halfword, word or
+// doubleword access not aligned to its size. The masked accessors serve
+// LWL/LWR/LDL/LDR/SWL/SWR/SDL/SDR, which are given the aligned-down
+// address, so they skip the alignment test. In user mode both conditions
+// raise the same exception with the same BadVAddr, so one test covers them.
+void mips3_device::static_generate_memory_mode_checks(drcuml_block &block, uml::code_handle &exception_addrerr, int &label, int mode, int size, bool ismasked)
 {
-	/* user mode? generate address exception if top bit is set */
+	uint32_t const align = (ismasked || size == 1) ? 0 : size - 1;
+
+	/* user mode? generate address exception if top bit is set or the access is misaligned */
 	if (mode == MODE_USER)
 	{
-		UML_TEST(block, I0, 0x80000000);                                            // test    i0,0x80000000
+		UML_TEST(block, I0, 0x80000000 | align);                                    // test    i0,0x80000000|align
+		UML_EXHc(block, COND_NZ, exception_addrerr, I0);                            // exh     addrerr,i0,nz
+		return;
+	}
+
+	if (align != 0)
+	{
+		UML_TEST(block, I0, align);                                                 // test    i0,align
 		UML_EXHc(block, COND_NZ, exception_addrerr, I0);                            // exh     addrerr,i0,nz
 	}
 
@@ -2257,7 +2272,7 @@ void mips3_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	alloc_handle(*m_drcuml, handleptr, name);
 	UML_HANDLE(block, *handleptr);                                                  // handle  handleptr
 
-	static_generate_memory_mode_checks(block, exception_addrerr, label, mode);
+	static_generate_memory_mode_checks(block, exception_addrerr, label, mode, size, ismasked);
 
 
 	/* general case: assume paging and perform a translation */
@@ -2293,7 +2308,7 @@ void r4650_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	alloc_handle(*m_drcuml, handleptr, name);
 	UML_HANDLE(block, *handleptr);                                                  // handle  handleptr
 
-	static_generate_memory_mode_checks(block, exception_addrerr, label, mode);
+	static_generate_memory_mode_checks(block, exception_addrerr, label, mode, size, ismasked);
 
 	if (mode == MODE_USER)
 	{

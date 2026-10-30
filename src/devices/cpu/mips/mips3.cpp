@@ -584,6 +584,15 @@ void mips3_device::generate_tlb_exception(int exception, offs_t address)
 }
 
 
+// a misaligned halfword, word or doubleword access (LWL/LWR and friends use
+// the masked accessors with the aligned-down address)
+void mips3_device::generate_address_error(int exception, offs_t address)
+{
+	m_core->cpr[0][COP0_BadVAddr] = address;
+	generate_exception(exception, 1);
+}
+
+
 void mips3_device::invalid_instruction(uint32_t op)
 {
 	fatalerror("Invalid instruction! %08x\n", op);
@@ -1497,6 +1506,12 @@ inline bool mips3_device::RBYTE(offs_t address, uint32_t *result)
 
 inline bool mips3_device::RHALF(offs_t address, uint32_t *result)
 {
+	if (address & 1)
+	{
+		generate_address_error(EXCEPTION_ADDRLOAD, address);
+		*result = 0;
+		return false;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
@@ -1538,6 +1553,12 @@ inline bool mips3_device::RHALF(offs_t address, uint32_t *result)
 
 inline bool mips3_device::RWORD(offs_t address, uint32_t *result, bool insn)
 {
+	if (address & 3)
+	{
+		generate_address_error(EXCEPTION_ADDRLOAD, address);
+		*result = 0;
+		return false;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
@@ -1610,6 +1631,12 @@ inline bool mips3_device::RWORD_MASKED(offs_t address, uint32_t *result, uint32_
 
 inline bool mips3_device::RDOUBLE(offs_t address, uint64_t *result)
 {
+	if (address & 7)
+	{
+		generate_address_error(EXCEPTION_ADDRLOAD, address);
+		*result = 0;
+		return false;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & READ_ALLOWED)
 	{
@@ -1706,6 +1733,11 @@ inline void mips3_device::WBYTE(offs_t address, uint8_t data)
 
 inline void mips3_device::WHALF(offs_t address, uint16_t data)
 {
+	if (address & 1)
+	{
+		generate_address_error(EXCEPTION_ADDRSTORE, address);
+		return;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & WRITE_ALLOWED)
 	{
@@ -1740,6 +1772,11 @@ inline void mips3_device::WHALF(offs_t address, uint16_t data)
 
 inline void mips3_device::WWORD(offs_t address, uint32_t data)
 {
+	if (address & 3)
+	{
+		generate_address_error(EXCEPTION_ADDRSTORE, address);
+		return;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & WRITE_ALLOWED)
 	{
@@ -1798,6 +1835,11 @@ inline void mips3_device::WWORD_MASKED(offs_t address, uint32_t data, uint32_t m
 
 inline void mips3_device::WDOUBLE(offs_t address, uint64_t data)
 {
+	if (address & 7)
+	{
+		generate_address_error(EXCEPTION_ADDRSTORE, address);
+		return;
+	}
 	const uint32_t tlbval = vtlb_table()[address >> 12];
 	if (tlbval & WRITE_ALLOWED)
 	{
