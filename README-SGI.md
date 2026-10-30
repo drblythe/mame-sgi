@@ -192,7 +192,8 @@ ROM path. Both models run on the MIPS III recompiler (a build option,
 `MAME_SGI_IP20_R4000_INTERPRETER` in `src/mame/sgi/ip20.cpp`, selects
 MAME's separate R4000 interpreter instead). Its LG1 graphics show
 1024x768: with `-nomaximize` the window opens at that size. Audio, input
-and output, runs SGI's own DSP56001 microcode, as IRIX loads it.
+and output, runs SGI's own DSP56001 microcode, as IRIX loads it. The AES
+digital audio input and output are not emulated.
 
 ### Save states
 
