@@ -13,8 +13,9 @@ built binaries.
   it boots the Indy's disk to the desktop and passes the same tests as the
   Indy (graphics, disks, tape, network, audio, save states). 128 MB by
   default, up to 384 MB. No longer marked as not working, so MAME no
-  longer shows its warning screen at start-up. See README-SGI.md for the
-  ROM set and the NVRAM settings it needs on first boot.
+  longer shows its warning screen at start-up. See
+  [README-SGI.md](README-SGI.md) for the ROM set and the NVRAM settings it
+  needs on first boot.
 
 - **IRIS Indigo** (`indigo_r4000` R4000 100 MHz, `indigo_r4400` R4400
   150 MHz, LG1 graphics) runs IRIX 6.5.22 to the desktop: both models now
@@ -25,10 +26,27 @@ built binaries.
   interface and the audio board's clocks, input level and source.
   Descriptions now give the CPU and its speed.
 - **DSP56000/DSP56001 core** (shared MAME code): the instruction set,
-  address generation, loops, interrupts and the SSI and SCI ports.
+  address generation, loops, interrupts and the SSI and SCI ports. The
+  implementation includes some performance analysis and tuning.
+- **PulseAudio recording** (`-sound pulse`): the PulseAudio module now
+  captures from sources and monitors as well as playing, so recording
+  (audio input on the Indy, Indigo2 and Indigo) works with it. It costs
+  about 2% of a host core, where PortAudio through ALSA's pulse plugin
+  polls constantly.
 
 ### Fixed
 
+- **MIPS III address errors** (shared MAME code, recompiler and
+  interpreter): a misaligned halfword, word or doubleword load or store,
+  or a jump to an unaligned address, now raises an address error, so IRIX
+  kills the program with SIGBUS as on the hardware. Before, the access
+  silently used the aligned word below, and a jump to 0xfffffffd-0xffffffff
+  hung the recompiler at full host CPU. LWL/LWR and the other unaligned
+  load and store instructions are unaffected; user code runs no extra
+  host instructions for the check.
+- **Sound input** (shared MAME code): a host input with fewer channels
+  than the emulated one (a mono microphone feeding a stereo input) was
+  read with the wrong stride and arrived as noise.
 - **Virtual TLB** (shared MAME code): unmapping a TLB entry counted it as a
   mapping of virtual page 0, so a real mapping of page 0 survived being
   unmapped. IRIX never maps page 0; SGI's field diagnostics (IDE) do, and
@@ -168,7 +186,7 @@ The first release: everything this fork adds to MAME 0.289.
 
 - **Faster:** IRIX boots to the login prompt in about a minute on a
   modern x86-64 Linux host; the idle desktop uses about 0.07 of a host
-  core (was 0.5). See "Performance" in README-SGI.md.
+  core (was 0.5). See "Performance" in [README-SGI.md](README-SGI.md).
 - **Less recompiling:** user-code recompiles per boot fell from ~330 k to
   235 k, and about half of the arrivals that used to force a recompile
   (TLB mismatches, missing code) are now redispatched to existing code;

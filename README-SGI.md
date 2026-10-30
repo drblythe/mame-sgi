@@ -145,8 +145,10 @@ TAP-Windows adapter on Windows. Pick it under Network Devices in the menu.
   default low-fidelity one is fine at 48 kHz but adds audible distortion
   to high frequencies when IRIX plays at 44.1 kHz or lower.
 - Recording (microphone or line in) needs a sound module that can capture:
-  on Linux that is `-sound portaudio`. The input comes from the host's
-  default capture device, or the one mapped in the Audio Mixer.
+  on Linux `-sound pulse` (recommended: it costs little host CPU) or
+  `-sound portaudio`. The input comes from the host's default capture
+  device, or the one mapped in the Audio Mixer; with PulseAudio, an
+  output's monitor can be mapped too, to record what the host plays.
 - To monitor the input (apanel's monitor), give IRIX the same input and
   output sample rate: with different rates IRIX's monitor copies the
   samples without converting them, and the result is garbled.
@@ -190,9 +192,7 @@ ROM path. Both models run on the MIPS III recompiler (a build option,
 `MAME_SGI_IP20_R4000_INTERPRETER` in `src/mame/sgi/ip20.cpp`, selects
 MAME's separate R4000 interpreter instead). Its LG1 graphics show
 1024x768: with `-nomaximize` the window opens at that size. Audio, input
-and output, runs SGI's own DSP56001 microcode, as IRIX loads it. If the
-boot PROM's audio check fails, MAME says so: IRIX then takes the Indigo
-for a V50 (no audio, VME) and 6.5 hangs early in the boot.
+and output, runs SGI's own DSP56001 microcode, as IRIX loads it.
 
 ### Save states
 
