@@ -16,6 +16,7 @@
 #define GNU_SOURCE
 
 #include <pulse/pulseaudio.h>
+#include <algorithm>
 #include <map>
 
 #include "modules/lib/osdobj_common.h"
@@ -38,15 +39,20 @@ public:
 	virtual uint32_t get_generation() override;
 	virtual osd::audio_info get_information() override;
 	virtual uint32_t stream_sink_open(uint32_t node, std::string name, uint32_t rate) override;
+	virtual uint32_t stream_source_open(uint32_t node, std::string name, uint32_t rate) override;
 	virtual void stream_set_volumes(uint32_t id, const std::vector<float> &db) override;
 	virtual void stream_close(uint32_t id) override;
 	virtual void stream_sink_update(uint32_t, const int16_t *buffer, int samples_this_frame) override;
+	virtual void stream_source_update(uint32_t, int16_t *buffer, int samples_this_frame) override;
 
 private:
 	struct position_info {
 		pa_channel_position_t m_position;
 		osd::channel_position m_coords;
 	};
+
+	// sinks and sources are numbered separately: sources are keyed apart
+	static constexpr uint32_t SOURCE_KEY = 0x80000000;
 
 	static const position_info position_infos[];
 	static const char *const typenames[];
@@ -57,6 +63,7 @@ private:
 		uint32_t m_id, m_osdid;
 		int m_type;
 		std::string m_name, m_desc;
+		std::string m_source_name; // what recording from this node reads: a source, or a sink's monitor
 
 		// Audio node info
 		std::vector<pa_channel_position_t> m_position_codes;
@@ -84,6 +91,7 @@ private:
 	};
 
 	std::map<uint32_t, node_info> m_nodes;
+	std::map<uint32_t, uint32_t> m_source_to_node; // source index -> node key
 	std::map<uint32_t, uint32_t> m_node_osdid_to_id;
 
 	std::map<uint32_t, stream_info> m_streams;
@@ -108,12 +116,16 @@ private:
 	void stream_notify(stream_info *stream);
 	static void i_stream_write_request(pa_stream *, size_t size, void *self);
 	void stream_write_request(stream_info *stream, size_t size);
+	static void i_stream_read_request(pa_stream *, size_t size, void *self);
+	void stream_read_request(stream_info *stream, size_t size);
 	static void i_source_info(pa_context *, const pa_source_info *i, int eol, void *self);
 	void source_info(const pa_source_info *i, int eol);
 	static void i_sink_info_new(pa_context *, const pa_sink_info *i, int eol, void *self);
 	void sink_info_new(const pa_sink_info *i, int eol);
 	static void i_sink_input_info_change(pa_context *, const pa_sink_input_info *i, int eol, void *self);
 	void sink_input_info_change(stream_info *stream, const pa_sink_input_info *i, int eol);
+	static void i_source_output_info_change(pa_context *, const pa_source_output_info *i, int eol, void *self);
+	void source_output_info_change(stream_info *stream, const pa_source_output_info *i, int eol);
 
 	void generic_error(const char *msg);
 	void generic_pa_error(const char *msg, int err);
@@ -210,6 +222,31 @@ void sound_pulse::i_stream_write_request(pa_stream *, size_t size, void *self)
 }
 
 
+void sound_pulse::stream_read_request(stream_info *stream, size_t size)
+{
+	// This is called with the thread locked
+	for(;;) {
+		const void *data;
+		size_t bytes;
+		int err = pa_stream_peek(stream->m_stream, &data, &bytes);
+		if(err)
+			generic_pa_error("stream peek", err);
+		if(!bytes)
+			break;
+		// a null pointer with a size is a hole in the recording: skip it
+		if(data)
+			stream->m_buffer.push((const int16_t *)data, bytes/2/stream->m_channels);
+		pa_stream_drop(stream->m_stream);
+	}
+}
+
+void sound_pulse::i_stream_read_request(pa_stream *, size_t size, void *self)
+{
+	stream_info *si = static_cast<stream_info *>(self);
+	si->m_pulse->stream_read_request(si, size);
+}
+
+
 void sound_pulse::server_info(const pa_server_info *i)
 {
 	m_default_audio_sink = i->default_sink_name;
@@ -233,17 +270,26 @@ void sound_pulse::source_info(const pa_source_info *i, int eol)
 			pa_context_get_server_info(m_context, i_server_info, (void *)this);
 		return;
 	}
-	auto ni = m_nodes.find(i->index);
-	if(ni != m_nodes.end()) {
-		// Add the monitoring sources to the node
-		ni->second.m_source_port_count = i->channel_map.channels;
+	if(i->monitor_of_sink != PA_INVALID_INDEX) {
+		// a sink's monitor: recording from the sink's node reads it
+		auto ni = m_nodes.find(i->monitor_of_sink);
+		if(ni != m_nodes.end()) {
+			ni->second.m_source_port_count = i->channel_map.channels;
+			ni->second.m_source_name = i->name;
+			m_source_to_node[i->index] = ni->first;
+			m_generation++;
+		}
 		return;
 	}
+	if(m_nodes.find(i->index | SOURCE_KEY) != m_nodes.end())
+		return;
 
-	m_node_osdid_to_id[m_node_current_id] = i->index;
-	auto &node = m_nodes.emplace(i->index, node_info(this, i->index, m_node_current_id++, AREC, i->name, i->description)).first->second;
+	m_node_osdid_to_id[m_node_current_id] = i->index | SOURCE_KEY;
+	auto &node = m_nodes.emplace(i->index | SOURCE_KEY, node_info(this, i->index | SOURCE_KEY, m_node_current_id++, AREC, i->name, i->description)).first->second;
 
+	node.m_source_name = i->name;
 	node.m_source_port_count = i->channel_map.channels;
+	m_source_to_node[i->index] = i->index | SOURCE_KEY;
 	for(int chan=0; chan != i->channel_map.channels; chan++) {
 		pa_channel_position_t pos = i->channel_map.map[chan];
 		node.m_position_codes.push_back(pos);
@@ -255,6 +301,7 @@ void sound_pulse::source_info(const pa_source_info *i, int eol)
 			}
 		}
 	}
+	m_generation++;
 }
 
 void sound_pulse::i_source_info(pa_context *, const pa_source_info *i, int eol, void *self)
@@ -315,13 +362,38 @@ void sound_pulse::i_sink_input_info_change(pa_context *, const pa_sink_input_inf
 	stream->m_pulse->sink_input_info_change(stream, i, eol);
 }
 
+void sound_pulse::source_output_info_change(stream_info *stream, const pa_source_output_info *i, int eol)
+{
+	if(eol)
+		return;
+
+	auto si = m_source_to_node.find(i->source);
+	auto ni = (si != m_source_to_node.end()) ? m_nodes.find(si->second) : m_nodes.end();
+	if(ni != m_nodes.end())
+		stream->m_target_node = &ni->second;
+
+	for(uint32_t port = 0; port != stream->m_channels; port++)
+		stream->m_volumes[port] = pa_sw_volume_to_dB(i->volume.values[port]);
+
+	m_generation++;
+}
+
+void sound_pulse::i_source_output_info_change(pa_context *, const pa_source_output_info *i, int eol, void *self)
+{
+	stream_info *stream = static_cast<stream_info *>(self);
+	stream->m_pulse->source_output_info_change(stream, i, eol);
+}
+
 void sound_pulse::context_subscribe(pa_subscription_event_type_t t, uint32_t idx)
 {
 	// This is called with the thread locked
 	switch(int(t)) {
 	case PA_SUBSCRIPTION_EVENT_REMOVE | PA_SUBSCRIPTION_EVENT_SINK:
 	case PA_SUBSCRIPTION_EVENT_REMOVE | PA_SUBSCRIPTION_EVENT_SOURCE: {
-		auto si = m_nodes.find(idx);
+		bool const source = (int(t) & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) == PA_SUBSCRIPTION_EVENT_SOURCE;
+		if(source)
+			m_source_to_node.erase(idx);
+		auto si = m_nodes.find(source ? (idx | SOURCE_KEY) : idx);
 		if(si == m_nodes.end())
 			break;
 		for(auto &istream : m_streams)
@@ -352,6 +424,17 @@ void sound_pulse::context_subscribe(pa_subscription_event_type_t t, uint32_t idx
 		if(si == m_streams.end())
 			break;
 		pa_context_get_sink_input_info(m_context, idx, i_sink_input_info_change, (void *)&si->second);
+		break;
+	}
+
+	case PA_SUBSCRIPTION_EVENT_CHANGE | PA_SUBSCRIPTION_EVENT_SOURCE_OUTPUT: {
+		auto si1 = m_stream_pulse_id_to_osdid.find(idx);
+		if(si1 == m_stream_pulse_id_to_osdid.end())
+			break;
+		auto si = m_streams.find(si1->second);
+		if(si == m_streams.end())
+			break;
+		pa_context_get_source_output_info(m_context, idx, i_source_output_info_change, (void *)&si->second);
 		break;
 	}
 
@@ -424,7 +507,7 @@ osd::audio_info sound_pulse::get_information()
 
 		if(inode.second.m_name == m_default_audio_sink)
 			result.m_default_sink = inode.second.m_osdid;
-		if(inode.second.m_name == m_default_audio_source)
+		if(!inode.second.m_source_name.empty() && inode.second.m_source_name == m_default_audio_source)
 			result.m_default_source = inode.second.m_osdid;
 		node ++;
 	}
@@ -487,6 +570,73 @@ uint32_t sound_pulse::stream_sink_open(uint32_t node, std::string name, uint32_t
 	return id;
 }
 
+uint32_t sound_pulse::stream_source_open(uint32_t node, std::string name, uint32_t rate)
+{
+	pa_threaded_mainloop_lock(m_mainloop);
+	auto ni = m_node_osdid_to_id.find(node);
+	if(ni == m_node_osdid_to_id.end()) {
+		pa_threaded_mainloop_unlock(m_mainloop);
+		return 0;
+	}
+	node_info &snode = m_nodes.find(ni->second)->second;
+	if(!snode.m_source_port_count) {
+		pa_threaded_mainloop_unlock(m_mainloop);
+		return 0;
+	}
+
+	uint32_t id = m_stream_current_id++;
+	auto &stream = m_streams.emplace(id, stream_info(this, id, snode.m_source_port_count, rate)).first->second;
+
+	pa_sample_spec ss;
+#ifdef LSB_FIRST
+	ss.format = PA_SAMPLE_S16LE;
+#else
+	ss.format = PA_SAMPLE_S16BE;
+#endif
+	ss.rate = rate;
+	ss.channels = stream.m_channels;
+	stream.m_stream = pa_stream_new(m_context, name.c_str(), &ss, nullptr);
+	pa_stream_set_state_callback(stream.m_stream, i_stream_notify, &stream);
+	pa_stream_set_read_callback(stream.m_stream, i_stream_read_request, &stream);
+
+	// deliver the recording in fragments of about 10ms
+	pa_buffer_attr battr;
+	battr.fragsize = std::max<uint32_t>(rate / 100, 1) * 2 * stream.m_channels;
+	battr.maxlength = uint32_t(-1);
+	battr.minreq = uint32_t(-1);
+	battr.prebuf = uint32_t(-1);
+	battr.tlength = uint32_t(-1);
+
+	int err = pa_stream_connect_record(stream.m_stream, snode.m_source_name.c_str(), &battr, PA_STREAM_ADJUST_LATENCY);
+	if(err)
+		generic_pa_error("stream connect record", err);
+
+	stream.m_target_node = &snode;
+
+	m_wait_stream = true;
+	while(m_wait_stream)
+		pa_threaded_mainloop_wait(m_mainloop);
+
+	stream.m_pulse_id = pa_stream_get_index(stream.m_stream);
+	m_stream_pulse_id_to_osdid[stream.m_pulse_id] = id;
+
+	pa_threaded_mainloop_unlock(m_mainloop);
+
+	return id;
+}
+
+void sound_pulse::stream_source_update(uint32_t id, int16_t *buffer, int samples_this_frame)
+{
+	pa_threaded_mainloop_lock(m_mainloop);
+	auto si = m_streams.find(id);
+	if(si == m_streams.end()) {
+		pa_threaded_mainloop_unlock(m_mainloop);
+		return;
+	}
+	si->second.m_buffer.get(buffer, samples_this_frame);
+	pa_threaded_mainloop_unlock(m_mainloop);
+}
+
 void sound_pulse::stream_sink_update(uint32_t id, const int16_t *buffer, int samples_this_frame)
 {
 	pa_threaded_mainloop_lock(m_mainloop);
@@ -514,6 +664,7 @@ void sound_pulse::stream_close(uint32_t id)
 	stream_info &stream = si->second;
 	pa_stream_set_state_callback(stream.m_stream, nullptr, &stream);
 	pa_stream_set_write_callback(stream.m_stream, nullptr, &stream);
+	pa_stream_set_read_callback(stream.m_stream, nullptr, &stream);
 	pa_stream_disconnect(stream.m_stream);
 	m_streams.erase(si);
 	pa_threaded_mainloop_unlock(m_mainloop);
@@ -530,6 +681,7 @@ void sound_pulse::exit()
 	pa_threaded_mainloop_free(m_mainloop);
 
 	m_nodes.clear();
+	m_source_to_node.clear();
 	m_node_osdid_to_id.clear();
 	m_streams.clear();
 	m_stream_pulse_id_to_osdid.clear();
