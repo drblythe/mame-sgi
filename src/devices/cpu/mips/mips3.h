@@ -999,6 +999,7 @@ private:
 	void static_generate_out_of_cycles(drcuml_block &block, int &label);
 	void static_generate_tlb_mismatch(drcuml_block &block, int &label);
 	void static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name, bool fetch = false);
+	void write_perf_map();
 
 	void generate_update_mode(drcuml_block &block);
 	// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2 (mips3drc.cpp): host-side

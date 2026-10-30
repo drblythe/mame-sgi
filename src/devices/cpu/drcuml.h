@@ -224,6 +224,7 @@ public:
 
 	// handle management
 	uml::code_handle *handle_alloc(char const *name);
+	std::list<uml::code_handle> const &handles() const { return m_handlelist; }
 
 	// symbol management
 	void symbol_add(void *base, u32 length, char const *name);

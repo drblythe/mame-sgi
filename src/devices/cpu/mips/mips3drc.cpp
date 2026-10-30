@@ -160,7 +160,11 @@
 #include "cpu/drcuml.h"
 #include "cpu/drcumlsh.h"
 
+#include <algorithm>
 #include <chrono>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -540,6 +544,40 @@ void mips3_device::code_flush_cache()
 	{
 		fatalerror("Unrecoverable error generating static code\n");
 	}
+
+	write_perf_map();
+}
+
+
+// With $MAME_SGI_PERF_MAP set, write /tmp/perf-<pid>.map after every cache
+// flush, naming the static handlers (memory accessors per mode, exception
+// handlers, entry point and so on) so a Linux perf profile can attribute
+// host time inside the code cache. Everything else in the cache is
+// translated guest code. A flush regenerates the handlers, so the file is
+// rewritten each time.
+void mips3_device::write_perf_map()
+{
+#if defined(__linux__)
+	static bool const enabled = getenv("MAME_SGI_PERF_MAP") != nullptr;
+	if (!enabled)
+		return;
+	std::vector<std::pair<drccodeptr, std::string>> handlers;
+	for (uml::code_handle const &handle : m_drcuml->handles())
+		if (handle.codeptr() != nullptr)
+			handlers.emplace_back(handle.codeptr(), handle.string());
+	std::sort(handlers.begin(), handlers.end());
+	FILE *const f = fopen(util::string_format("/tmp/perf-%d.map", int(getpid())).c_str(), "w");
+	if (f == nullptr)
+		return;
+	for (size_t i = 0; i < handlers.size(); i++)
+	{
+		drccodeptr const end = (i + 1 < handlers.size()) ? handlers[i + 1].first : m_drc_cache.top();
+		if (end > handlers[i].first)
+			fprintf(f, "%llx %llx mips3_%s\n", (unsigned long long)(uintptr_t)handlers[i].first,
+				(unsigned long long)(end - handlers[i].first), handlers[i].second.c_str());
+	}
+	fclose(f);
+#endif
 }
 
 
@@ -2269,7 +2307,8 @@ void mips3_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	int tlbmiss = 0;
 
 	/* add a global entry for this */
-	alloc_handle(*m_drcuml, handleptr, name);
+	static char const *const mode_names[] = { "kernel", "super", "user" };
+	alloc_handle(*m_drcuml, handleptr, util::string_format("%s_%s", name, mode_names[mode]).c_str());
 	UML_HANDLE(block, *handleptr);                                                  // handle  handleptr
 
 	static_generate_memory_mode_checks(block, exception_addrerr, label, mode, size, ismasked);
@@ -2305,7 +2344,8 @@ void r4650_device::static_generate_memory_accessor(drcuml_block &block, int &lab
 	uml::code_handle &exception_addrerr = *m_exception[iswrite ? EXCEPTION_ADDRSTORE : EXCEPTION_ADDRLOAD];
 
 	/* add a global entry for this */
-	alloc_handle(*m_drcuml, handleptr, name);
+	static char const *const mode_names[] = { "kernel", "super", "user" };
+	alloc_handle(*m_drcuml, handleptr, util::string_format("%s_%s", name, mode_names[mode]).c_str());
 	UML_HANDLE(block, *handleptr);                                                  // handle  handleptr
 
 	static_generate_memory_mode_checks(block, exception_addrerr, label, mode, size, ismasked);
