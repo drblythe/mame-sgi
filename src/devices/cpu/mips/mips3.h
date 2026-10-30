@@ -675,7 +675,7 @@ protected:
 
 	/* internal stuff */
 	uint32_t        m_ppc;
-	uint32_t        m_nextpc;
+	uint64_t        m_nextpc;                    // pending jump target; ~0 (wider than any PC) when none
 	uint32_t        m_pcbase;
 	uint8_t         m_cf[4][8];
 	bool            m_delayslot;
@@ -758,6 +758,7 @@ protected:
 												/* subroutines */
 	uml::code_handle *   m_entry;                      /* entry point */
 	uml::code_handle *   m_nocode;                     /* nocode exception handler */
+	uml::code_handle *   m_fetch_error;                /* address error on an unaligned instruction fetch */
 	uml::code_handle *   m_out_of_cycles;              /* out of cycles exception handler */
 	uml::code_handle *   m_tlb_mismatch;               /* tlb mismatch handler */
 	uml::code_handle *   m_read8[3];                   /* read byte */
@@ -996,7 +997,7 @@ private:
 	void static_generate_nocode_handler(drcuml_block &block, int &label);
 	void static_generate_out_of_cycles(drcuml_block &block, int &label);
 	void static_generate_tlb_mismatch(drcuml_block &block, int &label);
-	void static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name);
+	void static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name, bool fetch = false);
 
 	void generate_update_mode(drcuml_block &block);
 	// MAME_SGI_DISPATCH_MODE_ASID_FIX value 2 (mips3drc.cpp): host-side
@@ -1092,6 +1093,7 @@ private:
 		return dispatch_page_writable(target_pc) ? uml::mem(&m_core->dispatch_mode) : uml::mem(&m_core->mode);
 	}
 	void generate_select_dispatch_key(drcuml_block &block, uml::parameter target_pc, uml::parameter dest, int &labelnum);
+	void generate_check_fetch_pc(drcuml_block &block, uml::parameter pc);
 private:
 	void generate_update_cycles(drcuml_block &block, compiler_state &compiler, uml::parameter param, bool allow_exception, bool diag_tag = false, uint32_t diag_desc_pc = 0);
 	void generate_checksum_block(drcuml_block &block, compiler_state &compiler, const opcode_desc *seqhead, const opcode_desc *seqlast, const opcode_desc *codelast);

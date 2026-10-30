@@ -284,6 +284,7 @@ mips3_device::mips3_device(const machine_config &mconfig, device_type type, cons
 	, m_drc_cache_dirty(0)
 	, m_entry(nullptr)
 	, m_nocode(nullptr)
+	, m_fetch_error(nullptr)
 	, m_out_of_cycles(nullptr)
 	, m_tlb_mismatch(nullptr)
 	, m_hotspot_select(0)
@@ -5607,7 +5608,15 @@ void mips3_device::execute_run()
 		}
 #endif
 
-		/* instruction fetch */
+		/* instruction fetch: an unaligned PC (a jump through a bad register or
+		   an ERET to a bad EPC) is an address error, with BadVAddr and EPC the
+		   PC itself */
+		if (m_core->pc & 3)
+		{
+			m_core->cpr[0][COP0_BadVAddr] = m_core->pc;
+			generate_exception(EXCEPTION_ADDRLOAD, 1);
+			continue;
+		}
 		if(!RWORD(m_core->pc, &op, true))
 		{
 			continue;

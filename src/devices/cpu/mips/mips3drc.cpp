@@ -510,6 +510,7 @@ void mips3_device::code_flush_cache()
 			static_generate_exception(block, label, EXCEPTION_OVERFLOW,      true,  "exception_overflow");
 			static_generate_exception(block, label, EXCEPTION_TRAP,          true,  "exception_trap");
 			static_generate_exception(block, label, EXCEPTION_FPE,           true,  "exception_fpe");
+			static_generate_exception(block, label, EXCEPTION_ADDRLOAD,      false, "fetch_error", true);
 
 			block.end();
 		}
@@ -1531,6 +1532,7 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 	/* forward references */
 	alloc_handle(*m_drcuml, m_exception_norecover[EXCEPTION_INTERRUPT], "interrupt_norecover");
 	alloc_handle(*m_drcuml, m_nocode, "nocode");
+	alloc_handle(*m_drcuml, m_fetch_error, "fetch_error");
 
 	alloc_handle(*m_drcuml, m_entry, "entry");
 	UML_HANDLE(block, *m_entry);                                                // handle  entry
@@ -1544,6 +1546,9 @@ void mips3_device::static_generate_entry_point(drcuml_block &block, int &label)
 
 	/* load fast integer registers */
 	load_fast_iregs(block);
+
+	// a jump to an unaligned PC that ran out of cycles resumes here
+	generate_check_fetch_pc(block, uml::mem(&m_core->pc));
 
 	/* check for interrupts */
 	UML_AND(block, I0, CPR032(COP0_Cause), CPR032(COP0_Status));                // and     i0,[Cause],[Status]
@@ -1806,9 +1811,14 @@ void mips3_device::static_generate_tlb_mismatch(drcuml_block &block, int &label)
     exception handler
 -------------------------------------------------*/
 
-void mips3_device::static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name)
+// fetch: the address error for an unaligned instruction fetch
+// (m_fetch_error, entered from generate_check_fetch_pc). The parameter is
+// the PC itself, which is also BadVAddr and EPC; it is never a delay slot,
+// and no cycles are charged (the test comes before the jump's cycle update,
+// so an interrupt check there never sees the odd PC).
+void mips3_device::static_generate_exception(drcuml_block &block, int &label, uint8_t exception, int recover, const char *name, bool fetch)
 {
-	uml::code_handle *&exception_handle = recover ? m_exception[exception] : m_exception_norecover[exception];
+	uml::code_handle *&exception_handle = fetch ? m_fetch_error : recover ? m_exception[exception] : m_exception_norecover[exception];
 	uint32_t offset = 0x180;
 	uml::code_label const next = label++;
 	uml::code_label const skip = label++;
@@ -1873,11 +1883,18 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	}
 
 	UML_AND(block, I2, CPR032(COP0_Cause), ~0x800000ff);                        // and     i2,[Cause],~0x800000ff
-	UML_TEST(block, I0, 1);                                                     // test    i0,1
-	UML_JMPc(block, COND_Z, next);                                              // jz      <next>
-	UML_OR(block, I2, I2, 0x80000000);                                          // or      i2,i2,0x80000000
-	UML_SUB(block, I0, I0, 1);                                                  // sub     i0,i0,1
-	UML_LABEL(block, next);                                                     // <next>:
+	if (fetch)
+	{
+		UML_MOV(block, I1, 0);                                                  // mov     i1,0
+	}
+	else
+	{
+		UML_TEST(block, I0, 1);                                                 // test    i0,1
+		UML_JMPc(block, COND_Z, next);                                          // jz      <next>
+		UML_OR(block, I2, I2, 0x80000000);                                      // or      i2,i2,0x80000000
+		UML_SUB(block, I0, I0, 1);                                              // sub     i0,i0,1
+		UML_LABEL(block, next);                                                 // <next>:
+	}
 	UML_MOV(block, I3, offset);                                                 // mov     i3,offset
 	// EPC is a genuinely 64-bit COP0 register; the interpreter assigns it
 	// from m_core->pc (a uint32_t), zero-extending into the full 64-bit
@@ -2387,6 +2404,17 @@ void mips3_device::generate_update_mode(drcuml_block &block)
     or dest at every one of this function's call sites,
     confirmed by inspection, not assumed).
 -------------------------------------------------*/
+
+// An instruction fetch from an unaligned PC takes an address error before
+// anything is decoded. Only computed targets can be unaligned (JR, JALR,
+// ERET, and a resume through the entry point), so they are tested before
+// their dispatch: the hash ignores the low two PC bits, and a block for such
+// a PC would replace its aligned neighbour's.
+void mips3_device::generate_check_fetch_pc(drcuml_block &block, uml::parameter pc)
+{
+	UML_TEST(block, pc, 3);                                                     // test    pc,3
+	UML_EXHc(block, COND_NZ, *m_fetch_error, pc);                               // exh     fetch_error,pc,nz
+}
 
 void mips3_device::generate_select_dispatch_key(drcuml_block &block, uml::parameter target_pc, uml::parameter dest, int &labelnum)
 {
@@ -2961,6 +2989,7 @@ void mips3_device::generate_delay_slot_and_branch(drcuml_block &block, compiler_
 	}
 	else
 	{
+		generate_check_fetch_pc(block, uml::mem(&m_core->jmpdest));
 		generate_update_cycles(block, compiler_temp, uml::mem(&m_core->jmpdest), true); // <subtract cycles>
 #ifdef MAME_DRC_BUGFIXES
 		// Bug fix: same class as the branch case above - see its comment.
@@ -4614,6 +4643,7 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 					UML_MOV(block, CPR032(COP0_Status), I0);                    // mov     [Status],i0
 					generate_update_mode(block);
 					compiler.checkints = true;
+					generate_check_fetch_pc(block, CPR032(COP0_EPC));
 					generate_update_cycles(block, compiler, CPR032(COP0_EPC), true);// <subtract cycles>
 					if (m_drc_asid_dispatch)
 					{
@@ -4638,6 +4668,7 @@ bool mips3_device::generate_cop0(drcuml_block &block, compiler_state &compiler, 
 					UML_MOV(block, CPR032(COP0_Status), I0);                    // mov     [Status],i0
 					generate_update_mode(block);
 					compiler.checkints = true;
+					generate_check_fetch_pc(block, CPR032(COP0_ErrorPC));
 					generate_update_cycles(block, compiler, CPR032(COP0_ErrorPC), true); // <subtract cycles>
 					if (m_drc_asid_dispatch)
 					{
