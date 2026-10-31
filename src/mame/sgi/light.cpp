@@ -48,7 +48,7 @@ enum
 	REX15_OP_FLAG_STOPONX       = 0x00000100,
 	REX15_OP_FLAG_STOPONY       = 0x00000200,
 	REX15_OP_FLAG_ENZPATTERN    = 0x00000400,
-	REX15_OP_FLAG_FLINE         = 0x00000800,
+	REX15_OP_FLAG_FLINE         = 0x00000800, // also enables the line stipple pattern
 	REX15_OP_FLAG_LINE          = 0x00001000,
 	REX15_OP_FLAG_RGBMODE       = 0x00004000,
 	REX15_OP_FLAG_DITHER        = 0x00008000,
@@ -57,6 +57,7 @@ enum
 	REX15_OP_FLAG_ENLSPATTERN   = 0x00040000,
 	REX15_OP_FLAG_LOGICSRC      = 0x00080000,
 	REX15_OP_FLAG_COLORAUX      = 0x00200000,
+	REX15_OP_FLAG_LSOPAQUE      = 0x00400000,
 	REX15_OP_FLAG_ZOPAQUE       = 0x00800000,
 	REX15_OP_FLAG_ZCONTINUE     = 0x01000000,
 };
@@ -754,7 +755,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 		bool draw = !stipple || line_stipple(stop && major == last);
 		if (draw && pattern && !BIT(m_zpattern, 31 - n))
 		{
-			if (cmd & REX15_OP_FLAG_ZOPAQUE)
+			if (zopaque(cmd))
 				src = u8(m_colorback);
 			else
 				draw = false;
@@ -933,7 +934,10 @@ void sgi_lg1_device::do_rex_command()
 	int const dy = (y1 >= y0) ? 1 : -1;
 
 	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
-	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
+	// the X server fills stippled areas a row per GO with the row's
+	// stipple in lspattern (bit 11, opaque with bit 22)
+	bool const xstipple = cmd & REX15_OP_FLAG_FLINE;
+	bool const stipple = xstipple || (cmd & REX15_OP_FLAG_ENLSPATTERN);
 	bool const block = cmd & REX15_OP_FLAG_BLOCK;
 	bool const span = block || (cmd & REX15_OP_FLAG_STOPONX);
 	bool const quadaux = (cmd & REX15_OP_FLAG_COLORAUX) && (cmd & REX15_OP_FLAG_QUADMODE);
@@ -968,7 +972,11 @@ void sgi_lg1_device::do_rex_command()
 		&& ((cmd & REX15_OP_FLAG_STOPONY) || ((cmd & REX15_OP_FLAG_STOPONX) && (cmd & REX15_OP_FLAG_XMAJOR))
 			|| (!stop && (cmd & REX15_OP_FLAG_XYCONTINUE)))
 		&& !(cmd & (REX15_OP_FLAG_COLORAUX | REX15_OP_FLAG_LOGICSRC));
-	if ((cmd & (REX15_OP_FLAG_FLINE | REX15_OP_FLAG_LINE)) || aa >= 0 || linear)
+	// blocks and spans (STOPONX without bit 6) with bit 11 are stippled
+	// fills, not lines
+	bool const fill = (cmd & REX15_OP_FLAG_BLOCK)
+		|| ((cmd & REX15_OP_FLAG_STOPONX) && !(cmd & (REX15_OP_FLAG_XMAJOR | REX15_OP_FLAG_LINE)));
+	if (((cmd & (REX15_OP_FLAG_FLINE | REX15_OP_FLAG_LINE)) && !fill) || aa >= 0 || linear)
 	{
 		draw_line(cmd, color, aa);
 		return;
@@ -991,12 +999,17 @@ void sgi_lg1_device::do_rex_command()
 		bool draw = true;
 		u8 src = percolor ? current_color(cmd, x, y) : color;
 		if (stipple && !BIT(m_lspattern, 31 - ((x - x0) * dx & 31)))
-			draw = false;
+		{
+			if (lsopaque(cmd))
+				src = u8(m_colorback);
+			else
+				draw = false;
+		}
 		else if (pattern)
 		{
 			if (!BIT(m_zpattern, 31 - n))
 			{
-				if (cmd & REX15_OP_FLAG_ZOPAQUE)
+				if (zopaque(cmd))
 					src = u8(m_colorback);
 				else
 					draw = false;
@@ -1053,9 +1066,10 @@ void sgi_lg1_device::do_rex_command()
 		}
 		x = x0;
 		y += dy;
-		// pattern rows take a new pattern word, and host data rows start
-		// with a new quad (the rest of the current one is discarded)
-		if (pattern || hostdata)
+		// pattern and stipple rows take a new pattern word, and host data
+		// rows start with a new quad (the rest of the current one is
+		// discarded)
+		if (pattern || xstipple || hostdata)
 			break;
 	}
 
