@@ -746,8 +746,7 @@ void ip20_state::ip20(machine_config &config)
 	m_scc[0]->configure_channels(3'686'400, 0, 3'686'400, 0);
 	m_scc[0]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<0>));
 
-	sgi_kbd_port_device &kbd_port(SGI_KBD_PORT(config, "keyboard_port"));
-	kbd_port.option_set("keyboard", SGI_KBD);
+	sgi_kbd_port_device &kbd_port(SGI_KBD_PORT(config, "keyboard_port", indigo_sgi_kbd_devices, "keyboard"));
 	rs232_port_device &mouse_port(RS232_PORT(config, "mouse_port"));
 	mouse_port.option_set("mouse", SGI_HLE_SERIAL_MOUSE);
 	m_scc[0]->out_txda_callback().set(kbd_port, FUNC(sgi_kbd_port_device::write_txd));
