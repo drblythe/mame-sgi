@@ -5148,8 +5148,10 @@ void newport_base_device::do_iline(uint32_t color)
 	}
 	else
 	{
-		write_x_start(x << 11);
-		write_y_start(y << 11);
+		// the next line of a polyline or rectangle starts at this end
+		// point, also after a zero-length line (which takes no step)
+		write_x_start(x2 << 11);
+		write_y_start(y2 << 11);
 	}
 }
 
