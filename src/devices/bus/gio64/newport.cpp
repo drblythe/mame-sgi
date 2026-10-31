@@ -1362,8 +1362,17 @@ const uint32_t s_rb2_read_mask[8][4] = {
 };
 } // anonymous namespace
 
-uint32_t rb2_device::expand_to_all_lanes(uint32_t src)
+uint32_t rb2_device::expand_to_all_lanes(uint32_t src) const
 {
+	// the pop-up and CID planes are two 2-bit fields, buffer 0 and buffer 1,
+	// four bits apart whatever the draw depth: a write masked to both fills
+	// both (IRIS GL draws pop-up planes in buffer 0 and reads them back from
+	// buffer 1 on an 8-bit board)
+	if (m_plane_enable == 5 || m_plane_enable == 6)
+	{
+		src = (src & 3) * 0x11;
+		return m_plane_enable == 5 ? src << 2 : src;
+	}
 	switch (m_draw_depth)
 	{
 	case 0:
@@ -1383,14 +1392,8 @@ uint32_t rb2_device::expand_to_all_lanes(uint32_t src)
 	}
 	switch (m_plane_enable)
 	{
-	case 1: // RGB/CI
-	case 2: // RGBA
-	case 6: // CID
-		return src;
 	case 4: // OLAY
 		return src << 8;
-	case 5: // PUP
-		return src << 2;
 	}
 	return src;
 }
@@ -1496,20 +1499,7 @@ ATTR_FORCE_INLINE inline void rb2_device::write_pixel_xy(int x, int y, uint32_t 
 // on the destination; false when the logic op reads it.
 bool rb2_device::stored_value(uint32_t data, uint32_t &value) const
 {
-	uint32_t src = data;
-	switch (m_draw_depth)
-	{
-	case 0: src |= src << 4; src |= src << 8; src |= src << 16; break;
-	case 1: src |= src << 8; src |= src << 16; break;
-	case 2: src |= src << 12; break;
-	case 3: break;
-	}
-	switch (m_plane_enable)
-	{
-	case 4: src <<= 8; break;
-	case 5: src <<= 2; break;
-	default: break;
-	}
+	const uint32_t src = expand_to_all_lanes(data);
 	if (m_blend || m_fast_clear)
 	{
 		value = src;

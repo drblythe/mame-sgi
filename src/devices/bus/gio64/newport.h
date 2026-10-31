@@ -593,7 +593,7 @@ private:
 
 	void logic_pixel(uint32_t src);
 	void store_pixel(uint32_t value);
-	uint32_t expand_to_all_lanes(uint32_t src);
+	uint32_t expand_to_all_lanes(uint32_t src) const;
 
 	void set_global_mask(uint32_t global_mask) { m_global_mask = global_mask; }
 	void update_write_mask();
