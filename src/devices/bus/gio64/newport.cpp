@@ -4900,8 +4900,11 @@ void newport_base_device::do_fline(uint32_t color)
 // from S's centre in sixteenths: T takes that entry and S its complement.
 // The coverage is the alpha in RGB mode (the alpha iterator is not used:
 // OpenGL leaves another primitive's alpha slope in place) and replaces the
-// low 4 bits of the colour index in CI mode. ZPATTERN masks S and LSPATTERN
-// masks T, one bit per step, msb first. With ENDPTFILTER a step holding an
+// low 4 bits of the colour index in CI mode. ZPATTERN and LSPATTERN mask the
+// two pixels, one bit per step, msb first: ZPATTERN the one on the side of
+// (dy, -dx) from the line, where (dx, dy) is its direction in screen
+// coordinates, and LSPATTERN the other (IRIS GL relies on this when it
+// z-buffers these lines in software). With ENDPTFILTER a step holding an
 // endpoint has its coverages shifted right by 0 to 3 as the line covers 8 or
 // more, 4-7, 2-3 or 0-1 sixteenths of its column; a skipped end is not
 // filtered. A LENGTH32 line draws 32 steps per GO and continues there on the
@@ -4973,6 +4976,9 @@ void newport_base_device::do_aline()
 	const bool skip_last = BIT(mode0, 11);
 	const bool zmask = BIT(mode0, 12);
 	const bool lsmask = BIT(mode0, 13);
+	// whether ZPATTERN masks T rather than S: T is on the (dy, -dx) side
+	// when an x-major line's directions differ or a y-major line's agree
+	const bool z_on_t = x_major ? sa != sb : sa == sb;
 	const bool shade = BIT(mode0, 18);
 	const bool filter = BIT(mode0, 22);
 	const bool rgbmode = BIT(m_rex3.m_draw_mode1, 15);
@@ -5011,9 +5017,11 @@ void newport_base_device::do_aline()
 			shift = covered >= 8 ? 0 : covered >= 4 ? 1 : covered >= 2 ? 2 : 3;
 		}
 		const int bit = 31 - (i & 31);
-		if (!zmask || BIT(m_rex3.m_z_pattern, bit))
+		const bool z_on = !zmask || BIT(m_rex3.m_z_pattern, bit);
+		const bool ls_on = !lsmask || BIT(m_rex3.m_ls_pattern, bit);
+		if (z_on_t ? ls_on : z_on)
 			pixel(col, row, 15 - t_index, shift);
-		if (!lsmask || BIT(m_rex3.m_ls_pattern, bit))
+		if (z_on_t ? z_on : ls_on)
 			pixel(col, row + 1, t_index, shift);
 		if (shade)
 			iterate_shade();
