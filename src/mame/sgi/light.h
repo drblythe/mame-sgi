@@ -199,7 +199,9 @@ private:
 	u32 m_yend;
 	u32 m_xsave;
 	u32 m_minorslope;
-	u8 m_aamask; // index bits that take the antialiasing weight
+	// colour index bits that take the antialiasing weight
+	static constexpr u8 AA_MASK = 0x0f;
+	u8 m_aamask; // unused; kept so that existing save states load
 	bool m_display_dirty = true; // something visible changed since the last redraw
 	bool m_draw_frame = true;    // this frame is being redrawn
 	// the current position (15 fraction bits): loaded from the start

@@ -698,8 +698,8 @@ bool sgi_lg1_device::compare_pass(u8 src, u8 dst) const
  * masking them (most significant bit first; IRIS GL's software z-buffer
  * hides pixels this way), and XYCONTINUE carries on from the current
  * position, where the previous piece stopped (writing the start registers
- * also sets it). Antialiased passes (command bit 2) replace the colour
- * index bits loaded by opcode 2 with a weight: from aweight, eight 4-bit
+ * also sets it). Antialiased passes (command bit 2) replace the low four
+ * colour index bits (a 16-entry ramp) with a weight: from aweight, eight 4-bit
  * intensities indexed by coverage 0-7, the top three bits of the minor
  * fraction f (opcode 0) or 7 - f (opcode 1); or the low bits of rwaux1
  * (opcode 2). IRIS GL draws a one-pixel smooth line as two passes, opcode
@@ -743,7 +743,7 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 		{
 			unsigned const f = (minor >> 12) & 7;
 			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
-			src = (base & ~m_aamask) | (weight & m_aamask);
+			src = (base & ~AA_MASK) | (weight & AA_MASK);
 		}
 		bool draw = !stipple || line_stipple(stop && major == last);
 		if (draw && pattern && !BIT(m_zpattern, 31 - n))
@@ -831,9 +831,10 @@ void sgi_lg1_device::do_rex_command()
 	switch (aa >= 0 ? REX15_OP_DRAW : (cmd & 3))
 	{
 	case 2:
-		// load the colour index bits that antialiased passes replace with
-		// the weight (IRIS GL loads 0xf before its smooth lines)
-		m_aamask = u8(m_rwaux1);
+		// without the antialias bit: no visible effect is known. IRIS GL
+		// issues it before blended and z-buffered lines with whatever
+		// rwaux1 holds (often a pixel just read), and before smooth lines
+		// with 0xf there, so nothing drawn later can depend on rwaux1 here
 		return;
 
 	case REX15_OP_NOP:
