@@ -126,7 +126,8 @@ namespace {
 // wherever mark_full_dirty() would use the full screen bounds, to measure
 // the ceiling on possible savings from a precise dirty rect against an
 // otherwise identical build. It shows stale pixels for any content
-// outside that rect. Measured under sustained test/wave.cpp -db swapping
+// outside that rect. Measured with a double-buffered OpenGL program in a
+// 300x300 window swapping continuously
 // (n=5 perf stat A/B): -24.4% instructions and -17.4% cycles (both
 // p<0.0001) versus the full-screen path. Leave OFF.
 // #define MAME_SGI_DIRTY_RECT_SMALLRECT_EXPERIMENT
@@ -148,7 +149,8 @@ namespace {
 // second, of how many distinct dirty rects m_pending_dirty holds per real
 // recompute (0 = full-recompute fallback, i.e. m_pending_dirty wasn't
 // valid this call). Shows how many separate regions a realistic desktop
-// workload (test/wave.cpp -db plus whatever else is on screen - a
+// workload (a double-buffered OpenGL program swapping, plus whatever else
+// is on screen - a
 // blinking cursor, at minimum) produces. If workloads rarely exceed 2,
 // MAX_RECTS=4 has headroom; if they regularly hit 4 (and therefore the
 // fold-into-cheapest-slot fallback), MAX_RECTS should grow.
@@ -165,7 +167,7 @@ namespace {
 #define LOG_REJECTS     (1U << 8)
 #define LOG_ALL         (LOG_UNKNOWN | LOG_VC2 | LOG_CMAP | LOG_XMAP | LOG_REX3 | LOG_RAMDAC | LOG_COMMANDS | LOG_REJECTS)
 
-// With LOG_VC2/LOG_XMAP enabled during test/wave.cpp -db's steady swap,
+// With LOG_VC2/LOG_XMAP enabled while a double-buffered OpenGL program swaps,
 // XMAP mode-table writes fire frequently (~100/s, all to one shared
 // slot) while VC2 RAM-word writes do not fire at all. Off (0) by default.
 #define VERBOSE         (0)
@@ -2242,8 +2244,8 @@ uint32_t newport_base_device::screen_update(screen_device &device, bitmap_rgb32 
 		// shows up as a stale pointer image / delayed position update.
 		// Converted per-rect, not via rb2_dirty's own aggregate x0()/y0()/
 		// x1()/y1(), because
-		// rb2_dirty can hold multiple disjoint regions (e.g. wave's own
-		// window plus an unrelated desktop element drawing elsewhere at
+		// rb2_dirty can hold multiple disjoint regions (e.g. an OpenGL
+		// program's window plus an unrelated desktop element drawing elsewhere at
 		// the same time); converting the AGGREGATE bbox instead of each
 		// rect individually would re-coalesce them right back into one
 		// wide box here, throwing away exactly the precision the N-rect
