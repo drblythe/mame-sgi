@@ -735,8 +735,14 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 
 	for (unsigned n = 0; n < limit; n++)
 	{
-		int const x = xmajor ? major : (minor >> 15);
-		int const y = xmajor ? (minor >> 15) : major;
+		// a one-step draw that isn't an antialiased pass rounds the minor
+		// coordinate to the nearest pixel, as the single-pixel reads do:
+		// IRIS GL steps its software z-buffer that way (error term starting
+		// at minus half a pixel) and draws the pixels that passed back with
+		// these. Antialiased passes (smooth points) keep the truncated one
+		int const pix = (!stop && aa < 0) ? ((minor + 0x4000) >> 15) : (minor >> 15);
+		int const x = xmajor ? major : pix;
+		int const y = xmajor ? pix : major;
 		u8 const base = (shade || (cmd & REX15_OP_FLAG_DITHER)) ? current_color(cmd, x, y) : color;
 		u8 src = base;
 		if (aa >= 0)
@@ -868,7 +874,8 @@ void sgi_lg1_device::do_rex_command()
 					m_xcurf = m_xstart;
 					m_ycurf = m_ystart;
 				}
-				m_rwaux1 = m_rwaux2 = u32(vram_r(int(s32(m_xcurf) >> 15), int(s32(m_ycurf) >> 15))) << 24;
+				// rounded to the nearest pixel, like a one-step draw
+				m_rwaux1 = m_rwaux2 = u32(vram_r(int(s32(m_xcurf) + 0x4000) >> 15, int(s32(m_ycurf) + 0x4000) >> 15)) << 24;
 				s32 const slope = util::sext(m_minorslope, 17);
 				if (cmd & REX15_OP_FLAG_XMAJOR)
 				{
