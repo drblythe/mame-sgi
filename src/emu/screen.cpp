@@ -1810,6 +1810,15 @@ bool screen_device::update_quads()
 				// it reports them and nothing else wrote to the bitmap
 				if (!m_screen_update_rgb32_dirty.isnull() && m_bitmap_dirty_valid[m_curbitmap] && !(m_video_attributes & VIDEO_VARIABLE_WIDTH))
 					m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat(), m_bitmap_dirty[m_curbitmap]);
+				else if (!(m_video_attributes & VIDEO_VARIABLE_WIDTH))
+				{
+					// no regions reported: all of it changed, but the texture
+					// still gets a contents id, so the renderer doesn't upload
+					// it again for the frames that don't change it
+					render_dirty_rects all;
+					all.add(m_visarea);
+					m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat(), all);
+				}
 				else
 					m_texture[m_curbitmap]->set_bitmap(m_bitmap[m_curbitmap], m_visarea, m_bitmap[m_curbitmap].texformat());
 				m_bitmap_dirty[m_curbitmap].reset();
