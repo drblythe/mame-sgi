@@ -5077,6 +5077,14 @@ void newport_base_device::do_iline(uint32_t color)
 	const int32_t incr1 = 2 * (s_bresenham_infos[octant].loop ? dx : dy);
 	const int32_t incr2 = 2 * (s_bresenham_infos[octant].loop ? (dx - dy) : (dy - dx));
 	int32_t d = incr1 - (s_bresenham_infos[octant].loop ? dy : dx);
+	// BRESRNDINC2 bits 24-31, one per octant (the manual's pseudocode
+	// octant 1-8 as bit 0-7): set, a tie (error exactly zero) takes the
+	// diagonal step, clear the axial one. The X server sets them so that a
+	// tie steps diagonally when the major axis increases and axially when
+	// it decreases (0xe1), which matches its software lines
+	static const uint8_t s_round_bit[8] = { 6, 1, 5, 2, 7, 0, 4, 3 };
+	if (!BIT(m_rex3.m_bres_round_inc2, 24 + s_round_bit[octant]))
+		d--;
 
 	if (!skip_first || iterate_one)
 	{
