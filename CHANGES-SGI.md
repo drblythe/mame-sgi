@@ -109,7 +109,8 @@ The first release: everything this fork adds to MAME 0.289.
 - **Flat SGI SCSI controller** with embedded disks (`nwd33c9x`): about 16
   times faster disk reads in real time than MAME's stock SCSI path.
 - **DDS DAT tape drive** on SIMH `.tap` images.
-- **HLE PS/2 keyboard** (the Indy default).
+- **HLE keyboards:** PS/2 (the Indy default) and the SGI serial keyboard
+  (the Indigo default; its 8031 firmware version is `keyboard_8031`).
 - **Ethernet link speed setting:** 10 Mbit/s, paced like real hardware
   (default), or Unlimited.
 - **Options:** `-drc_cache_mb`, `-sdl_input_buffer`,

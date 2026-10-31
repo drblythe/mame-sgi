@@ -128,7 +128,8 @@ Options and settings added by this fork:
 | `-mouse_capture_focus 0/1` | With `-mouse`, capture the pointer while the window has focus instead of while the pointer is over it (default 1). Hover capture grabs and releases on every enter/leave, and dragging windows in IRIX caused bursts of those that left keyboard and mouse input dead until the next Alt-Tab. Part of the SDL front end on every platform; the problem and the fix were seen on X11 |
 | Machine Configuration → AES Digital Audio Connection | What is plugged into the AES/S/PDIF connector: None (default), Loopback (AES out to AES in), or Host audio, where AES out and in appear in the Audio Mixer to map to host devices such as an S/PDIF port (PCM audio; the mixer is not bit-transparent, so compressed pass-through formats don't survive) |
 
-New devices: an HLE PS/2 keyboard (the Indy default); a flat SGI SCSI
+New devices: an HLE PS/2 keyboard (the Indy default) and an HLE SGI serial
+keyboard (the Indigo default); a flat SGI SCSI
 controller with embedded disks (`nwd33c9x`), which reads the disk about 16
 times faster in real time than MAME's stock SCSI emulation (50 MB/s against
 3 MB/s reading the raw disk in IRIX, where the stock path also slows the
@@ -187,8 +188,9 @@ default, and a second SCSI bus.
 The Indigo needs its own IRIX installation: IRIX 6.5.22 is the last release
 that supports it, and MAME runs the installer from the CD images as the
 hardware does. The ROM set (`indigo_r4400.zip` or `indigo_r4000.zip` with
-`ip20prom.070-8116-005.bin`) and the keyboard's `sgi_kbd.zip` go in the
-ROM path. Both models run on the MIPS III recompiler (a build option,
+`ip20prom.070-8116-005.bin`) goes in the ROM path, and the keyboard's
+`sgi_kbd.zip` too if you select the keyboard that runs its 8031 firmware
+(`-keyboard_port keyboard_8031`; the default keyboard needs no ROM). Both models run on the MIPS III recompiler (a build option,
 `MAME_SGI_IP20_R4000_INTERPRETER` in `src/mame/sgi/ip20.cpp`, selects
 MAME's separate R4000 interpreter instead). Its LG1 graphics show
 1024x768: with `-nomaximize` the window opens at that size. Audio, input
