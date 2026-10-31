@@ -949,9 +949,16 @@ void sgi_lg1_device::do_rex_command()
 	// non-block draws that step the minor axis, x-major ones (STOPONX with
 	// bit 6) and y-major ones (STOPONY): OpenGL's integer lines set neither
 	// line bit; its polygon spans (STOPONX without bit 6) don't step y.
+	// An XYCONTINUE draw with neither STOPONX nor STOPONY is one step of a
+	// line from the current position along the axis bit 6 picks, like a
+	// single-pixel read: IRIS GL draws z-buffered blended lines back that
+	// way, a pixel per GO, in both orientations. Spans ignore minorslope,
+	// which can be left over from a line.
 	// Host data and copies take the span path
+	bool const stop = cmd & (REX15_OP_FLAG_STOPONX | REX15_OP_FLAG_STOPONY);
 	bool const linear = !(cmd & REX15_OP_FLAG_BLOCK)
-		&& ((cmd & REX15_OP_FLAG_STOPONY) || ((cmd & REX15_OP_FLAG_STOPONX) && (cmd & REX15_OP_FLAG_XMAJOR)))
+		&& ((cmd & REX15_OP_FLAG_STOPONY) || ((cmd & REX15_OP_FLAG_STOPONX) && (cmd & REX15_OP_FLAG_XMAJOR))
+			|| (!stop && (cmd & REX15_OP_FLAG_XYCONTINUE)))
 		&& !(cmd & (REX15_OP_FLAG_COLORAUX | REX15_OP_FLAG_LOGICSRC));
 	if ((cmd & (REX15_OP_FLAG_FLINE | REX15_OP_FLAG_LINE)) || aa >= 0 || linear)
 	{
