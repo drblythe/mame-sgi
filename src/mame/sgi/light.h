@@ -37,7 +37,7 @@ protected:
 	void plot(int x, int y, u8 src);
 	void draw_line(u32 cmd, u8 color, int aa);
 	bool compare_pass(u8 src, u8 dst) const;
-	bool line_stipple(bool last);
+	bool line_stipple(u32 &pattern, u32 &mode);
 	u8 pack_rgb(u8 r, u8 g, u8 b) const;
 	u8 current_color(u32 cmd, int x, int y) const;
 	void shade_step();
@@ -45,7 +45,7 @@ protected:
 	u8 logic_op(u8 src, u8 dst) const;
 	// pattern 0 bits draw the background: for the z pattern with command
 	// bit 23 or xstate bit 31, for the line stipple with bit 22 or 30 (the
-	// X server's opaque stipples and copy planes)
+	// X server's opaque stipples, copy planes and double dashes)
 	bool zopaque(u32 cmd) const { return (cmd & 0x00800000U) || BIT(m_xstate, 31); }
 	bool lsopaque(u32 cmd) const { return (cmd & 0x00400000U) || BIT(m_xstate, 30); }
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y

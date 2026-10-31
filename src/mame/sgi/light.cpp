@@ -649,28 +649,32 @@ void sgi_lg1_device::shade_step()
 // values), passing when the new colour compares with the one in the
 // frame buffer; IRIS GL uses it for zsource(ZSRC_COLOR), and the firmware's
 // REX revision check uses greater (aux1 0x100)
-// line stipple (command bit 18): the pattern's most significant bit
-// enables the pixel; each pixel counts down the repeat count in lsmode bits
-// 0-7, and at zero it reloads from bits 8-15 and the pattern rotates left
-// one bit (IRIS GL replicates its 16-bit linestyle to 32 bits). Both
-// registers carry the position from one line to the next; the last pixel
-// of a line doesn't advance it, as IRIS GL's polylines expect (the next
-// segment starts on that pixel)
-bool sgi_lg1_device::line_stipple(bool last)
+// line stipple (command bit 11, or 18): the pattern's most significant
+// bit enables the pixel; each pixel counts down the repeat count in lsmode
+// bits 0-7, and at zero it reloads from bits 8-15 and the pattern rotates
+// left one bit within its length, 17 + lsmode bits 16-19 (32 for IRIS GL's
+// replicated 16-bit linestyles, 28 for the X server's 14-pixel dashes).
+// With command bit 13 the registers carry the position on from one line
+// or pixel to the next (IRIS GL's polylines, the X server's dashed lines a
+// pixel per GO), except that a line's last pixel doesn't advance it (the
+// next segment starts on that pixel); without it a line starts from the
+// registers and leaves them as they were (OpenGL draws each row of a wide
+// line from the same position)
+bool sgi_lg1_device::line_stipple(u32 &pattern, u32 &mode)
 {
-	bool const on = BIT(m_lspattern, 31);
-	if (!last)
+	bool const on = BIT(pattern, 31);
+	u32 count = mode & 0xff;
+	if (count <= 1)
 	{
-		u32 count = m_lsmode & 0xff;
-		if (count <= 1)
-		{
-			count = (m_lsmode >> 8) & 0xff;
-			m_lspattern = rotl_32(m_lspattern, 1);
-		}
-		else
-			count--;
-		m_lsmode = (m_lsmode & ~0xffU) | count;
+		count = (mode >> 8) & 0xff;
+		unsigned const length = 17 + BIT(mode, 16, 4);
+		u32 const top = pattern >> (32 - length);
+		u32 const rotated = ((top << 1) | (top >> (length - 1))) & util::make_bitmask<u32>(length);
+		pattern = (rotated << (32 - length)) | (pattern & util::make_bitmask<u32>(32 - length));
 	}
+	else
+		count--;
+	mode = (mode & ~0xffU) | count;
 	return on;
 }
 
@@ -723,12 +727,13 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 	int const last = xmajor ? int(xendi_r()) : int(yendi_r());
 	int const step = (last >= start) ? 1 : -1;
 	bool const pattern = cmd & REX15_OP_FLAG_ENZPATTERN;
-	bool const stipple = cmd & REX15_OP_FLAG_ENLSPATTERN;
+	bool const stipple = cmd & (REX15_OP_FLAG_ENLSPATTERN | REX15_OP_FLAG_FLINE);
 	bool const shade = cmd & REX15_OP_FLAG_SHADE;
 	unsigned const limit = !stop ? 1 : (pattern || (cmd & REX15_OP_FLAG_LENGTH32)) ? 32 : 4096;
 
 	bool const cont = cmd & REX15_OP_FLAG_XYCONTINUE;
 	int major = !cont ? start : int(s32(xmajor ? m_xcurf : m_ycurf) >> 15);
+	u32 lspattern = m_lspattern, lsmode = m_lsmode;
 	s32 minor = s32(xmajor ? (cont ? m_ycurf : m_ystart) : (cont ? m_xcurf : m_xstart));
 	// a line that has finished draws nothing more
 	if (stop && cont && (step > 0 ? major > last : major < last))
@@ -752,8 +757,26 @@ void sgi_lg1_device::draw_line(u32 cmd, u8 color, int aa)
 			u8 const weight = (aa == 0) ? BIT(m_aweight, 4 * f, 4) : (aa == 1) ? BIT(m_aweight, 4 * (7 - f), 4) : u8(m_rwaux1);
 			src = (base & ~AA_MASK) | (weight & AA_MASK);
 		}
-		bool draw = !stipple || line_stipple(stop && major == last);
-		if (draw && pattern && !BIT(m_zpattern, 31 - n))
+		// command bit 13 carries the stipple position on in the registers
+		// (except past a line's last pixel); without it a line starts from
+		// them and leaves them as they were
+		bool draw = true;
+		if (stipple)
+		{
+			if (!(cmd & 0x2000))
+				draw = line_stipple(lspattern, lsmode);
+			else if (stop && major == last)
+				draw = BIT(m_lspattern, 31);
+			else
+				draw = line_stipple(m_lspattern, m_lsmode);
+		}
+		if (!draw && lsopaque(cmd))
+		{
+			// double-dashed lines: the gaps in the background colour
+			src = u8(m_colorback);
+			draw = true;
+		}
+		else if (draw && pattern && !BIT(m_zpattern, 31 - n))
 		{
 			if (zopaque(cmd))
 				src = u8(m_colorback);
