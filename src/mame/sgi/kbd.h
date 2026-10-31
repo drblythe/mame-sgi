@@ -7,6 +7,9 @@
 #pragma once
 
 #include "cpu/mcs51/i8051.h"
+#include "sound/beep.h"
+
+#include "diserial.h"
 
 class device_sgi_kbd_port_interface;
 
@@ -85,9 +88,55 @@ private:
 	u8 m_p3;  // mcu port 3 input data
 };
 
+// The same keyboard without its 8031: the firmware's protocol, key codes,
+// repeat and beeps reproduced directly.
+class sgi_kbd_hle_device
+	: public device_t
+	, public device_sgi_kbd_port_interface
+	, public device_buffered_serial_interface<8U>
+{
+public:
+	sgi_kbd_hle_device(machine_config const &mconfig, char const *tag, device_t *owner, uint32_t clock);
+
+	virtual void write_txd(int state) override;
+
+protected:
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+	virtual ioport_constructor device_input_ports() const override ATTR_COLD;
+
+	virtual void tra_callback() override;
+	virtual void rcv_complete() override;
+
+private:
+	virtual void received_byte(u8 byte) override;
+
+	TIMER_CALLBACK_MEMBER(tick);
+	void scan();
+	void queue(u8 data);
+	void update_leds();
+
+	required_ioport_array<16> m_matrix;
+	required_device<beep_device> m_beeper;
+	output_finder<7> m_led;
+	emu_timer *m_tick;
+
+	u8 m_keys[13];      // key state per matrix column, as last scanned
+	u8 m_leds;          // LED state (the firmware writes its complement)
+	u8 m_last_key;      // matrix index of the last key pressed
+	u8 m_last_tx;       // last byte queued for the host
+	u8 m_repeat;        // ticks until the next repeat, 0 for none
+	u8 m_beep;          // beeper ticks left, 0 for off
+	bool m_click;       // key click enabled
+	bool m_autorepeat;  // auto-repeat enabled
+};
+
 DECLARE_DEVICE_TYPE(SGI_KBD_PORT, sgi_kbd_port_device)
 DECLARE_DEVICE_TYPE(SGI_KBD, sgi_kbd_device)
+DECLARE_DEVICE_TYPE(SGI_KBD_HLE, sgi_kbd_hle_device)
 
 void default_sgi_kbd_devices(device_slot_interface &device);
+void indigo_sgi_kbd_devices(device_slot_interface &device);
 
 #endif // MAME_SGI_KBD_H

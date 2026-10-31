@@ -9,6 +9,7 @@
 
 DEFINE_DEVICE_TYPE(SGI_KBD_PORT, sgi_kbd_port_device, "sgi_kbd_port", "SGI Keyboard Port")
 DEFINE_DEVICE_TYPE(SGI_KBD, sgi_kbd_device, "sgi_kbd", "SGI Keyboard")
+DEFINE_DEVICE_TYPE(SGI_KBD_HLE, sgi_kbd_hle_device, "sgi_kbd_hle", "SGI Keyboard (HLE)")
 
 /*
  * An emulation of a keyboard compatible with the Silicon Graphics 4D series
@@ -394,4 +395,246 @@ tiny_rom_entry const *sgi_kbd_device::device_rom_region() const
 void default_sgi_kbd_devices(device_slot_interface &device)
 {
 	device.option_add("keyboard", SGI_KBD);
+	device.option_add("keyboard_hle", SGI_KBD_HLE);
+}
+
+// the Indigo's: the HLE keyboard by default, under the name the 8031 one
+// had, so saved settings for the keyboard (layout, speaker) still apply
+void indigo_sgi_kbd_devices(device_slot_interface &device)
+{
+	device.option_add("keyboard", SGI_KBD_HLE);
+	device.option_add("keyboard_8031", SGI_KBD);
+}
+
+/*
+ * The keyboard without its 8031, as its firmware behaves:
+ *  - Each key is a matrix position (column x 8 + row) with a code from the
+ *    firmware's table: pressing it sends the code with bit 7 clear,
+ *    releasing it the code with bit 7 set. Bit 7 in the table marks the
+ *    keys that don't click (modifiers and locks).
+ *  - Bytes from the host with bit 0 clear: bit 1 short beep, bit 2 long
+ *    beep, bit 3 key click off, bit 4 configuration request (answered with
+ *    0x6e and the DIP switches), bits 5 and 6 LEDs (state bits 1 and 3),
+ *    bit 7 auto-repeat on. With bit 0 set: bit 1 toggles LED state bits 1
+ *    and 3, bits 2-6 set state bits 5, 0, 2, 4 and 6.
+ *  - A 5 ms timer tick: the beeper sounds while its count runs down (a
+ *    click is 2 ticks, a short beep 40, a long one 200); holding a key the
+ *    firmware's table marks as repeating resends the last byte queued for
+ *    the host after 130 ticks, then every 7, with a click.
+ *  - Up to 8 bytes queue for the host; more are dropped.
+ * Not reproduced: the firmware's debouncing (a release within ~80 ms of
+ * its press is held back) and its restart when a repeat comes due with no
+ * key down, which also flushes its queues (here the repeat just stops).
+ */
+namespace {
+
+// key codes by matrix position, from the firmware
+u8 const s_key_code[13 * 8] =
+{
+	0x15, 0x16, 0x18, 0x17, 0x19, 0x12, 0x23, 0x1c,
+	0x56, 0x58, 0x5a, 0x5c, 0x5e, 0x60, 0x62, 0x64,
+	0x0d, 0x0e, 0x10, 0x0f, 0x11, 0x0b, 0x1b, 0x14,
+	0x36, 0x07, 0x09, 0x08, 0x0a, 0x83, 0x13, 0x85,
+	0x06, 0x57, 0x59, 0x5b, 0x5d, 0x5f, 0x61, 0xe3,
+	0x1d, 0x1e, 0x20, 0x1f, 0x21, 0x1a, 0x2b, 0x24,
+	0x25, 0x26, 0x28, 0x27, 0x29, 0x22, 0x33, 0x2c,
+	0x2d, 0x2e, 0x30, 0x2f, 0x31, 0x2a, 0x84, 0x34,
+	0x35, 0x3c, 0x38, 0x37, 0x00, 0x32, 0x00, 0x00,
+	0x66, 0x65, 0x3d, 0x68, 0x67, 0x69, 0x3a, 0x50,
+	0x82, 0xd3, 0x52, 0xd4, 0x4f, 0xd5, 0x48, 0x49,
+	0xea, 0x6b, 0x43, 0x42, 0x44, 0x3e, 0x3f, 0x39,
+	0x6c, 0x4b, 0x6d, 0x4a, 0x51, 0x45, 0x41, 0x40,
+};
+
+// keys that repeat, one bit per row for each column, from the firmware
+u8 const s_key_repeat[13] = { 0xff, 0x3f, 0xff, 0x5f, 0x7f, 0xff, 0xff, 0xbf, 0xff, 0xc4, 0xd4, 0xfe, 0xef };
+
+enum : u8
+{
+	TICKS_CLICK = 2,
+	TICKS_SHORT_BEEP = 0x28,
+	TICKS_LONG_BEEP = 0xc8,
+	TICKS_REPEAT_DELAY = 0x82,
+	TICKS_REPEAT = 7,
+};
+
+} // anonymous namespace
+
+sgi_kbd_hle_device::sgi_kbd_hle_device(machine_config const &mconfig, char const *tag, device_t *owner, uint32_t clock)
+	: device_t(mconfig, SGI_KBD_HLE, tag, owner, clock)
+	, device_sgi_kbd_port_interface(mconfig, *this)
+	, device_buffered_serial_interface(mconfig, *this)
+	, m_matrix(*this, "col.%x", 0U)
+	, m_beeper(*this, "beeper")
+	, m_led(*this, "led.%u", 0U)
+	, m_tick(nullptr)
+{
+}
+
+void sgi_kbd_hle_device::device_add_mconfig(machine_config &config)
+{
+	speaker_device &speaker(SPEAKER(config, "speaker"));
+	speaker.front_center();
+
+	BEEP(config, m_beeper, 480);
+	m_beeper->add_route(ALL_OUTPUTS, speaker, 0.25);
+}
+
+ioport_constructor sgi_kbd_hle_device::device_input_ports() const
+{
+	return INPUT_PORTS_NAME(sgi_kbd);
+}
+
+void sgi_kbd_hle_device::device_start()
+{
+	m_tick = timer_alloc(FUNC(sgi_kbd_hle_device::tick), this);
+
+	save_item(NAME(m_keys));
+	save_item(NAME(m_leds));
+	save_item(NAME(m_last_key));
+	save_item(NAME(m_last_tx));
+	save_item(NAME(m_repeat));
+	save_item(NAME(m_beep));
+	save_item(NAME(m_click));
+	save_item(NAME(m_autorepeat));
+}
+
+void sgi_kbd_hle_device::device_reset()
+{
+	// 600 baud, 8 data bits, odd parity, 1 stop bit
+	set_data_frame(1, 8, PARITY_ODD, STOP_BITS_1);
+	set_rate(600);
+	receive_register_reset();
+	transmit_register_reset();
+	clear_fifo();
+	write_rxd(1);
+
+	std::fill(std::begin(m_keys), std::end(m_keys), 0);
+	m_leds = 0;
+	m_last_key = 0;
+	m_last_tx = 0;
+	m_repeat = 0;
+	m_beep = 0;
+	m_click = true;
+	m_autorepeat = false;
+	m_beeper->set_state(0);
+	update_leds();
+
+	m_tick->adjust(attotime::from_msec(5), 0, attotime::from_msec(5));
+}
+
+void sgi_kbd_hle_device::write_txd(int state)
+{
+	rx_w(state);
+}
+
+void sgi_kbd_hle_device::tra_callback()
+{
+	write_rxd(transmit_register_get_data_bit());
+}
+
+void sgi_kbd_hle_device::rcv_complete()
+{
+	// the firmware drops a byte with bad parity
+	receive_register_extract();
+	if (!is_receive_parity_error())
+		received_byte(get_received_char());
+}
+
+void sgi_kbd_hle_device::received_byte(u8 byte)
+{
+	if (!BIT(byte, 0))
+	{
+		if (BIT(byte, 1))
+			m_beep = TICKS_SHORT_BEEP;
+		if (BIT(byte, 2))
+			m_beep = TICKS_LONG_BEEP;
+		m_click = !BIT(byte, 3);
+		if (BIT(byte, 4))
+		{
+			queue(0x6e);
+			queue(m_matrix[15]->read());
+		}
+		m_leds = (m_leds & ~0x0a) | (BIT(byte, 5) << 1) | (BIT(byte, 6) << 3);
+		m_autorepeat = BIT(byte, 7);
+	}
+	else
+	{
+		if (BIT(byte, 1))
+			m_leds ^= 0x0a;
+		m_leds = (m_leds & 0x8a) | (BIT(byte, 2) << 5) | (BIT(byte, 3) << 0) | (BIT(byte, 4) << 2) | (BIT(byte, 5) << 4) | (BIT(byte, 6) << 6);
+	}
+	update_leds();
+}
+
+void sgi_kbd_hle_device::update_leds()
+{
+	for (unsigned i = 0; i < 7; i++)
+		m_led[i] = BIT(~m_leds, i);
+}
+
+void sgi_kbd_hle_device::queue(u8 data)
+{
+	if (fifo_full())
+		return;
+	transmit_byte(data);
+	m_last_tx = data;
+}
+
+TIMER_CALLBACK_MEMBER(sgi_kbd_hle_device::tick)
+{
+	if (m_beep)
+		m_beeper->set_state(--m_beep ? 1 : 0);
+
+	if (m_repeat && !--m_repeat && m_autorepeat)
+	{
+		bool held = false;
+		for (u8 const keys : m_keys)
+			held = held || keys;
+		if (held)
+		{
+			m_repeat = TICKS_REPEAT;
+			queue(m_last_tx);
+			if (m_click)
+				m_beep = TICKS_CLICK;
+		}
+	}
+
+	scan();
+}
+
+void sgi_kbd_hle_device::scan()
+{
+	for (unsigned col = 0; col < std::size(m_keys); col++)
+	{
+		u8 const keys = m_matrix[col]->read();
+		u8 changed = keys ^ m_keys[col];
+		if (!changed)
+			continue;
+		m_keys[col] = keys;
+		for (unsigned row = 0; changed; row++, changed >>= 1)
+		{
+			if (!BIT(changed, 0))
+				continue;
+			u8 const index = col * 8 + row;
+			u8 const code = s_key_code[index];
+			if (BIT(keys, row))
+			{
+				if (!BIT(code, 7) && m_click)
+					m_beep = TICKS_CLICK;
+				queue(code & 0x7f);
+				m_last_key = index;
+				m_repeat = BIT(s_key_repeat[col], row) ? TICKS_REPEAT_DELAY : 0;
+			}
+			else
+			{
+				if (index == m_last_key)
+				{
+					m_last_key = 0;
+					m_repeat = 0;
+				}
+				queue(code | 0x80);
+			}
+		}
+	}
 }
