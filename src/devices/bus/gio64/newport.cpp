@@ -5966,7 +5966,8 @@ void newport_base_device::do_rex3_command()
 					{
 						stop_on_x = true;
 						static const int16_t s_max_host_lengths[2][4] = { { 4, 4, 2, 1 }, { 8, 8, 4, 2 } };
-						const int16_t max_length = s_max_host_lengths[m_rex3.m_rwdouble ? 1 : 0][m_rex3.m_hostdepth];
+						const int16_t max_length = std::min<int16_t>(s_max_host_lengths[m_rex3.m_rwdouble ? 1 : 0][m_rex3.m_hostdepth],
+								m_rex3.m_rwdouble ? m_rex3.m_host_valid_bytes * 8 / s_host_shifts[m_rex3.m_hostdepth] : 8);
 						int16_t length = abs(prim_end_x - start_x);
 						if (length > max_length)
 							prim_end_x = start_x + dx * max_length;
@@ -6057,7 +6058,8 @@ void newport_base_device::do_rex3_command()
 					{
 						stop_on_x = true;
 						static const int16_t s_max_host_lengths[2][4] = { { 4, 4, 2, 1 }, { 8, 8, 4, 2 } };
-						const int16_t max_length = s_max_host_lengths[m_rex3.m_rwdouble ? 1 : 0][m_rex3.m_hostdepth];
+						const int16_t max_length = std::min<int16_t>(s_max_host_lengths[m_rex3.m_rwdouble ? 1 : 0][m_rex3.m_hostdepth],
+								m_rex3.m_rwdouble ? m_rex3.m_host_valid_bytes * 8 / s_host_shifts[m_rex3.m_hostdepth] : 8);
 						int16_t length = abs(prim_end_x - start_x);
 						if (length > max_length)
 							prim_end_x = start_x + dx * max_length;
@@ -6930,6 +6932,24 @@ void newport_base_device::rex3_w(offs_t offset, uint64_t data, uint64_t mem_mask
 		LOGMASKED(LOG_REX3, "REX3 Host Data Port Write: %08x%08x & %08x%08x\n", (uint32_t)(data >> 32), (uint32_t)data, (uint64_t)(mem_mask >> 32), (uint32_t)mem_mask);
 		COMBINE_DATA(&m_rex3.m_host_dataport);
 		m_rex3.m_host_shift = 64 - s_host_shifts[m_rex3.m_hostdepth];
+		m_rex3.m_host_valid_bytes = 8;
+		if (m_rex3.m_rwdouble && (offset & 0x100) && mem_mask && ~mem_mask
+				&& mem_mask != 0xffffffff00000000U && mem_mask != 0x00000000ffffffffU)
+		{
+			// pixel DMA from an unaligned address (the kernel passes the
+			// offset in the GIO address): the MC enables only the line's
+			// own bytes of its first and last words, and the pixels come
+			// from those byte lanes alone. A 32-bit half (HOSTRW1 written
+			// with GO after HOSTRW0) still supplies the whole doubleword
+			unsigned lead = 0;
+			while (!BIT(mem_mask, 63 - 8 * lead))
+				lead++;
+			unsigned count = 0;
+			while (lead + count < 8 && BIT(mem_mask, 63 - 8 * (lead + count)))
+				count++;
+			m_rex3.m_host_shift -= 8 * lead;
+			m_rex3.m_host_valid_bytes = count;
+		}
 #ifdef MAME_SGI_REX3_HOSTDATA_DIAG
 		if (FILE *f = rex3_hostdata_diag_file(machine()))
 			fprintf(f, "W t=%.6f ctx=%s off=%x data=%016llx mask=%016llx dp=%016llx pk=%d dbl=%d hd=%d x=%d y=%d go=%d\n",

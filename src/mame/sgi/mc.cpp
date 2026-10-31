@@ -410,11 +410,14 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::perform_dma)
 		{
 			zoomcount--;
 			// lines to the GIO bus start at the 32-bit word holding the
-			// first byte: the bytes before it in that word come first
-			// (graphics drivers offset the destination to match)
+			// first byte, with only the line's own bytes enabled: a 32-bit
+			// device such as the LG1 takes the word whole (its X driver
+			// offsets the destination by the address's low two bits to
+			// match), the REX3 takes pixels from the enabled bytes alone
+			uint32_t skew = 0;
 			if (!(m_dma_mode & MODE_TO_HOST) && (m_dma_mode & MODE_DIR) && bytecount == linewidth)
 			{
-				uint32_t const skew = memory_addr & 3;
+				skew = memory_addr & 3;
 				memory_addr -= skew;
 				bytecount += skew;
 			}
@@ -472,7 +475,8 @@ TIMER_CALLBACK_MEMBER(sgi_mc_device::perform_dma)
 
 					// a partial last word writes only its valid bytes, so a
 					// 32-bit device sees just the half that carries data
-					m_space->write_qword(gio_addr, data, ~u64(0) << (64 - 8 * length));
+					m_space->write_qword(gio_addr, data, (~u64(0) << (64 - 8 * length)) & (~u64(0) >> (8 * skew)));
+					skew = 0;
 					bytecount -= length;
 				}
 			}

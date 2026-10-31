@@ -730,6 +730,9 @@ protected:
 
 		uint32_t m_store_shift;
 		uint32_t m_host_shift;
+		// bytes of the last 64-bit host write the GIO bus enabled, for the
+		// GO it starts (set by every host write, not saved)
+		uint8_t m_host_valid_bytes;
 
 		uint32_t m_write_width;
 		uint32_t m_ls_mode;
