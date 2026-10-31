@@ -285,7 +285,18 @@ u32 hpc1_device::dspif_r(bool dsp, offs_t offset)
 	switch (offset)
 	{
 	case DSPIF_COUNTER:
-		return u32(machine().time().as_ticks(33'333'333)) & 0x00ff'ffffU;
+	{
+		// attotime::as_ticks(33'333'333) with 64-bit products and constant
+		// divisors (the audio microcode polls this between samples): with
+		// the attoseconds as q * 1e9 + r, the fraction of a second in ticks
+		// is q * f / 1e9 + r * f / 1e18, each part below 2^64
+		constexpr u64 f = 33'333'333U, e9 = 1'000'000'000U;
+		attotime const now = machine().time();
+		u64 const q = u64(now.attoseconds()) / e9, r = u64(now.attoseconds()) % e9;
+		u64 const a = q * f;
+		u64 const frac = a / e9 + ((a % e9) * e9 + r * f) / (e9 * e9);
+		return u32(u64(now.seconds()) * f + frac) & 0x00ff'ffffU;
+	}
 	case DSPIF_HANDTX:
 		if (!dsp && !machine().side_effects_disabled())
 		{
