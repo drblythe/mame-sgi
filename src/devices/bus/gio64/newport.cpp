@@ -1910,6 +1910,9 @@ gio64_xl24_device::gio64_xl24_device(const machine_config &mconfig, const char *
 void newport_base_device::device_start()
 {
 	m_dcb_timeout_timer = timer_alloc(FUNC(newport_base_device::dcb_timeout_tick), this);
+	// a loaded state replaces the framebuffer and display registers without
+	// any of the writes that mark screen areas for recompositing
+	machine().save().register_postload(save_prepost_delegate(FUNC(newport_base_device::mark_full_dirty), this));
 #ifdef MAME_SGI_NEWPORT_LUT_FOLD
 	machine().save().register_postload(save_prepost_delegate(FUNC(newport_base_device::lut_fold_invalidate), this));
 #endif

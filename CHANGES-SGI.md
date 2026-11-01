@@ -98,6 +98,10 @@ built binaries.
   written with sign-extended EntryHi values are found, invalidated and
   used; and the interpreter's TLTIU, TGEIU, TEQI and TNEI compare with the
   sign-extended immediate. IRIX was unaffected.
+- **Newport after loading a save state:** the screen was redrawn only where
+  the guest drew next, so a state loaded in a running session showed the
+  old picture in horizontal strips until each area was redrawn; the whole
+  screen is now recomposited after a load.
 - **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
   opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
   one-step line segments and single-pixel reads (rounded on the minor
