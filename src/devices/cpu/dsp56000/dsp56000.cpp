@@ -29,6 +29,8 @@
 #include "dsp56000.h"
 #include "dsp56000d.h"
 
+#include <numbers>
+
 //#define VERBOSE (LOG_GENERAL)
 
 #include "logmacro.h"
@@ -115,7 +117,7 @@ void dsp56000_device_base::device_start()
 	// Y data ROM: one cycle of a sine wave
 	for (unsigned i = 0; i < 256; i++)
 	{
-		double const s = std::sin(2.0 * M_PI * i / 256.0) * 8388608.0;
+		double const s = std::sin(2.0 * std::numbers::pi * i / 256.0) * 8388608.0;
 		s32 const v = std::clamp<s32>(s32(std::lround(s)), -8388608, 8388607);
 		m_yrom[i] = u32(v) & 0xffffff;
 	}
