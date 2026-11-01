@@ -109,6 +109,11 @@ LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
 - The Indy keyboard takes all keys. Scroll Lock toggles MAME's own hotkeys
   (Tab for the menu, F6/F7 to save/load state, Esc to quit). While they are
   on, the keys also reach the emulated keyboard.
+- The Indy's and Indigo2's graphics board is MAME's `-gio64_gfx` slot:
+  `xl24` (the 24-bit XL, the default) or `xl8` (the 8-bit XL8: 8 bit
+  planes, dithered RGB). Both run the desktop, IRIS GL and OpenGL. The
+  Indigo's LG1 graphics are built into the machine, so it has no such
+  option, and the Challenge S has no graphics board.
 - On a monitor the same size as the emulated screen, `-nowindow` (full
   screen) is more practical than a window.
 - On Windows, MAME uses the bgfx renderer by default (Direct3D 11 where
