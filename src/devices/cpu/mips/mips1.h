@@ -16,6 +16,12 @@ public:
 	template <unsigned Coprocessor> auto in_brcond() { return m_in_brcond[Coprocessor].bind(); }
 	void berr_w(int state) { m_bus_error = bool(state); }
 
+	// Idle-loop skip: when the BNE at pc, whose encoding is op, is about to
+	// branch back (its registers differ), end the timeslice. For an
+	// operating system idle loop that polls a flag only an interrupt
+	// handler clears; the op check keeps it inert for any other code.
+	void set_idle_branch(u32 pc, u32 op) { m_idle_pc = pc; m_idle_op = op; }
+
 protected:
 	mips1core_device_base(machine_config const &mconfig, device_type type, char const *tag, device_t *owner, u32 clock, u32 cpurev, size_t icache_size, size_t dcache_size, bool cache_pws);
 
@@ -126,6 +132,10 @@ protected:
 	}
 	m_branch_state;
 	u32 m_branch_target;
+
+	// idle-loop skip (an unaligned pc never matches)
+	u32 m_idle_pc = 1;
+	u32 m_idle_op = 0;
 
 	// cache memory
 	struct cache m_icache;

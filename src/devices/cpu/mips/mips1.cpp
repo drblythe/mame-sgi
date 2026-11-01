@@ -399,6 +399,10 @@ void mips1core_device_base::execute_run()
 				return;
 			}
 
+			// idle-loop skip: spinning until an interrupt is pure waiting
+			if (m_pc == m_idle_pc && op == m_idle_op && m_r[RSREG] != m_r[RTREG]) [[unlikely]]
+				m_icount = 0;
+
 			// decode and execute instruction
 			switch (op >> 26)
 			{
