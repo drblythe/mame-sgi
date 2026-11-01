@@ -89,6 +89,15 @@ built binaries.
 - **Newport picture and cursor framing** follow the video timing IRIX
   loads: on the Indigo2 the picture was off by six columns, with extra
   border, and the hardware cursor six columns left of the pointer.
+- **MIPS III TLB and exceptions** (shared MAME code, recompiler and
+  interpreter), found by booting NetBSD 11.0, which now reaches its
+  installer on the Indy: the faulting address in BadVAddr (and EntryHi) is
+  sign-extended for 32-bit addresses, as on the hardware, so a kernel that
+  reads it with a 64-bit move finds kernel addresses in its kernel page
+  table; TLB probes and mappings match on the 32-bit address, so entries
+  written with sign-extended EntryHi values are found, invalidated and
+  used; and the interpreter's TLTIU, TGEIU, TEQI and TNEI compare with the
+  sign-extended immediate. IRIX was unaffected.
 - **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
   opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
   one-step line segments and single-pixel reads (rounded on the minor
