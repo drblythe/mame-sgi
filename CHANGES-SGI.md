@@ -5,7 +5,10 @@ on, then a counter. Newest first. Items collect under "Not yet released"
 until the next tag. Each release on GitHub has the same notes and the
 built binaries.
 
-## Not yet released
+## mame0289-sgi002 (2026-11-01)
+
+The Indigo2 and the IRIS Indigo (R4000/R4400) join the Indy, with Indigo
+audio; Newport, SCSI and save-state fixes.
 
 ### Added
 
@@ -111,7 +114,8 @@ built binaries.
   its read/write buffer with a larger one for bigger blocks, while the save
   state still pointed at the old one, so saving or loading after tape use
   read and wrote freed memory and crashed MAME. The buffer is now
-  allocated once at the largest block size the drive reports (16 MB).
+  allocated once at the largest block size the drive reports (16 MB),
+  and left uninitialised, so it takes no memory until the drive uses it.
 - **HPC3 SCSI registers** repeat through the channel's 32K, as on the
   hardware (the chip decodes one address line), so NetBSD, which uses them
   at 0x1fbc4000 rather than IRIX's 0x1fbc0000, finds its SCSI controller
