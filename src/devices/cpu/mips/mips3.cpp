@@ -581,7 +581,7 @@ void mips3_device::generate_tlb_exception(int exception, offs_t address)
 {
 	m_core->cpr[0][COP0_BadVAddr] = s64(s32(address));
 	m_core->cpr[0][COP0_Context] = (m_core->cpr[0][COP0_Context] & ~u64(0x007fffff)) | ((address >> 9) & 0x007ffff0);
-	m_core->cpr[0][COP0_EntryHi] = (address & 0xffffe000) | (m_core->cpr[0][COP0_EntryHi] & 0xff);
+	m_core->cpr[0][COP0_EntryHi] = u64(s64(s32(address & 0xffffe000))) | (m_core->cpr[0][COP0_EntryHi] & 0xff);
 
 	generate_exception(exception, 1);
 }

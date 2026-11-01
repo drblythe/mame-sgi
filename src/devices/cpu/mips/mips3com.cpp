@@ -196,7 +196,10 @@ void mips3_device::mips3com_tlbp()
 	for (tlbindex = 0; tlbindex < m_tlbentries; tlbindex++)
 	{
 		const mips3_tlb_entry &entry = m_tlb[tlbindex];
-		const uint64_t mask = ~((entry.page_mask >> 13) & 0xfff) << 13;
+		// VPN2 of the 32-bit virtual address under the page mask; the upper
+		// bits only copy bit 31 in 32-bit mode and take no part (as in
+		// tlb_map_entry)
+		const uint64_t mask = (~((entry.page_mask >> 13) & 0xfff) << 13) & 0xffffe000U;
 
 		/* if the relevant bits of EntryHi match the relevant bits of the TLB */
 		if ((entry.entry_hi & mask) == (m_core->cpr[0][COP0_EntryHi] & mask))
@@ -422,8 +425,10 @@ void mips3_device::tlb_map_entry(int tlbindex)
 		return;
 	}
 
-	/* extract the VPN index; ignore if the virtual address is beyond 32 bits */
-	vpn = ((entry.entry_hi >> 13) & 0x07ffffff) << 1;
+	// the VPN index from the 32-bit virtual address: in 32-bit mode the bits
+	// above it (EntryHi's R field and upper VPN2) are copies of bit 31, as a
+	// 64-bit DMTC0 of a sign-extended kernel address leaves them
+	vpn = ((u32(entry.entry_hi) >> 13) & 0x0007ffff) << 1;
 	if (vpn >= (1 << (MIPS3_MAX_PADDR_SHIFT - MIPS3_MIN_PAGE_SHIFT)))
 	{
 		vtlb_load(2 * tlbindex + 0, 0, 0, 0);

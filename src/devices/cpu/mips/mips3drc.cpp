@@ -1899,7 +1899,11 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	if (exception == EXCEPTION_TLBMOD || exception == EXCEPTION_TLBLOAD || exception == EXCEPTION_TLBSTORE)
 	{
 		/* set the upper bits of EntryHi and the lower bits of Context to the fault page */
-		UML_ROLINS(block, CPR032(COP0_EntryHi), I0, 0, 0xffffe000); // rolins  [EntryHi],i0,0,0xffffe000
+		// EntryHi is 64 bits: the page, sign-extended like BadVAddr, and the
+		// ASID kept
+		UML_DAND(block, I1, I0, ~u64(0x1fff));                                  // dand    i1,i0,~0x1fff
+		UML_DAND(block, I2, CPR064(COP0_EntryHi), 0xff);                        // dand    i2,[EntryHi],0xff
+		UML_DOR(block, CPR064(COP0_EntryHi), I1, I2);                           // dor     [EntryHi],i1,i2
 		UML_ROLINS(block, CPR032(COP0_Context), I0, 32-9, 0x7ffff0);    // rolins  [Context],i0,32-9,0x7ffff0
 	}
 
