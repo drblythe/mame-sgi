@@ -328,7 +328,7 @@ void ip12_state::ip12(machine_config &config)
 	// duart 2: "Apple" RS-422 serial ports (4D/PI only)
 	SCC85C30(config, m_scc[2], 10_MHz_XTAL); // Z8513010VSC ESCC
 	m_scc[2]->configure_channels(3'686'400, 0, 3'686'400, 0);
-	m_scc[2]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<1>));
+	m_scc[2]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<2>));
 
 	// not connected yet: held in reset, so it doesn't run
 	DSP56001(config, m_dsp, 20_MHz_XTAL).set_disable();
