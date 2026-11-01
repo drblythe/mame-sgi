@@ -116,6 +116,10 @@ void nscsi_tape_device::device_start()
 	nscsi_full_device::device_start();
 	m_sequence_counter = m_image->sequence_counter();
 	m_has_tape = m_image->get_file();
+	// one buffer for the largest block READ BLOCK LIMITS allows: the save
+	// state registration below keeps this pointer and size, so the buffer
+	// can never be reallocated
+	m_rw_buf_size = MAX_BLOCK_LEN;
 	m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
 	save_item(NAME(m_sequence_counter));
 	save_item(NAME(m_has_tape));
@@ -360,11 +364,7 @@ void nscsi_tape_device::continue_handling_mode_select_6()
 			return report_bad_pl_field();
 		{
 #endif
-		m_fixed_block_len = block_len;
-		if (m_fixed_block_len > m_rw_buf_size) {
-			m_rw_buf_size = m_fixed_block_len;
-			m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
-		}
+		m_fixed_block_len = block_len; // at most MAX_BLOCK_LEN (24 bits)
 		}
 	}
 	u32 page_num = 0;
@@ -627,10 +627,6 @@ void nscsi_tape_device::handle_read_6() // mandatory; SCSI-2 section 10.2.4
 	if (req_items_num == 0) // success: we have nothing to do
 		return scsi_status_complete(SS_GOOD);
 
-	if (!fixed && req_items_num > m_rw_buf_size) {
-		m_rw_buf_size = req_items_num;
-		m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
-	}
 	m_rw_pending = true;
 	m_rw_len = 0;
 	m_rw_blocks_num = 0;
@@ -704,7 +700,7 @@ void nscsi_tape_device::handle_read_block_limits() // mandatory; SCSI-2 section 
 		return report_bad_cdb_field();
 
 	clear_response(m_scsi_cmdbuf, 6);
-	put_u24be(&m_scsi_cmdbuf[1], 0xffffff); // 16MB; "maximum block length limit"
+	put_u24be(&m_scsi_cmdbuf[1], MAX_BLOCK_LEN); // 16MB; "maximum block length limit"
 	put_u16be(&m_scsi_cmdbuf[4], m_fixed_block_len); // "minimum block length limit"
 	scsi_data_in(SBUF_MAIN, 6);
 	scsi_status_complete(SS_GOOD);
@@ -897,10 +893,6 @@ void nscsi_tape_device::handle_write_6() // mandatory; SCSI-2 section 10.2.14
 	if (req_items_num == 0) // success: we have nothing to do
 		return scsi_status_complete(SS_GOOD);
 
-	if (!fixed && req_items_num > m_rw_buf_size) {
-		m_rw_buf_size = req_items_num;
-		m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
-	}
 	m_rw_pending = true;
 	m_rw_len = 0;
 	m_rw_blocks_num = 0;

@@ -70,6 +70,7 @@ protected:
 	const std::string_view revision;
 
 	// state for READ and WRITE
+	static constexpr u32 MAX_BLOCK_LEN = 0xffffff; // 24-bit block length fields
 	u32 m_rw_buf_size; // size of read/write buffer
 	std::unique_ptr<u8[]> m_rw_buf; // read/write buffer
 	bool m_rw_pending; // should we try to read/write additional blocks

@@ -102,6 +102,11 @@ built binaries.
   the guest drew next, so a state loaded in a running session showed the
   old picture in horizontal strips until each area was redrawn; the whole
   screen is now recomposited after a load.
+- **SCSI tape drive save states** (shared MAME code): the drive replaced
+  its read/write buffer with a larger one for bigger blocks, while the save
+  state still pointed at the old one, so saving or loading after tape use
+  read and wrote freed memory and crashed MAME. The buffer is now
+  allocated once at the largest block size the drive reports (16 MB).
 - **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
   opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
   one-step line segments and single-pixel reads (rounded on the minor
