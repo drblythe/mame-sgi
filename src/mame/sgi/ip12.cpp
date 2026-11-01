@@ -203,6 +203,11 @@ DEVICE_INPUT_DEFAULTS_END
 
 static DEVICE_INPUT_DEFAULTS_START(indigo_pic1)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x07)
+	// three banks of four 8M SIMMs: 96M, the Indigo's maximum (one entry
+	// per bank field)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x03, 0x03)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x0c, 0x0c)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x30, 0x30)
 DEVICE_INPUT_DEFAULTS_END
 
 static void scsi_devices(device_slot_interface &device)
