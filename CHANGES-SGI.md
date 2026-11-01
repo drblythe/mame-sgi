@@ -111,6 +111,11 @@ built binaries.
   hardware (the chip decodes one address line), so NetBSD, which uses them
   at 0x1fbc4000 rather than IRIX's 0x1fbc0000, finds its SCSI controller
   on the Indy and Indigo2.
+- **Flat SCSI controller** (`nwd33c9x`): in a byte-by-byte Transfer Info
+  command or message out, the data request no longer stays set after the
+  last byte, so NetBSD's driver doesn't wait on a byte the chip will never
+  take. (NetBSD now probes its disks; its later command-phase transfers
+  are still not handled.)
 - **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
   opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
   one-step line segments and single-pixel reads (rounded on the minor

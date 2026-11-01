@@ -1509,12 +1509,14 @@ void nwd33c9x_device::step(bool timeout)
 					if (sat) {
 						mask = 0;
 					} else {
-						m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
+						// ask for the next byte only if the transfer has more
+						if (m_transfer_count > 0)
+							m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
 						mask = (m_transfer_count == 0 && m_data_fifo_size == 1) ? S_ATN : 0;
 					}
 					set_i_state(INIT_XFR_WAIT_REQ);
 					delay(send_byte(0, mask));
-				} else if (!sat) {
+				} else if (!sat && m_transfer_count > 0) {
 					m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
 				}
 				break;
@@ -1528,12 +1530,14 @@ void nwd33c9x_device::step(bool timeout)
 					if (sat) {
 						mask = S_ATN;
 					} else {
-						m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
+						// ask for the next byte only if the transfer has more
+						if (m_transfer_count > 0)
+							m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
 						mask = (m_transfer_count == 0 && m_data_fifo_size == 1) ? S_ATN : 0;
 					}
 					set_i_state(INIT_XFR_WAIT_REQ);
 					delay(send_byte(0, mask));
-				} else if (!sat) {
+				} else if (!sat && m_transfer_count > 0) {
 					m_regs[AUXILIARY_STATUS] |= AUXILIARY_STATUS_DBR;
 				}
 				break;
