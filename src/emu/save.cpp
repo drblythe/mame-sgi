@@ -482,13 +482,41 @@ inline save_error save_manager::do_read(T check_length, U read_block, V start_he
 	// determine whether or not to flip the data when done
 	const bool flip = NATIVE_ENDIAN_VALUE_LE_BE((header[9] & SS_MSB_FIRST) != 0, (header[9] & SS_MSB_FIRST) == 0);
 
+	// Large blocks go through a scratch buffer and only pages whose content
+	// changes are written: a big, mostly untouched buffer (such as RAM
+	// allocated for the largest configuration) then stays non-resident
+	// after a load instead of every page being dirtied with zeros.
+	constexpr size_t SPARSE_CHUNK = 65536;
+	constexpr size_t SPARSE_PAGE = 4096;
+	std::unique_ptr<u8 []> scratch;
+	auto const read_sparse = [&] (u8 *dest, size_t size)
+	{
+		if (!scratch)
+			scratch = std::make_unique_for_overwrite<u8 []>(SPARSE_CHUNK);
+		while (size)
+		{
+			size_t const chunk = std::min(size, SPARSE_CHUNK);
+			if (!read_block(scratch.get(), chunk))
+				return false;
+			for (size_t offs = 0; offs < chunk; offs += SPARSE_PAGE)
+			{
+				size_t const len = std::min(chunk - offs, SPARSE_PAGE);
+				if (std::memcmp(dest + offs, &scratch[offs], len))
+					std::memcpy(dest + offs, &scratch[offs], len);
+			}
+			dest += chunk;
+			size -= chunk;
+		}
+		return true;
+	};
+
 	// read all the data, flipping if necessary
 	for (auto &entry : m_entry_list)
 	{
 		const u32 blocksize = entry->m_typesize * entry->m_typecount;
 		u8 *data = reinterpret_cast<u8 *>(entry->m_data);
 		for (u32 b = 0; entry->m_blockcount > b; ++b, data += entry->m_stride)
-			if (!read_block(data, blocksize))
+			if (!((blocksize >= SPARSE_CHUNK) ? read_sparse(data, blocksize) : read_block(data, blocksize)))
 				return STATERR_READ_ERROR;
 
 		// handle flipping

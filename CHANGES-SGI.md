@@ -102,6 +102,11 @@ built binaries.
   the guest drew next, so a state loaded in a running session showed the
   old picture in horizontal strips until each area was redrawn; the whole
   screen is now recomposited after a load.
+- **Memory after loading a save state:** a load wrote every byte of every
+  saved buffer, so the Indy's RAM banks, allocated for the largest
+  configuration (1 GB) but mostly unused, all became resident: about
+  1.5 GB instead of 0.6 GB after one load. Large blocks now copy only the
+  pages that changed.
 - **SCSI tape drive save states** (shared MAME code): the drive replaced
   its read/write buffer with a larger one for bigger blocks, while the save
   state still pointed at the old one, so saving or loading after tape use
