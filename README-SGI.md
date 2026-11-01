@@ -122,7 +122,7 @@ Options and settings added by this fork:
 | Option or setting | What it does |
 |---|---|
 | `-drc_cache_mb N` | MIPS recompiler code cache size (the SGI machines default to 128 MB) |
-| Machine Configuration → RAM bank A/B/C | Each bank holds four SIMMs of 1, 2, 4, 8, 16 or 32 MB (4 to 128 MB per bank). Indy and Challenge S: banks A and B, up to 256 MB, 128 MB by default. Indigo2: banks A to C, up to 384 MB, 128 MB by default. Indigo: banks A to C, 16 MB by default; 128 MB (two banks of 4x16M) is tested, larger sizes are not. Change it before a cold boot |
+| Machine Configuration → RAM bank A/B/C | Each bank holds four SIMMs of 1, 2, 4, 8, 16 or 32 MB (4 to 128 MB per bank). Indy and Challenge S: banks A and B, up to 256 MB, 128 MB by default. Indigo2: banks A to C, up to 384 MB, 128 MB by default. Indigo: banks A to C, up to 384 MB, 16 MB by default. Change it before a cold boot |
 | Machine Configuration → Ethernet Link Speed | 10 Mbit/s or Unlimited |
 | `-sdl_input_buffer 0/1` | Buffer SDL key and mouse-button events so short presses during a host stall aren't lost (default 1) |
 | `-mouse_capture_focus 0/1` | With `-mouse`, capture the pointer while the window has focus instead of while the pointer is over it (default 1). Hover capture grabs and releases on every enter/leave, and dragging windows in IRIX caused bursts of those that left keyboard and mouse input dead until the next Alt-Tab. Part of the SDL front end on every platform; the problem and the fix were seen on X11 |
@@ -185,20 +185,23 @@ default and up to 384 MB, and a second SCSI bus.
 
 ### Indigo
 
-The Indigo needs its own IRIX installation: IRIX 6.5.22 is the last
-release that supports it, and MAME runs the installer from the CD images
-as the hardware does. The ROM set (`indigo_r4400.zip` or
-`indigo_r4000.zip` with `ip20prom.070-8116-005.bin`) goes in the ROM path,
-and the keyboard's `sgi_kbd.zip` too if you select the keyboard that runs
-its 8031 firmware (`-keyboard_port keyboard_8031`; the default keyboard
-needs no ROM). Both models run on the MIPS III recompiler (a build option,
+The Indigo is an IP20 board and needs its own IRIX installation: the Indy
+and Indigo2 share one IRIX 6.5 disk (IP22 and IP24 are one kernel family,
+rebuilt for the machine at its first boot), which the IP20 can't run. IRIX
+6.5.22 is the last release that supports the IP20, and MAME runs its
+installer from the CD images as the hardware does. The ROM set
+(`indigo_r4400.zip` or `indigo_r4000.zip` with
+`ip20prom.070-8116-005.bin`) goes in the ROM path, and the keyboard's
+`sgi_kbd.zip` too if you select the keyboard that runs its 8031 firmware
+(`-keyboard_port keyboard_8031`; the default keyboard needs no ROM). Both
+models run on the MIPS III recompiler (a build option,
 `MAME_SGI_IP20_R4000_INTERPRETER` in `src/mame/sgi/ip20.cpp`, selects
 MAME's separate R4000 interpreter instead). Its LG1 graphics show
 1024x768: with `-nomaximize` the window opens at that size. Audio, input
 and output, runs SGI's own DSP56001 microcode, as IRIX loads it. The AES
 digital audio input and output are not emulated. It starts with 16 MB of
-RAM; IRIX 6.5 runs better with more, set in Machine Configuration (128 MB
-as two banks of 4x16M is tested).
+RAM; IRIX 6.5 runs better with more, up to 384 MB (three banks of 4x32M)
+in Machine Configuration.
 
 ### Save states
 
