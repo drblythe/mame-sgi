@@ -91,8 +91,8 @@ private:
 	double m_gain[2]{ 1.0, 1.0 };
 	// the test tone build's sine pair (audio_in.cpp); declared in every
 	// build so the class layout doesn't depend on the option
-	double m_tone_hz[2]{};
-	double m_tone_phase[2]{};
+	[[maybe_unused]] double m_tone_hz[2]{};
+	[[maybe_unused]] double m_tone_phase[2]{};
 };
 
 DECLARE_DEVICE_TYPE(SGI_AUDIO_INPUT, sgi_audio_input_device)
