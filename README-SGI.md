@@ -129,11 +129,11 @@ Options and settings added by this fork:
 | Machine Configuration → AES Digital Audio Connection | What is plugged into the AES/S/PDIF connector: None (default), Loopback (AES out to AES in), or Host audio, where AES out and in appear in the Audio Mixer to map to host devices such as an S/PDIF port (PCM audio; the mixer is not bit-transparent, so compressed pass-through formats don't survive) |
 
 New devices: an HLE PS/2 keyboard (the Indy default) and an HLE SGI serial
-keyboard (the Indigo default); a flat SGI SCSI
-controller with embedded disks (`nwd33c9x`), which reads the disk about 16
-times faster in real time than MAME's stock SCSI emulation (50 MB/s against
-3 MB/s reading the raw disk in IRIX, where the stock path also slows the
-whole emulation down); and a DDS DAT tape drive on SIMH `.tap` images
+keyboard (the Indigo default); a flat SGI SCSI controller with embedded
+disks (`nwd33c9x`), which reads the disk about 16 times faster in real
+time than MAME's stock SCSI emulation (50 MB/s against 3 MB/s reading the
+raw disk in IRIX, where the stock path also slows the whole emulation
+down); and a DDS DAT tape drive on SIMH `.tap` images
 (`-nwd33c9x:auxbus:7 tape -tape FILE.tap`).
 
 Networking uses MAME's TAP interface: a `tap` device on Linux, the

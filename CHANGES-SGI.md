@@ -33,6 +33,15 @@ built binaries.
   (audio input on the Indy, Indigo2 and Indigo) works with it. It costs
   about 2% of a host core, where PortAudio through ALSA's pulse plugin
   polls constantly.
+- **HLE SGI serial keyboard**, the Indigo default: the Key Tronic
+  keyboard's protocol, key codes, auto-repeat, beeps and LEDs without
+  running its 8031 firmware, which cost about a fifth of an idle Indigo's
+  host CPU. `-keyboard_port keyboard_8031` selects the firmware keyboard
+  (it needs `sgi_kbd.zip`); saved keyboard settings still apply.
+- **Recompiler perf map** (shared MAME code): with `MAME_SGI_PERF_MAP` in
+  the environment, the MIPS III recompiler writes `/tmp/perf-<pid>.map`
+  naming its static handlers, so Linux `perf` can attribute host time to
+  them.
 
 ### Fixed
 
@@ -80,6 +89,21 @@ built binaries.
 - **Newport picture and cursor framing** follow the video timing IRIX
   loads: on the Indigo2 the picture was off by six columns, with extra
   border, and the hardware cursor six columns left of the pointer.
+- **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
+  opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
+  one-step line segments and single-pixel reads (rounded on the minor
+  axis), and antialiased colour-index points after blended or z-buffered
+  lines.
+- **Newport lines:** an X rectangle outline of zero width or height drew a
+  second column, and integer lines now take the per-octant tie rounding
+  the X server sets.
+- **Newport pixel DMA:** the X server's pixmap-to-window copies from
+  unaligned addresses came out shifted, with stray pixels.
+- **Newport antialiased lines** under IRIS GL's z-buffer lost pixels where
+  lines nearly coincide: each line's depth test result was applied to the
+  wrong one of its two pixels in half the directions.
+- **Newport 8-bit board (XL8):** IRIS GL's overlay drawing (in the pop-up
+  planes) read back as empty.
 
 ### Changed
 
@@ -89,6 +113,11 @@ built binaries.
   CPU fell by a third (0.091 to 0.060 cores, on Linux with bgfx's OpenGL
   back end); in a graphics benchmark bgfx now renders slightly faster than
   OpenGL, its uploads running on bgfx's own render thread.
+- **Idle Indigo** host CPU 0.44 to 0.34 cores: the HLE keyboard above; a
+  screen whose driver doesn't report changed regions (the LG1) is no longer
+  uploaded to the OpenGL renderer again for frames that didn't change it
+  (shared MAME code; it was 16 full uploads a second); and a cheaper read
+  of the HPC1 counter SGI's audio microcode polls.
 
 ## mame0289-sgi001 (2026-10-24)
 
@@ -109,8 +138,7 @@ The first release: everything this fork adds to MAME 0.289.
 - **Flat SGI SCSI controller** with embedded disks (`nwd33c9x`): about 16
   times faster disk reads in real time than MAME's stock SCSI path.
 - **DDS DAT tape drive** on SIMH `.tap` images.
-- **HLE keyboards:** PS/2 (the Indy default) and the SGI serial keyboard
-  (the Indigo default; its 8031 firmware version is `keyboard_8031`).
+- **HLE PS/2 keyboard** (the Indy default).
 - **Ethernet link speed setting:** 10 Mbit/s, paced like real hardware
   (default), or Unlimited.
 - **Options:** `-drc_cache_mb`, `-sdl_input_buffer`,
