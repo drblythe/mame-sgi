@@ -118,9 +118,10 @@ void nscsi_tape_device::device_start()
 	m_has_tape = m_image->get_file();
 	// one buffer for the largest block READ BLOCK LIMITS allows: the save
 	// state registration below keeps this pointer and size, so the buffer
-	// can never be reallocated
+	// can never be reallocated. Left uninitialised, so the host commits
+	// only the pages a transfer writes.
 	m_rw_buf_size = MAX_BLOCK_LEN;
-	m_rw_buf = std::make_unique<u8[]>(m_rw_buf_size);
+	m_rw_buf = std::make_unique_for_overwrite<u8[]>(m_rw_buf_size);
 	save_item(NAME(m_sequence_counter));
 	save_item(NAME(m_has_tape));
 	save_item(NAME(m_tape_changed));
