@@ -16,6 +16,11 @@ indy_5015
 challenge_s
 indigo2_4415
 
+@source:sgi/ip12.cpp
+indigo
+pi4d30
+pi4d35
+
 @source:sgi/ip20.cpp
 indigo_r4000
 indigo_r4400

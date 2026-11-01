@@ -32,6 +32,7 @@ CPUS["M6800"] = true
 CPUS["M6805"] = true
 CPUS["MCS48"] = true
 CPUS["MCS51"] = true
+CPUS["MIPS1"] = true  -- ip12.cpp
 CPUS["MIPS3"] = true
 
 --------------------------------------------------
@@ -288,6 +289,9 @@ files{
 	MAME_DIR .. "src/mame/sgi/vino.cpp",
 	MAME_DIR .. "src/mame/sgi/vino.h",
 	MAME_DIR .. "src/mame/sgi/ip20.cpp",
+	MAME_DIR .. "src/mame/sgi/ip12.cpp",
+	MAME_DIR .. "src/mame/sgi/pic1.cpp",
+	MAME_DIR .. "src/mame/sgi/pic1.h",
 	MAME_DIR .. "src/mame/sgi/hpc1.cpp",
 	MAME_DIR .. "src/mame/sgi/hpc1.h",
 	MAME_DIR .. "src/mame/sgi/int2.cpp",
