@@ -364,6 +364,9 @@ void ip12_state::indigo(machine_config &config)
 	m_cpu->set_addrmap(AS_PROGRAM, &ip12_state::ip12_map);
 	// FIXME: route fpu interrupt via int2
 	m_cpu->set_fpu(r3000a_device::MIPS_R3010A, INPUT_LINE_IRQ0);
+	// IRIX 5.3 idle(): bnez t3 back to the top of its spin on the
+	// per-CPU idle flag, cleared by the interrupt that makes work runnable
+	m_cpu->set_idle_branch(0x80015ac8, 0x1560fff2);
 
 	ip12(config);
 
