@@ -61,34 +61,56 @@ sgi_pic1_device::sgi_pic1_device(machine_config const &mconfig, char const *tag,
 {
 }
 
+static constexpr u32 BANK_MAX = 1U << (3 + 22);
+
 void sgi_pic1_device::device_start()
 {
+	for (unsigned bank = 0; bank < 4; bank++)
+	{
+		u8 *const raw = static_cast<u8 *>(std::calloc(1, BANK_MAX));
+		if (!raw)
+			fatalerror("%s: can't allocate RAM bank %c\n", tag(), bank + 'A');
+		m_ram[bank].reset(raw);
+		save_pointer(NAME(m_ram[bank].get()), BANK_MAX, bank);
+
+		m_mapped_base[bank] = 0;
+		m_mapped_size[bank] = 0;
+	}
+
+	save_item(NAME(m_cpucfg));
+	save_item(NAME(m_sid));
+	save_item(NAME(m_memcfg));
+	save_item(NAME(m_dabr));
+
+	// the bus mapping follows the restored memory configuration
+	machine().save().register_postload(save_prepost_delegate(
+			[this] ()
+			{
+				for (unsigned offset = 0; offset < 2; offset++)
+				{
+					unmap_banks(offset);
+					map_banks(offset);
+				}
+			}, "pic1_remap"));
 }
 
 void sgi_pic1_device::device_reset()
 {
 	u8 const simms = m_simms->read();
 
-	// allocate installed memory
+	// check installed memory
 	unsigned bank16m = 0;
 	for (unsigned bank = 0; bank < 4; bank++)
 	{
 		unsigned const size = BIT(simms, bank * 2, 2);
 
-		switch (size)
-		{
-		case 0:
-			LOG("ram bank %c empty\n", bank + 'A');
-			m_ram[bank].reset();
-			break;
-		case 2:
+		if (size == 2)
 			bank16m++;
-			[[fallthrough]];
-		default:
+
+		if (size)
 			LOG("ram bank %c size %dM\n", bank + 'A', 1U << (size + 2));
-			m_ram[bank] = std::make_unique<u8[]>(1U << (size + 22));
-			break;
-		}
+		else
+			LOG("ram bank %c empty\n", bank + 'A');
 	}
 
 	if (bank16m > 1)
@@ -149,36 +171,40 @@ void sgi_pic1_device::memcfg_w(offs_t offset, u32 data)
 {
 	LOG("memcfg%d 0x%08x\n", offset, data);
 
-	// remove existing mapping
-	for (unsigned bank = 0; bank < 2; bank++)
-	{
-		u32 const base = BIT(m_memcfg[offset], 16 - bank * 16, 6) << 22;
+	unmap_banks(offset);
+	m_memcfg[offset] = data;
+	map_banks(offset);
+}
 
-		if (base != 0x3f)
+void sgi_pic1_device::unmap_banks(unsigned offset)
+{
+	for (unsigned bank = offset * 2; bank < offset * 2 + 2; bank++)
+	{
+		if (m_mapped_size[bank])
 		{
-			unsigned const size = ram_size(offset * 2 + bank);
-			if (size)
-			{
-				LOG("unmap bank %c 0x%08x to 0x%08x\n", offset * 2 + bank + 'A', base, base + size - 1);
-				m_bus->unmap_readwrite(base, base + size - 1);
-			}
+			LOG("unmap bank %c 0x%08x to 0x%08x\n", bank + 'A', m_mapped_base[bank], m_mapped_base[bank] + m_mapped_size[bank] - 1);
+			m_bus->unmap_readwrite(m_mapped_base[bank], m_mapped_base[bank] + m_mapped_size[bank] - 1);
+			m_mapped_size[bank] = 0;
 		}
 	}
+}
 
-	m_memcfg[offset] = data;
-
-	// install configured mapping
-	for (unsigned bank = 0; bank < 2; bank++)
+void sgi_pic1_device::map_banks(unsigned offset)
+{
+	for (unsigned i = 0; i < 2; i++)
 	{
-		u32 const base = BIT(m_memcfg[offset], 16 - bank * 16, 6) << 22;
+		unsigned const bank = offset * 2 + i;
+		u32 const base = BIT(m_memcfg[offset], 16 - i * 16, 6) << 22;
 
 		if (base != 0x3f)
 		{
-			unsigned const size = ram_size(offset * 2 + bank);
+			unsigned const size = ram_size(bank);
 			if (size)
 			{
-				LOG("remap bank %c 0x%08x to 0x%08x\n", offset * 2 + bank + 'A', base, base + size - 1);
-				m_bus->install_ram(base, base + size - 1, m_ram[offset * 2 + bank].get());
+				LOG("remap bank %c 0x%08x to 0x%08x\n", bank + 'A', base, base + size - 1);
+				m_bus->install_ram(base, base + size - 1, m_ram[bank].get());
+				m_mapped_base[bank] = base;
+				m_mapped_size[bank] = size;
 			}
 		}
 	}

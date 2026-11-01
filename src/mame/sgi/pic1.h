@@ -36,12 +36,22 @@ protected:
 
 	// helpers
 	unsigned ram_size(unsigned bank) const;
+	void unmap_banks(unsigned offset);
+	void map_banks(unsigned offset);
 
 private:
 	required_address_space m_bus;
 	required_ioport m_simms;
 
-	std::unique_ptr<u8[]> m_ram[4];
+	// Each bank is allocated once at its largest size (4x8M SIMMs), so it
+	// can be registered for save states; calloc() leaves the part a smaller
+	// configuration never uses non-resident.
+	struct calloc_deleter { void operator()(u8 *p) const noexcept { std::free(p); } };
+	std::unique_ptr<u8[], calloc_deleter> m_ram[4];
+
+	// bus ranges currently mapped to each bank (size 0 when unmapped)
+	u32 m_mapped_base[4];
+	u32 m_mapped_size[4];
 
 	u32 m_cpucfg;    // cpu board control and status
 	u32 m_sid;       // system id/coprocessor present
