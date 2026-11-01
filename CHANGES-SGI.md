@@ -118,6 +118,10 @@ built binaries.
   uploaded to the OpenGL renderer again for frames that didn't change it
   (shared MAME code; it was 16 full uploads a second); and a cheaper read
   of the HPC1 counter SGI's audio microcode polls.
+- **Indigo RAM:** 128 MB by default (bank A, four 32 MB SIMMs) instead of
+  MAME's 16 MB, in which IRIX 6.5 pages heavily; up to 384 MB in Machine
+  Configuration. A RAM setting saved for bank A under the old default is
+  not applied, so check Machine Configuration after updating.
 
 ## mame0289-sgi001 (2026-10-24)
 
