@@ -574,10 +574,13 @@ void mips3_device::generate_exception(int exception, int backup)
 }
 
 
+// BadVAddr and Context are 64-bit registers: a 32-bit mode address is
+// sign-extended in them, as in the address itself (a 32-bit kernel that
+// reads BadVAddr with DMFC0 tells kernel from user addresses by its sign)
 void mips3_device::generate_tlb_exception(int exception, offs_t address)
 {
-	m_core->cpr[0][COP0_BadVAddr] = address;
-	m_core->cpr[0][COP0_Context] = (m_core->cpr[0][COP0_Context] & 0xff800000) | ((address >> 9) & 0x007ffff0);
+	m_core->cpr[0][COP0_BadVAddr] = s64(s32(address));
+	m_core->cpr[0][COP0_Context] = (m_core->cpr[0][COP0_Context] & ~u64(0x007fffff)) | ((address >> 9) & 0x007ffff0);
 	m_core->cpr[0][COP0_EntryHi] = (address & 0xffffe000) | (m_core->cpr[0][COP0_EntryHi] & 0xff);
 
 	generate_exception(exception, 1);
@@ -588,7 +591,7 @@ void mips3_device::generate_tlb_exception(int exception, offs_t address)
 // the masked accessors with the aligned-down address)
 void mips3_device::generate_address_error(int exception, offs_t address)
 {
-	m_core->cpr[0][COP0_BadVAddr] = address;
+	m_core->cpr[0][COP0_BadVAddr] = s64(s32(address));
 	generate_exception(exception, 1);
 }
 
@@ -5655,7 +5658,7 @@ void mips3_device::execute_run()
 		   PC itself */
 		if (m_core->pc & 3)
 		{
-			m_core->cpr[0][COP0_BadVAddr] = m_core->pc;
+			m_core->cpr[0][COP0_BadVAddr] = s64(s32(m_core->pc));
 			generate_exception(EXCEPTION_ADDRLOAD, 1);
 			continue;
 		}

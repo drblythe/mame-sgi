@@ -1886,15 +1886,13 @@ void mips3_device::static_generate_exception(drcuml_block &block, int &label, ui
 	{
 		/* set BadVAddr to the fault address */
 		UML_GETEXP(block, I0);                                                  // getexp  i0
-		// BadVAddr is a genuinely 64-bit COP0 register
-		// (unlike Status/Cause/Count/Compare, which are architecturally
-		// 32-bit-only). The interpreter's equivalent (generate_tlb_exception,
-		// mips3.cpp) assigns the full 64-bit register from the fault
-		// address, zero-extending it; a narrow 32-bit store here left the
-		// upper 32 bits as whatever was previously in the register.
-		// Zero-extend explicitly (GETEXP's own upper-bit contents aren't
-		// otherwise guaranteed) before the widened store.
-		UML_DAND(block, I0, I0, 0xffffffff);                                    // dand    i0,i0,0xffffffff
+		// BadVAddr is a 64-bit COP0 register (unlike Status/Cause/Count/
+		// Compare): a 32-bit mode address is sign-extended in it, as in the
+		// interpreter's generate_tlb_exception() (mips3.cpp). A 32-bit
+		// kernel that reads it with DMFC0 tells kernel from user addresses
+		// by its sign. GETEXP's upper bits aren't defined, so extend from
+		// the low 32
+		UML_DSEXT(block, I0, I0, SIZE_DWORD);                                   // dsext   i0,i0,dword
 		UML_DMOV(block, CPR064(COP0_BadVAddr), I0);                             // dmov    [BadVAddr],i0
 	}
 
