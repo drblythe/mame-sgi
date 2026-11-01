@@ -589,8 +589,12 @@ void ip20_state::cpu_map(address_map &map)
 	map(0x1fc0'0000, 0x1fc7'ffff).rom().region("prom", 0);
 }
 
+// banks A to C (up to 384 MB in the Machine Configuration menu); bank A
+// "4x32M" = 128 MB by default, where MAME's would be 16 MB, which IRIX 6.5
+// pages heavily in
 static DEVICE_INPUT_DEFAULTS_START(ip20_mc)
 	DEVICE_INPUT_DEFAULTS("VALID", 0x0f, 0x07)
+	DEVICE_INPUT_DEFAULTS("SIMMS", 0x000f, 0x000e)
 DEVICE_INPUT_DEFAULTS_END
 
 #ifndef MAME_SGI_IP20_USE_NWD33C9X
