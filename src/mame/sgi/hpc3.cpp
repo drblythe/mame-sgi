@@ -820,12 +820,15 @@ template void hpc3_device::fifo_w<hpc3_device::FIFO_SCSI1>(offs_t offset, uint32
 template void hpc3_device::fifo_w<hpc3_device::FIFO_ENET_RECV>(offs_t offset, uint32_t data);
 template void hpc3_device::fifo_w<hpc3_device::FIFO_ENET_XMIT>(offs_t offset, uint32_t data);
 
+// The SCSI chip's one register select line is address bit 2, so its two
+// registers repeat through the channel's 32K: IRIX uses them at the base
+// (0x1fbc0000), NetBSD at 0x1fbc4000
 template<uint32_t index>
 uint32_t hpc3_device::hd_r(offs_t offset, uint32_t mem_mask)
 {
 	if (ACCESSING_BITS_0_7 && !m_hd_rd_cb[index].isunset())
 	{
-		const uint8_t ret = m_hd_rd_cb[index](offset);
+		const uint8_t ret = m_hd_rd_cb[index](offset & 1);
 		LOGMASKED(LOG_SCSI, "%s: SCSI%d Read %02x: %02x\n", machine().describe_context(), index, offset, ret);
 		return ret;
 	}
@@ -843,7 +846,7 @@ void hpc3_device::hd_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 	if (ACCESSING_BITS_0_7 && !m_hd_wr_cb[index].isunset())
 	{
 		LOGMASKED(LOG_SCSI, "%s: SCSI%d Write %02x = %02x\n", machine().describe_context(), index, offset, (uint8_t)data);
-		m_hd_wr_cb[index](offset, data & 0xff);
+		m_hd_wr_cb[index](offset & 1, data & 0xff);
 	}
 	else
 	{

@@ -107,6 +107,10 @@ built binaries.
   state still pointed at the old one, so saving or loading after tape use
   read and wrote freed memory and crashed MAME. The buffer is now
   allocated once at the largest block size the drive reports (16 MB).
+- **HPC3 SCSI registers** repeat through the channel's 32K, as on the
+  hardware (the chip decodes one address line), so NetBSD, which uses them
+  at 0x1fbc4000 rather than IRIX's 0x1fbc0000, finds its SCSI controller
+  on the Indy and Indigo2.
 - **LG1 drawing** (Indigo): the X server's stipple fills, copy planes and
   opaque patterns (the desktop's icon shading), stippled lines, IRIS GL's
   one-step line segments and single-pixel reads (rounded on the minor
