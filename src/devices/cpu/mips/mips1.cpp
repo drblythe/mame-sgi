@@ -372,6 +372,361 @@ void r3041_device::device_reset()
 	m_cop0[COP0_Compare] = 0x00ffffffU;
 }
 
+// decode and execute one instruction (the run loop's body)
+ATTR_FORCE_INLINE void mips1core_device_base::execute_op(u32 const op)
+{
+	// check for interrupts
+	if ((CAUSE & SR & SR_IM) && (SR & SR_IEc))
+	{
+		// enable debugger interrupt breakpoints
+		for (int irqline = 0; irqline < 6; irqline++)
+		{
+			if (CAUSE & SR & (CAUSE_IPEX0 << irqline))
+			{
+				standard_irq_callback(irqline, m_pc);
+				break;
+			}
+		}
+		generate_exception(EXCEPTION_INTERRUPT);
+		return;
+	}
+
+	// idle-loop skip: spinning until an interrupt is pure waiting
+	if (m_pc == m_idle_pc && op == m_idle_op && m_r[RSREG] != m_r[RTREG]) [[unlikely]]
+		m_icount = 0;
+
+	// decode and execute instruction
+	switch (op >> 26)
+	{
+	case 0x00: // SPECIAL
+		switch (op & 63)
+		{
+		case 0x00: // SLL
+			m_r[RDREG] = m_r[RTREG] << SHIFT;
+			break;
+		case 0x02: // SRL
+			m_r[RDREG] = m_r[RTREG] >> SHIFT;
+			break;
+		case 0x03: // SRA
+			m_r[RDREG] = s32(m_r[RTREG]) >> SHIFT;
+			break;
+		case 0x04: // SLLV
+			m_r[RDREG] = m_r[RTREG] << (m_r[RSREG] & 31);
+			break;
+		case 0x06: // SRLV
+			m_r[RDREG] = m_r[RTREG] >> (m_r[RSREG] & 31);
+			break;
+		case 0x07: // SRAV
+			m_r[RDREG] = s32(m_r[RTREG]) >> (m_r[RSREG] & 31);
+			break;
+		case 0x08: // JR
+			m_branch_state = BRANCH;
+			m_branch_target = m_r[RSREG];
+			break;
+		case 0x09: // JALR
+			m_branch_state = BRANCH;
+			m_branch_target = m_r[RSREG];
+			m_r[RDREG] = m_pc + 8;
+			break;
+		case 0x0c: // SYSCALL
+			generate_exception(EXCEPTION_SYSCALL);
+			break;
+		case 0x0d: // BREAK
+			generate_exception(EXCEPTION_BREAK);
+			break;
+		case 0x10: // MFHI
+			m_r[RDREG] = m_hi;
+			break;
+		case 0x11: // MTHI
+			m_hi = m_r[RSREG];
+			break;
+		case 0x12: // MFLO
+			m_r[RDREG] = m_lo;
+			break;
+		case 0x13: // MTLO
+			m_lo = m_r[RSREG];
+			break;
+		case 0x18: // MULT
+			{
+				u64 product = mul_32x32(m_r[RSREG], m_r[RTREG]);
+
+				m_lo = product;
+				m_hi = product >> 32;
+				m_icount -= 11;
+			}
+			break;
+		case 0x19: // MULTU
+			{
+				u64 product = mulu_32x32(m_r[RSREG], m_r[RTREG]);
+
+				m_lo = product;
+				m_hi = product >> 32;
+				m_icount -= 11;
+			}
+			break;
+		case 0x1a: // DIV
+			if (m_r[RTREG])
+			{
+				m_lo = s32(m_r[RSREG]) / s32(m_r[RTREG]);
+				m_hi = s32(m_r[RSREG]) % s32(m_r[RTREG]);
+			}
+			m_icount -= 34;
+			break;
+		case 0x1b: // DIVU
+			if (m_r[RTREG])
+			{
+				m_lo = m_r[RSREG] / m_r[RTREG];
+				m_hi = m_r[RSREG] % m_r[RTREG];
+			}
+			m_icount -= 34;
+			break;
+		case 0x20: // ADD
+			{
+				u32 const sum = m_r[RSREG] + m_r[RTREG];
+
+				// overflow: (sign(addend0) == sign(addend1)) && (sign(addend0) != sign(sum))
+				if (!BIT(m_r[RSREG] ^ m_r[RTREG], 31) && BIT(m_r[RSREG] ^ sum, 31))
+					generate_exception(EXCEPTION_OVERFLOW);
+				else
+					m_r[RDREG] = sum;
+			}
+			break;
+		case 0x21: // ADDU
+			m_r[RDREG] = m_r[RSREG] + m_r[RTREG];
+			break;
+		case 0x22: // SUB
+			{
+				u32 const difference = m_r[RSREG] - m_r[RTREG];
+
+				// overflow: (sign(minuend) != sign(subtrahend)) && (sign(minuend) != sign(difference))
+				if (BIT(m_r[RSREG] ^ m_r[RTREG], 31) && BIT(m_r[RSREG] ^ difference, 31))
+					generate_exception(EXCEPTION_OVERFLOW);
+				else
+					m_r[RDREG] = difference;
+			}
+			break;
+		case 0x23: // SUBU
+			m_r[RDREG] = m_r[RSREG] - m_r[RTREG];
+			break;
+		case 0x24: // AND
+			m_r[RDREG] = m_r[RSREG] & m_r[RTREG];
+			break;
+		case 0x25: // OR
+			m_r[RDREG] = m_r[RSREG] | m_r[RTREG];
+			break;
+		case 0x26: // XOR
+			m_r[RDREG] = m_r[RSREG] ^ m_r[RTREG];
+			break;
+		case 0x27: // NOR
+			m_r[RDREG] = ~(m_r[RSREG] | m_r[RTREG]);
+			break;
+		case 0x2a: // SLT
+			m_r[RDREG] = s32(m_r[RSREG]) < s32(m_r[RTREG]);
+			break;
+		case 0x2b: // SLTU
+			m_r[RDREG] = u32(m_r[RSREG]) < u32(m_r[RTREG]);
+			break;
+		default:
+			generate_exception(EXCEPTION_INVALIDOP);
+			break;
+		}
+		break;
+	case 0x01: // REGIMM
+		/*
+		 * Hardware testing has established that MIPS-1 processors do
+		 * not decode bit 17 of REGIMM format instructions. This bit is
+		 * used to add the "branch likely" instructions for MIPS-2 and
+		 * later architectures.
+		 *
+		 * IRIX 5.3 inst(1M) uses this behaviour to distinguish MIPS-1
+		 * from MIPS-2 processors; the latter nullify the delay slot
+		 * instruction if the branch is not taken, whereas the former
+		 * execute the delay slot instruction regardless.
+		 */
+		switch (RTREG & 0x1d)
+		{
+		case 0x00: // BLTZ
+			if (s32(m_r[RSREG]) < 0)
+			{
+				m_branch_state = BRANCH;
+				m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+			}
+			break;
+		case 0x01: // BGEZ
+			if (s32(m_r[RSREG]) >= 0)
+			{
+				m_branch_state = BRANCH;
+				m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+			}
+			break;
+		case 0x10: // BLTZAL
+			if (s32(m_r[RSREG]) < 0)
+			{
+				m_branch_state = BRANCH;
+				m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+				m_r[31] = m_pc + 8;
+			}
+			break;
+		case 0x11: // BGEZAL
+			if (s32(m_r[RSREG]) >= 0)
+			{
+				m_branch_state = BRANCH;
+				m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+				m_r[31] = m_pc + 8;
+			}
+			break;
+		default:
+			generate_exception(EXCEPTION_INVALIDOP);
+			break;
+		}
+		break;
+	case 0x02: // J
+		m_branch_state = BRANCH;
+		m_branch_target = ((m_pc + 4) & 0xf0000000) | (LIMMVAL << 2);
+		break;
+	case 0x03: // JAL
+		m_branch_state = BRANCH;
+		m_branch_target = ((m_pc + 4) & 0xf0000000) | (LIMMVAL << 2);
+		m_r[31] = m_pc + 8;
+		break;
+	case 0x04: // BEQ
+		if (m_r[RSREG] == m_r[RTREG])
+		{
+			m_branch_state = BRANCH;
+			m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+		}
+		break;
+	case 0x05: // BNE
+		if (m_r[RSREG] != m_r[RTREG])
+		{
+			m_branch_state = BRANCH;
+			m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+		}
+		break;
+	case 0x06: // BLEZ
+		if (s32(m_r[RSREG]) <= 0)
+		{
+			m_branch_state = BRANCH;
+			m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+		}
+		break;
+	case 0x07: // BGTZ
+		if (s32(m_r[RSREG]) > 0)
+		{
+			m_branch_state = BRANCH;
+			m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
+		}
+		break;
+	case 0x08: // ADDI
+		{
+			u32 const sum = m_r[RSREG] + SIMMVAL;
+
+			// overflow: (sign(addend0) == sign(addend1)) && (sign(addend0) != sign(sum))
+			if (!BIT(m_r[RSREG] ^ s32(SIMMVAL), 31) && BIT(m_r[RSREG] ^ sum, 31))
+				generate_exception(EXCEPTION_OVERFLOW);
+			else
+				m_r[RTREG] = sum;
+		}
+		break;
+	case 0x09: // ADDIU
+		m_r[RTREG] = m_r[RSREG] + SIMMVAL;
+		break;
+	case 0x0a: // SLTI
+		m_r[RTREG] = s32(m_r[RSREG]) < s32(SIMMVAL);
+		break;
+	case 0x0b: // SLTIU
+		m_r[RTREG] = u32(m_r[RSREG]) < u32(SIMMVAL);
+		break;
+	case 0x0c: // ANDI
+		m_r[RTREG] = m_r[RSREG] & UIMMVAL;
+		break;
+	case 0x0d: // ORI
+		m_r[RTREG] = m_r[RSREG] | UIMMVAL;
+		break;
+	case 0x0e: // XORI
+		m_r[RTREG] = m_r[RSREG] ^ UIMMVAL;
+		break;
+	case 0x0f: // LUI
+		m_r[RTREG] = UIMMVAL << 16;
+		break;
+	case 0x10: // COP0
+		if (!(SR & SR_KUc) || (SR & SR_COP0))
+			handle_cop0(op);
+		else
+			generate_exception(EXCEPTION_BADCOP0);
+		break;
+	case 0x11: // COP1
+		handle_cop1(op);
+		break;
+	case 0x12: // COP2
+		handle_cop2(op);
+		break;
+	case 0x13: // COP3
+		handle_cop3(op);
+		break;
+	case 0x20: // LB
+		load<u8>(SIMMVAL + m_r[RSREG], [this, op](s8 temp) { m_r[RTREG] = temp; });
+		break;
+	case 0x21: // LH
+		load<u16>(SIMMVAL + m_r[RSREG], [this, op](s16 temp) { m_r[RTREG] = temp; });
+		break;
+	case 0x22: // LWL
+		lwl(op);
+		break;
+	case 0x23: // LW
+		load<u32>(SIMMVAL + m_r[RSREG], [this, op](u32 temp) { m_r[RTREG] = temp; });
+		break;
+	case 0x24: // LBU
+		load<u8>(SIMMVAL + m_r[RSREG], [this, op](u8 temp) { m_r[RTREG] = temp; });
+		break;
+	case 0x25: // LHU
+		load<u16>(SIMMVAL + m_r[RSREG], [this, op](u16 temp) { m_r[RTREG] = temp; });
+		break;
+	case 0x26: // LWR
+		lwr(op);
+		break;
+	case 0x28: // SB
+		store<u8>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
+		break;
+	case 0x29: // SH
+		store<u16>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
+		break;
+	case 0x2a: // SWL
+		swl(op);
+		break;
+	case 0x2b: // SW
+		store<u32>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
+		break;
+	case 0x2e: // SWR
+		swr(op);
+		break;
+	case 0x31: // LWC1
+		handle_cop1(op);
+		break;
+	case 0x32: // LWC2
+		handle_cop2(op);
+		break;
+	case 0x33: // LWC3
+		handle_cop3(op);
+		break;
+	case 0x39: // SWC1
+		handle_cop1(op);
+		break;
+	case 0x3a: // SWC2
+		handle_cop2(op);
+		break;
+	case 0x3b: // SWC3
+		handle_cop3(op);
+		break;
+	default:
+		generate_exception(EXCEPTION_INVALIDOP);
+		break;
+	}
+
+	// clear register 0
+	m_r[0] = 0;
+}
+
 void mips1core_device_base::execute_run()
 {
 	// core execution loop
@@ -380,360 +735,10 @@ void mips1core_device_base::execute_run()
 		// debugging
 		debugger_instruction_hook(m_pc);
 
-		// fetch instruction
-		fetch(m_pc, [this](u32 const op)
-		{
-			// check for interrupts
-			if ((CAUSE & SR & SR_IM) && (SR & SR_IEc))
-			{
-				// enable debugger interrupt breakpoints
-				for (int irqline = 0; irqline < 6; irqline++)
-				{
-					if (CAUSE & SR & (CAUSE_IPEX0 << irqline))
-					{
-						standard_irq_callback(irqline, m_pc);
-						break;
-					}
-				}
-				generate_exception(EXCEPTION_INTERRUPT);
-				return;
-			}
-
-			// idle-loop skip: spinning until an interrupt is pure waiting
-			if (m_pc == m_idle_pc && op == m_idle_op && m_r[RSREG] != m_r[RTREG]) [[unlikely]]
-				m_icount = 0;
-
-			// decode and execute instruction
-			switch (op >> 26)
-			{
-			case 0x00: // SPECIAL
-				switch (op & 63)
-				{
-				case 0x00: // SLL
-					m_r[RDREG] = m_r[RTREG] << SHIFT;
-					break;
-				case 0x02: // SRL
-					m_r[RDREG] = m_r[RTREG] >> SHIFT;
-					break;
-				case 0x03: // SRA
-					m_r[RDREG] = s32(m_r[RTREG]) >> SHIFT;
-					break;
-				case 0x04: // SLLV
-					m_r[RDREG] = m_r[RTREG] << (m_r[RSREG] & 31);
-					break;
-				case 0x06: // SRLV
-					m_r[RDREG] = m_r[RTREG] >> (m_r[RSREG] & 31);
-					break;
-				case 0x07: // SRAV
-					m_r[RDREG] = s32(m_r[RTREG]) >> (m_r[RSREG] & 31);
-					break;
-				case 0x08: // JR
-					m_branch_state = BRANCH;
-					m_branch_target = m_r[RSREG];
-					break;
-				case 0x09: // JALR
-					m_branch_state = BRANCH;
-					m_branch_target = m_r[RSREG];
-					m_r[RDREG] = m_pc + 8;
-					break;
-				case 0x0c: // SYSCALL
-					generate_exception(EXCEPTION_SYSCALL);
-					break;
-				case 0x0d: // BREAK
-					generate_exception(EXCEPTION_BREAK);
-					break;
-				case 0x10: // MFHI
-					m_r[RDREG] = m_hi;
-					break;
-				case 0x11: // MTHI
-					m_hi = m_r[RSREG];
-					break;
-				case 0x12: // MFLO
-					m_r[RDREG] = m_lo;
-					break;
-				case 0x13: // MTLO
-					m_lo = m_r[RSREG];
-					break;
-				case 0x18: // MULT
-					{
-						u64 product = mul_32x32(m_r[RSREG], m_r[RTREG]);
-
-						m_lo = product;
-						m_hi = product >> 32;
-						m_icount -= 11;
-					}
-					break;
-				case 0x19: // MULTU
-					{
-						u64 product = mulu_32x32(m_r[RSREG], m_r[RTREG]);
-
-						m_lo = product;
-						m_hi = product >> 32;
-						m_icount -= 11;
-					}
-					break;
-				case 0x1a: // DIV
-					if (m_r[RTREG])
-					{
-						m_lo = s32(m_r[RSREG]) / s32(m_r[RTREG]);
-						m_hi = s32(m_r[RSREG]) % s32(m_r[RTREG]);
-					}
-					m_icount -= 34;
-					break;
-				case 0x1b: // DIVU
-					if (m_r[RTREG])
-					{
-						m_lo = m_r[RSREG] / m_r[RTREG];
-						m_hi = m_r[RSREG] % m_r[RTREG];
-					}
-					m_icount -= 34;
-					break;
-				case 0x20: // ADD
-					{
-						u32 const sum = m_r[RSREG] + m_r[RTREG];
-
-						// overflow: (sign(addend0) == sign(addend1)) && (sign(addend0) != sign(sum))
-						if (!BIT(m_r[RSREG] ^ m_r[RTREG], 31) && BIT(m_r[RSREG] ^ sum, 31))
-							generate_exception(EXCEPTION_OVERFLOW);
-						else
-							m_r[RDREG] = sum;
-					}
-					break;
-				case 0x21: // ADDU
-					m_r[RDREG] = m_r[RSREG] + m_r[RTREG];
-					break;
-				case 0x22: // SUB
-					{
-						u32 const difference = m_r[RSREG] - m_r[RTREG];
-
-						// overflow: (sign(minuend) != sign(subtrahend)) && (sign(minuend) != sign(difference))
-						if (BIT(m_r[RSREG] ^ m_r[RTREG], 31) && BIT(m_r[RSREG] ^ difference, 31))
-							generate_exception(EXCEPTION_OVERFLOW);
-						else
-							m_r[RDREG] = difference;
-					}
-					break;
-				case 0x23: // SUBU
-					m_r[RDREG] = m_r[RSREG] - m_r[RTREG];
-					break;
-				case 0x24: // AND
-					m_r[RDREG] = m_r[RSREG] & m_r[RTREG];
-					break;
-				case 0x25: // OR
-					m_r[RDREG] = m_r[RSREG] | m_r[RTREG];
-					break;
-				case 0x26: // XOR
-					m_r[RDREG] = m_r[RSREG] ^ m_r[RTREG];
-					break;
-				case 0x27: // NOR
-					m_r[RDREG] = ~(m_r[RSREG] | m_r[RTREG]);
-					break;
-				case 0x2a: // SLT
-					m_r[RDREG] = s32(m_r[RSREG]) < s32(m_r[RTREG]);
-					break;
-				case 0x2b: // SLTU
-					m_r[RDREG] = u32(m_r[RSREG]) < u32(m_r[RTREG]);
-					break;
-				default:
-					generate_exception(EXCEPTION_INVALIDOP);
-					break;
-				}
-				break;
-			case 0x01: // REGIMM
-				/*
-				 * Hardware testing has established that MIPS-1 processors do
-				 * not decode bit 17 of REGIMM format instructions. This bit is
-				 * used to add the "branch likely" instructions for MIPS-2 and
-				 * later architectures.
-				 *
-				 * IRIX 5.3 inst(1M) uses this behaviour to distinguish MIPS-1
-				 * from MIPS-2 processors; the latter nullify the delay slot
-				 * instruction if the branch is not taken, whereas the former
-				 * execute the delay slot instruction regardless.
-				 */
-				switch (RTREG & 0x1d)
-				{
-				case 0x00: // BLTZ
-					if (s32(m_r[RSREG]) < 0)
-					{
-						m_branch_state = BRANCH;
-						m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-					}
-					break;
-				case 0x01: // BGEZ
-					if (s32(m_r[RSREG]) >= 0)
-					{
-						m_branch_state = BRANCH;
-						m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-					}
-					break;
-				case 0x10: // BLTZAL
-					if (s32(m_r[RSREG]) < 0)
-					{
-						m_branch_state = BRANCH;
-						m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-						m_r[31] = m_pc + 8;
-					}
-					break;
-				case 0x11: // BGEZAL
-					if (s32(m_r[RSREG]) >= 0)
-					{
-						m_branch_state = BRANCH;
-						m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-						m_r[31] = m_pc + 8;
-					}
-					break;
-				default:
-					generate_exception(EXCEPTION_INVALIDOP);
-					break;
-				}
-				break;
-			case 0x02: // J
-				m_branch_state = BRANCH;
-				m_branch_target = ((m_pc + 4) & 0xf0000000) | (LIMMVAL << 2);
-				break;
-			case 0x03: // JAL
-				m_branch_state = BRANCH;
-				m_branch_target = ((m_pc + 4) & 0xf0000000) | (LIMMVAL << 2);
-				m_r[31] = m_pc + 8;
-				break;
-			case 0x04: // BEQ
-				if (m_r[RSREG] == m_r[RTREG])
-				{
-					m_branch_state = BRANCH;
-					m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-				}
-				break;
-			case 0x05: // BNE
-				if (m_r[RSREG] != m_r[RTREG])
-				{
-					m_branch_state = BRANCH;
-					m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-				}
-				break;
-			case 0x06: // BLEZ
-				if (s32(m_r[RSREG]) <= 0)
-				{
-					m_branch_state = BRANCH;
-					m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-				}
-				break;
-			case 0x07: // BGTZ
-				if (s32(m_r[RSREG]) > 0)
-				{
-					m_branch_state = BRANCH;
-					m_branch_target = m_pc + 4 + (s32(SIMMVAL) << 2);
-				}
-				break;
-			case 0x08: // ADDI
-				{
-					u32 const sum = m_r[RSREG] + SIMMVAL;
-
-					// overflow: (sign(addend0) == sign(addend1)) && (sign(addend0) != sign(sum))
-					if (!BIT(m_r[RSREG] ^ s32(SIMMVAL), 31) && BIT(m_r[RSREG] ^ sum, 31))
-						generate_exception(EXCEPTION_OVERFLOW);
-					else
-						m_r[RTREG] = sum;
-				}
-				break;
-			case 0x09: // ADDIU
-				m_r[RTREG] = m_r[RSREG] + SIMMVAL;
-				break;
-			case 0x0a: // SLTI
-				m_r[RTREG] = s32(m_r[RSREG]) < s32(SIMMVAL);
-				break;
-			case 0x0b: // SLTIU
-				m_r[RTREG] = u32(m_r[RSREG]) < u32(SIMMVAL);
-				break;
-			case 0x0c: // ANDI
-				m_r[RTREG] = m_r[RSREG] & UIMMVAL;
-				break;
-			case 0x0d: // ORI
-				m_r[RTREG] = m_r[RSREG] | UIMMVAL;
-				break;
-			case 0x0e: // XORI
-				m_r[RTREG] = m_r[RSREG] ^ UIMMVAL;
-				break;
-			case 0x0f: // LUI
-				m_r[RTREG] = UIMMVAL << 16;
-				break;
-			case 0x10: // COP0
-				if (!(SR & SR_KUc) || (SR & SR_COP0))
-					handle_cop0(op);
-				else
-					generate_exception(EXCEPTION_BADCOP0);
-				break;
-			case 0x11: // COP1
-				handle_cop1(op);
-				break;
-			case 0x12: // COP2
-				handle_cop2(op);
-				break;
-			case 0x13: // COP3
-				handle_cop3(op);
-				break;
-			case 0x20: // LB
-				load<u8>(SIMMVAL + m_r[RSREG], [this, op](s8 temp) { m_r[RTREG] = temp; });
-				break;
-			case 0x21: // LH
-				load<u16>(SIMMVAL + m_r[RSREG], [this, op](s16 temp) { m_r[RTREG] = temp; });
-				break;
-			case 0x22: // LWL
-				lwl(op);
-				break;
-			case 0x23: // LW
-				load<u32>(SIMMVAL + m_r[RSREG], [this, op](u32 temp) { m_r[RTREG] = temp; });
-				break;
-			case 0x24: // LBU
-				load<u8>(SIMMVAL + m_r[RSREG], [this, op](u8 temp) { m_r[RTREG] = temp; });
-				break;
-			case 0x25: // LHU
-				load<u16>(SIMMVAL + m_r[RSREG], [this, op](u16 temp) { m_r[RTREG] = temp; });
-				break;
-			case 0x26: // LWR
-				lwr(op);
-				break;
-			case 0x28: // SB
-				store<u8>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
-				break;
-			case 0x29: // SH
-				store<u16>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
-				break;
-			case 0x2a: // SWL
-				swl(op);
-				break;
-			case 0x2b: // SW
-				store<u32>(SIMMVAL + m_r[RSREG], m_r[RTREG]);
-				break;
-			case 0x2e: // SWR
-				swr(op);
-				break;
-			case 0x31: // LWC1
-				handle_cop1(op);
-				break;
-			case 0x32: // LWC2
-				handle_cop2(op);
-				break;
-			case 0x33: // LWC3
-				handle_cop3(op);
-				break;
-			case 0x39: // SWC1
-				handle_cop1(op);
-				break;
-			case 0x3a: // SWC2
-				handle_cop2(op);
-				break;
-			case 0x3b: // SWC3
-				handle_cop3(op);
-				break;
-			default:
-				generate_exception(EXCEPTION_INVALIDOP);
-				break;
-			}
-
-			// clear register 0
-			m_r[0] = 0;
-		});
+		// fetch and execute an instruction
+		u32 op;
+		if (fetch(m_pc, op))
+			execute_op(op);
 
 		// update pc and branch state
 		switch (m_branch_state)
@@ -1278,7 +1283,7 @@ void mips1core_device_base::store(offs_t address, T data, T mem_mask)
 	}
 }
 
-void mips1core_device_base::fetch(offs_t address, std::function<void(u32)> &&apply)
+bool mips1core_device_base::fetch(offs_t address, u32 &op)
 {
 	// alignment error
 	if (address & 3)
@@ -1286,9 +1291,8 @@ void mips1core_device_base::fetch(offs_t address, std::function<void(u32)> &&app
 
 	translate_result const t = translate(TR_FETCH, address, false);
 	if (t == ERROR)
-		return;
+		return false;
 
-	u32 data;
 	if (t == CACHED)
 	{
 		auto [l, miss] = cache_lookup(address, true, true);
@@ -1302,29 +1306,29 @@ void mips1core_device_base::fetch(offs_t address, std::function<void(u32)> &&app
 				m_bus_error = false;
 				generate_exception(EXCEPTION_BUSINST);
 
-				return;
+				return false;
 			}
 
 			// replace cache line data and mark valid
 			l.update(data);
 		}
 
-		data = l.data;
+		op = l.data;
 	}
 	else
 	{
-		data = space(AS_PROGRAM).read_dword(address);
+		op = space(AS_PROGRAM).read_dword(address);
 
 		if (m_bus_error)
 		{
 			m_bus_error = false;
 			generate_exception(EXCEPTION_BUSINST);
 
-			return;
+			return false;
 		}
 	}
 
-	apply(data);
+	return true;
 }
 
 void mips1_device_base::device_start()

@@ -67,7 +67,8 @@ protected:
 	virtual translate_result translate(int intention, offs_t &address, bool debug);
 	template <typename T, bool Aligned = true, typename U> std::enable_if_t<std::is_convertible<U, std::function<void(T)>>::value, void> load(offs_t address, U &&apply);
 	template <typename T, bool Aligned = true> void store(offs_t address, T data, T mem_mask = ~T(0));
-	void fetch(offs_t address, std::function<void(u32)> &&apply);
+	bool fetch(offs_t address, u32 &op);
+	void execute_op(u32 const op);
 
 	// cache
 	template <typename T> unsigned shift_factor(u32 address) const;
