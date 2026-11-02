@@ -289,6 +289,7 @@ u32 sgi_lg1_device::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, r
 	// bit leftmost) in the VC1's SRAM at CUR_EP and CUR_EP + 0x80; the
 	// planes form an index (0 is transparent) into the colour map and
 	// submap the cursor mode register selects
+	if (m_vc1->cursor_enabled())
 	{
 		u16 const ep = m_vc1->cursor_ep();
 		int const cx = int(m_vc1->cursor_x()) - CURSOR_X_OFFSET;

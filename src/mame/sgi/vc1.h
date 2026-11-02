@@ -50,6 +50,10 @@ public:
 		return runs;
 	}
 	bool video_enabled() const { return m_sysctl & 0x04; } // cleared to blank the screen
+	// the cursor shows only with both its function (0x20) and display (0x10)
+	// bits: the IP12 PROM runs with 0x1d and an unloaded cursor, and the X
+	// server clears both while it loads a new cursor glyph
+	bool cursor_enabled() const { return (m_sysctl & 0x30) == 0x30; }
 	// xmap control: the colour map (bits 4-5) and submap (bits 0-3) the
 	// pop-up planes display through
 	u8 auxvideo_map() const { return m_reg[0x62]; }

@@ -17,6 +17,12 @@ built binaries.
   old code. The firmware's instruction cache invalidation now discards
   the recompiled code.
 
+- **Indigo LG1 cursor** drawn while switched off: the board showed the
+  hardware cursor whatever the video controller's cursor enable bits
+  said, so firmware that leaves the cursor off got a 32x32 block of
+  leftover cursor memory on its screen. The cursor now shows only when
+  enabled.
+
 ### Changed
 
 - **Idle Indigo2** host CPU 0.40 to 0.09 cores: the R4400 has no WAIT
