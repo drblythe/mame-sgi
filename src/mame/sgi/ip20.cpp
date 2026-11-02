@@ -40,6 +40,7 @@
 
 #include "audio_in.h"
 #include "hpc1.h"
+#include "irix_idle.h"
 #include "int2.h"
 #include "kbd.h"
 #include "light.h"
@@ -222,38 +223,17 @@ void ip20_state::machine_reset()
 	}
 }
 
-// The R4000/R4400 has no WAIT, so IRIX on the IP20 idles in a busy loop,
-// while (local_idle() && !idler()), which only an interrupt ends. Find
-// local_idle (it tests the per-CPU p_nextthread and c_threads; the field
-// offsets are left unmatched) in the kernel's text and make it the MIPS III
-// core's idle PC, where it gives up its timeslice while no interrupt is
-// pending, instead of spinning at full emulated speed. IRIX relinks the
-// kernel on each system, so its address isn't fixed.
+// The R4000/R4400 has no WAIT: find IRIX's idle loop (irix_idle.h) in the
+// kernel's text, at kseg0 0x8800'0000, and make it the idle PC
 TIMER_CALLBACK_MEMBER(ip20_state::idle_scan)
 {
-	static constexpr u32 sig[10] = {
-		0x8c01'0000, 0x1420'0006, 0x0000'1025, 0x8c02'0000, 0x1440'0003,
-		0x0000'1025, 0x03e0'0008, 0x2402'0001, 0x03e0'0008, 0x0000'0000 }; // lw at,(zero); bnez; move v0,zero; lw v0,(zero); bnez; ...
-	static constexpr u32 mask[10] = {
-		0xffff'0000, 0xffff'ffff, 0xffff'ffff, 0xffff'0000, 0xffff'ffff,
-		0xffff'ffff, 0xffff'ffff, 0xffff'ffff, 0xffff'ffff, 0xffff'ffff };
-
 	address_space &space = m_cpu->space(AS_PROGRAM);
-	// the kernel's text, at kseg0 0x8800'0000
-	for (offs_t a = 0x0800'0000; a < 0x0840'0000; a += 4)
+	offs_t const a = irix_find_local_idle(space, 0x0800'0000, 0x0840'0000);
+	if (a != ~offs_t(0))
 	{
-		if ((space.read_dword(a) & mask[0]) != sig[0])
-			continue;
-		unsigned n = 1;
-		while (n < 10 && (space.read_dword(a + n * 4) & mask[n]) == sig[n])
-			n++;
-		if (n == 10)
-		{
-			downcast<mips3_device &>(*m_cpu).set_idle_pc(0x8000'0000 | a, space.read_dword(a));
-			m_idle_scan->adjust(attotime::never);
-			LOG("idle loop: local_idle at %08x\n", 0x8000'0000 | a);
-			return;
-		}
+		downcast<mips3_device &>(*m_cpu).set_idle_pc(0x8000'0000 | a, space.read_dword(a));
+		m_idle_scan->adjust(attotime::never);
+		LOG("idle loop: local_idle at %08x\n", 0x8000'0000 | a);
 	}
 }
 
