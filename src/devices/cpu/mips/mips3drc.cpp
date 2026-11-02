@@ -265,6 +265,7 @@
 
 static void cfunc_printf_exception(void *param);
 static void cfunc_get_cycles(void *param);
+static void cfunc_icache_index_invalidate(void *param);
 static void cfunc_printf_probe(void *param);
 static void cfunc_debug_break(void *param);
 
@@ -483,6 +484,7 @@ void mips3_device::code_flush_cache()
 
 	/* empty the transient cache contents */
 	m_drcuml->reset();
+	m_drc_ram_code = false;
 
 	try
 	{
@@ -1347,6 +1349,8 @@ void mips3_device::code_compile_block(uint32_t mode, offs_t pc)
 			/* end the sequence */
 			block.end();
 			succeeded = true;
+			if (m_program->get_write_ptr(desclist->physpc) != nullptr)
+				m_drc_ram_code = true;
 		}
 		catch (drcuml_block::abort_compilation &)
 		{
@@ -1431,6 +1435,28 @@ void mips3_device::func_get_cycles()
 static void cfunc_get_cycles(void *param)
 {
 	((mips3_device *)param)->func_get_cycles();
+}
+
+static void cfunc_icache_index_invalidate(void *param)
+{
+	((mips3_device *)param)->func_icache_index_invalidate();
+}
+
+// CACHE Index_Invalidate_I from firmware (ROM): it has replaced code in
+// memory and is discarding the instruction cache before running it, as
+// after loading a program over code that ran before (the previous kernel,
+// after a reboot). The recompiled code for those addresses would
+// otherwise still run, since a block is only checked against its first
+// instructions. Discard the recompiled code at the end of this timeslice,
+// once per flush: the firmware's invalidate loop runs from ROM, so after
+// one flush it doesn't trigger another.
+void mips3_device::func_icache_index_invalidate()
+{
+	if (m_drc_ram_code)
+	{
+		m_drc_cache_dirty = true;
+		m_core->icount = 0;
+	}
 }
 
 
@@ -3733,6 +3759,13 @@ bool mips3_device::generate_opcode(drcuml_block &block, compiler_state &compiler
 		/* ----- effective no-ops ----- */
 
 		case 0x2f:  /* CACHE - MIPS II */
+			// the firmware's Index_Invalidate_I (run from ROM) drops
+			// recompiled code (func_icache_index_invalidate); the operating
+			// system's own, frequent, ones don't
+			if (((op >> 16) & 0x1f) == 0x00 && m_program->get_write_ptr(desc->physpc) == nullptr)
+				UML_CALLC(block, cfunc_icache_index_invalidate, this);  // callc   cfunc_icache_index_invalidate
+			return true;
+
 		case 0x33:  /* PREF - MIPS IV */
 			return true;
 

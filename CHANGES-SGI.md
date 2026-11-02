@@ -7,6 +7,16 @@ built binaries.
 
 ## Not yet released
 
+### Fixed
+
+- **Indigo2 reboot** (shared MAME code, recompiler): a reboot from IRIX
+  hung after "Starting up the system...". The firmware loads its boot
+  program over memory where the previous kernel's code had been
+  recompiled, invalidates the instruction cache and jumps to it; the
+  recompiler ignored the cache operation and ran its translation of the
+  old code. The firmware's instruction cache invalidation now discards
+  the recompiled code.
+
 ### Changed
 
 - **Idle Indigo2** host CPU 0.40 to 0.09 cores: the R4400 has no WAIT

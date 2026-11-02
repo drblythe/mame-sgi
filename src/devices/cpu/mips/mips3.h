@@ -747,6 +747,7 @@ protected:
 
 												/* internal stuff */
 	uint8_t         m_drc_cache_dirty;          /* true if we need to flush the cache */
+	bool            m_drc_ram_code = false;     // code in RAM recompiled since the last flush
 
 												/* tables */
 	uint8_t         m_fpmode[4];                /* FPU mode table */
@@ -971,6 +972,7 @@ private:
 	void code_compile_block(uint32_t mode, offs_t pc);
 public:
 	void func_get_cycles();
+	void func_icache_index_invalidate();
 	void func_printf_exception();
 	void recompile_study_validate_probe();
 	bool recompile_study_traced(uint32_t pc, bool near);
