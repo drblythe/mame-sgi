@@ -11,7 +11,6 @@
  *
  * TODO:
  *  - VME-based V30/V35
- *  - DSP
  *
  */
 
@@ -52,6 +51,10 @@
 #include "bus/rs232/hlemouse.h"
 #include "bus/nscsi/cd.h"
 #include "bus/nscsi/hd.h"
+#include "sound/dac.h"
+#include "speaker.h"
+
+#include "audio_in.h"
 
 #include "hpc1.h"
 #include "int2.h"
@@ -80,6 +83,12 @@ public:
 		, m_scc(*this, "scc%u", 0U)
 		, m_scc_irq(*this, "scc_irq")
 		, m_dsp(*this, "dsp")
+		, m_dsp_ram(*this, "dsp_ram", 0x8000 * 4, ENDIANNESS_BIG)
+		, m_dsp_bank_lo(*this, "dsp_lo")
+		, m_dsp_bank_hi(*this, "dsp_hi")
+		, m_dsp_bank_y(*this, "dsp_y")
+		, m_dac(*this, "dac%u", 0U)
+		, m_adc(*this, "adc")
 		, m_gfx(*this, "gfx")
 	{
 	}
@@ -98,6 +107,19 @@ protected:
 	void ip12_map(address_map &map) ATTR_COLD;
 	void pi4d3x_map(address_map &map) ATTR_COLD;
 	void pbus_map(address_map &map) ATTR_COLD;
+	void dsp_miscsr_w(u8 data);
+	void dsp_probe_check();
+	void dsp_irqa_update();
+	u32 dsp_counter_r();
+	void dsp_p_map(address_map &map) ATTR_COLD;
+	void dsp_x_map(address_map &map) ATTR_COLD;
+	void dsp_y_map(address_map &map) ATTR_COLD;
+	u16 audio_portb_r();
+	void audio_portb_w(offs_t offset, u16 data, u16 mem_mask);
+	void audio_ssi_tx(offs_t offset, u32 data);
+	u32 audio_ssi_rx(offs_t offset);
+	void audio_input_level(unsigned reg);
+	double audio_rate() const;
 
 	required_device<r3000a_device> m_cpu;
 	required_device<sgi_pic1_device> m_pic;
@@ -110,7 +132,28 @@ protected:
 	required_device_array<scc85c30_device, 3> m_scc;
 	required_device<input_merger_any_high_device> m_scc_irq;
 	required_device<dsp56001_device> m_dsp;
+	memory_share_creator<u32> m_dsp_ram;
+	memory_bank_creator m_dsp_bank_lo; // SRAM words 0-0x3fff
+	memory_bank_creator m_dsp_bank_hi; // SRAM words 0x4000-0x7fff
+	memory_bank_creator m_dsp_bank_y;  // all of the SRAM
+	required_device_array<dac_16bit_r2r_twos_complement_device, 2> m_dac;
+	required_device<sgi_audio_input_device> m_adc;
 	required_device<sgi_lg1_device> m_gfx;
+
+	u8 m_dsp_miscsr = 0;
+	bool m_dsp_hpc_irq = false;
+	bool m_dsp_probe = false;
+
+	// audio board (HAL1): Actel register file on DSP port B, headphone
+	// gain MDACs, the channel of the next SSI word
+	u8 m_hal1_reg[16] = {};
+	u16 m_portb_in = 0;
+	u16 m_portb_out = 0;
+	u8 m_mdac[2] = {};
+	u8 m_ssi_channel = 0;
+	u16 m_ssi_left = 0;
+	u8 m_ssi_rx_channel = 0;
+	s16 m_adc_frame[2]{};
 
 	/*
 	 * board revisions according to NetBSD source:
@@ -124,11 +167,271 @@ protected:
 
 void ip12_state::machine_start()
 {
+	save_item(NAME(m_dsp_miscsr));
+	save_item(NAME(m_dsp_hpc_irq));
+	save_item(NAME(m_dsp_probe));
+	save_item(NAME(m_hal1_reg));
+	save_item(NAME(m_portb_in));
+	save_item(NAME(m_portb_out));
+	save_item(NAME(m_mdac));
+	save_item(NAME(m_ssi_channel));
+	save_item(NAME(m_ssi_left));
+	save_item(NAME(m_ssi_rx_channel));
+	save_item(NAME(m_adc_frame));
+
+	m_dsp_bank_lo->set_base(&m_dsp_ram[0]);
+	m_dsp_bank_hi->set_base(&m_dsp_ram[0x4000]);
+	m_dsp_bank_y->set_base(&m_dsp_ram[0]);
+
+	// one DAC write per sample
+	for (auto &dac : m_dac)
+		dac->set_stream_sample_rate(48000);
 }
 
 void ip12_state::machine_reset()
 {
+	std::fill(std::begin(m_hal1_reg), std::end(m_hal1_reg), 0);
+	m_portb_in = 0;
+	m_portb_out = 0x4000;
+	m_ssi_channel = m_ssi_rx_channel = 0;
+	m_adc_frame[0] = m_adc_frame[1] = 0;
+	audio_input_level(0);
+	for (auto &dac : m_dac)
+		dac->write(0);
 }
+
+// HPC1 miscellaneous control and status: bit 0 holds the DSP56001 in reset,
+// bit 1 drives /IRQA to the level in bit 2.
+void ip12_state::dsp_miscsr_w(u8 data)
+{
+	bool const release = BIT(m_dsp_miscsr, 0) && !BIT(data, 0);
+	m_dsp_miscsr = data;
+
+	m_dsp->set_input_line(INPUT_LINE_RESET, BIT(data, 0) ? ASSERT_LINE : CLEAR_LINE);
+	dsp_irqa_update();
+
+	if (BIT(data, 0))
+	{
+		// the DSP drives the audio board's control lines: reset stops it
+		m_hal1_reg[10] = 0;
+		m_dsp->set_ssi_rate(0);
+		m_adc->set_rate(0);
+	}
+	else if (release)
+	{
+		// the boot PROM's audio probe arms the mailbox with -1 first
+		m_dsp_probe = (m_cpu->pc() >> 20) == 0xbfc && m_dsp_ram[0] == 0x00ff'ffffU;
+
+		// the boot PROM gives a program it just started 50us to answer
+		// through the SRAM: let the DSP catch up with the MIPS
+		m_cpu->abort_timeslice();
+		machine().scheduler().perfect_quantum(attotime::from_usec(200));
+	}
+}
+
+// The boot PROM reads the mailbox once, 50us after starting its program,
+// and lists the audio board only if the DSP reached state 1 or 2 and the
+// Actel revision has bit 7 clear. IRIX treats an Indigo without audio as a
+// V50 (VME, no audio), and 6.5 then hangs early in boot, so say so here.
+void ip12_state::dsp_probe_check()
+{
+	m_dsp_probe = false;
+	u32 const state = m_dsp_ram[0];
+	u32 const rev = m_dsp_ram[1];
+	if ((state != 1 && state != 2) || BIT(rev, 7))
+	{
+		osd_printf_error("%s: the boot PROM's audio probe failed (DSP state %06x, Actel revision %06x): IRIX will see no audio and configure this Indigo as a V50 (VME)\n",
+			machine().describe_context(), state, rev);
+		popmessage("Audio probe failed: IRIX will treat this Indigo as a V50");
+	}
+}
+
+// /IRQA: the HPC1's DSP interrupt, or forced by MISCSR
+void ip12_state::dsp_irqa_update()
+{
+	bool const forced = BIT(m_dsp_miscsr, 1) && !BIT(m_dsp_miscsr, 2);
+	m_dsp->set_input_line(dsp56001_device::IRQA_LINE, (forced || m_dsp_hpc_irq) ? ASSERT_LINE : CLEAR_LINE);
+}
+
+// The DSP's external buses reach the 32K-word SRAM the MIPS sees at
+// 0x1fbe0000: Y addresses through A0-A14, P and X with A14 inverted, so
+// P/X:$C000-$FFFF and Y:$8000-$BFFF are the first 16K words and
+// Y:$C000-$FFFF the second. Y:$FFE0-$FFED are the HPC1's DSP interface
+// registers, Y:$FFFC/$FFFD the headphone gain MDACs.
+void ip12_state::dsp_p_map(address_map &map)
+{
+	// banks, so the DSP reads the SRAM directly (A15 isn't decoded)
+	map(0x0000, 0x3fff).mirror(0x8000).bankrw(m_dsp_bank_hi);
+	map(0x4000, 0x7fff).mirror(0x8000).bankrw(m_dsp_bank_lo);
+}
+
+void ip12_state::dsp_x_map(address_map &map)
+{
+	dsp_p_map(map);
+}
+
+void ip12_state::dsp_y_map(address_map &map)
+{
+	map(0x0000, 0x7fff).mirror(0x8000).bankrw(m_dsp_bank_y);
+	map(0xffe0, 0xffed).rw(m_hpc, FUNC(hpc1_device::dsp_r), FUNC(hpc1_device::dsp_w));
+	map(0xffe5, 0xffe5).r(FUNC(ip12_state::dsp_counter_r));
+	map(0xfffc, 0xfffd).lrw32(
+		NAME([this](offs_t offset) { return m_mdac[offset]; }),
+		NAME([this](offs_t offset, u32 data)
+		{
+			m_mdac[offset] = data;
+			m_dac[offset]->set_output_gain(ALL_OUTPUTS, (data & 0xff) / 256.0);
+		}));
+}
+
+// SGI's audio microcode (hdsp.lod) idles in a loop that reads the HPC1
+// counter until it reaches a deadline it keeps at Y:$C137:
+//   e164: clr b / move y:>$ffe5,b1 / sub a,b / move b1,b / tst b / jlt e164
+// Polling it costs nearly all of the DSP's instructions while no audio is
+// moving. When the counter is read from that loop, skip the rest of the
+// wait within the current timeslice, so interrupts are still taken on time.
+u32 ip12_state::dsp_counter_r()
+{
+	u32 const count = m_hpc->dsp_r(hpc1_device::DSPIF_COUNTER_OFFSET);
+
+	if (!machine().side_effects_disabled() && m_dsp->pcbase() == 0xe165)
+	{
+		static constexpr u32 loop[] = { 0x20001b, 0x5df000, 0x00ffe5, 0x20001c, 0x21af00, 0x20000b, 0x0af0a9, 0x00e164 };
+		bool match = true;
+		for (unsigned i = 0; match && i < std::size(loop); i++)
+			match = m_dsp_ram[((0xe164 + i) & 0x7fff) ^ 0x4000] == loop[i];
+
+		s32 const ticks = util::sext(m_dsp_ram[0xc137 & 0x7fff] - count, 24);
+		if (match && ticks > 0)
+		{
+			// GIO clock ticks to DSP instruction cycles
+			u64 const cycles = u64(ticks) * (m_dsp->clock() / 2) / 33'333'333;
+			// up to the timeslice's end or the DSP's next serial word, so
+			// its interrupts are taken on time
+			int const remaining = m_dsp->cycles_remaining();
+			if (remaining > 0)
+				m_dsp->eat_cycles(int(std::min<u64>({ cycles, u64(remaining), m_dsp->cycles_to_event() })));
+		}
+	}
+
+	return count;
+}
+
+// Port B is the bus to the audio board's Actel: bits 0-7 data, bits 8-11
+// register, bit 13 set for a write (clear: the Actel drives the register
+// onto the data bits), bit 14 the active-low write strobe. Reads, as SGI's
+// audio microcode uses them (no documentation of the Actel is known):
+// register 5 is the board's revision key (bit 7 clear when the board is
+// present), register 8 status (bits 2 and 3 busy after a command, bits 0-3
+// the interrupt cause), register 3 received data. Nothing is busy or
+// pending here, and no data arrives. Register 10 is the clock control:
+// bit 0 starts the clocks ("go"), and the SSI word clock runs from then,
+// left channel first, at the sample rate from the other bits (as IRIX's
+// rates set them): a 48 kHz base, or 44.1 kHz with bit 2, divided by bits
+// 4-6 plus one, by 1.5 more with bit 1. Bit 3 selects the AES clock, here
+// taken as 48 kHz with no AES input (the boot PROM's tune, which sets it
+// together with bit 2, is computed for 48 kHz).
+u16 ip12_state::audio_portb_r()
+{
+	return m_portb_in;
+}
+
+void ip12_state::audio_portb_w(offs_t offset, u16 data, u16 mem_mask)
+{
+	unsigned const reg = (data >> 8) & 15;
+
+	if (BIT(data, 13))
+	{
+		if (BIT(m_portb_out, 14) && !BIT(data, 14))
+		{
+			bool const was_running = BIT(m_hal1_reg[10], 0);
+			m_hal1_reg[reg] = data & 0xff;
+
+			if (reg <= 1)
+				audio_input_level(reg);
+			else if (reg == 10 && BIT(data, 0))
+			{
+				// two words (left, right) per sample, one DAC write per
+				// sample
+				double const rate = audio_rate();
+				for (auto &dac : m_dac)
+					dac->set_stream_sample_rate(u32(rate + 0.5));
+				if (!was_running)
+					m_ssi_channel = m_ssi_rx_channel = 0;
+				m_adc->set_rate(u32(rate + 0.5));
+				m_dsp->set_ssi_rate(u32(rate * 2 + 0.5));
+			}
+			else if (reg == 10)
+			{
+				m_dsp->set_ssi_rate(0);
+				m_adc->set_rate(0);
+			}
+		}
+		m_portb_in = 0;
+	}
+	else
+		m_portb_in = (reg == 5) ? 0x0a : 0x00;
+
+	m_portb_out = data;
+}
+
+// Registers 0 (left) and 1 (right) set the input level: bits 2-7 are an
+// AD7118 logarithmic attenuator's code, 1.5 dB per step, muted from 60 up
+// (IRIX writes its 0-255 input attenuation there). Register 0's bits 0-1
+// select the input, 1 line and 2 microphone (SGI's audio diagnostics);
+// both channels follow it here. The diagnostics put the gain ahead of the
+// attenuator at 13 to 15.6 dB from line out to line in, and 12.3 to 19.4
+// dB from headphone out to the microphone input. With the host input's
+// full scale as line out's, the ADC sees it 14.3 dB (line) or 15.8 dB
+// (microphone) up, less the attenuation.
+void ip12_state::audio_input_level(unsigned reg)
+{
+	double const front = BIT(m_hal1_reg[0], 1) ? 15.8 : 14.3;
+	for (unsigned ch = 0; ch < 2; ch++)
+	{
+		if (reg != ch && reg != 0)
+			continue;
+		unsigned const code = m_hal1_reg[ch] >> 2;
+		m_adc->set_gain(ch, (code >= 60) ? 0.0 : std::pow(10.0, (front - 1.5 * code) / 20.0));
+	}
+}
+
+// One word per slot from the SSI, left and right in turn, 24 bits with the
+// sample in the most significant bits. Both DACs change together when the
+// right word arrives, as a codec latches a whole frame.
+void ip12_state::audio_ssi_tx(offs_t offset, u32 data)
+{
+	if (!m_ssi_channel)
+		m_ssi_left = u16(data >> 8);
+	else
+	{
+		m_dac[0]->write(m_ssi_left);
+		m_dac[1]->write(u16(data >> 8));
+	}
+	m_ssi_channel ^= 1;
+}
+
+// The ADC's words to the SSI, left then right like the DAC's, the 16-bit
+// sample in the most significant bits; a new frame for each left word.
+u32 ip12_state::audio_ssi_rx(offs_t offset)
+{
+	if (!m_ssi_rx_channel)
+		m_adc->read_frame(m_adc_frame);
+	u32 const data = u32(u16(m_adc_frame[m_ssi_rx_channel])) << 8;
+	m_ssi_rx_channel ^= 1;
+	return data;
+}
+
+double ip12_state::audio_rate() const
+{
+	u8 const clock = m_hal1_reg[10];
+	double rate = (BIT(clock, 2) && !BIT(clock, 3)) ? 44100.0 : 48000.0;
+	rate /= ((clock >> 4) & 7) + 1;
+	if (BIT(clock, 1))
+		rate = rate * 2.0 / 3.0;
+	return rate;
+}
+
 
 void ip12_state::ip12_map(address_map &map)
 {
@@ -165,7 +468,15 @@ void ip12_state::ip12_map(address_map &map)
 
 	map(0x1fbd'0000, 0x1fbd'0003).lr32([this]() { return m_brdrev; }, "board_rev"); // board revision register
 
-	map(0x1fbe'0000, 0x1fbf'ffff).ram().share("dsp_ram"); // 3xTC55328J-35 (24 bits x 32k)
+	// DSP SRAM, 3xTC55328J-35 (24 bits x 32k), one word per 32 bits
+	map(0x1fbe'0000, 0x1fbf'ffff).lrw32(
+		NAME([this](offs_t offset)
+		{
+			if (offset == 0 && m_dsp_probe && !machine().side_effects_disabled())
+				dsp_probe_check();
+			return m_dsp_ram[offset];
+		}),
+		NAME([this](offs_t offset, u32 data) { m_dsp_ram[offset] = data & 0x00ff'ffffU; }));
 
 	map(0x1fc0'0000, 0x1fc3'ffff).rom().region("prom", 0);
 }
@@ -229,6 +540,11 @@ void ip12_state::ip12(machine_config &config)
 	m_hpc->set_addrmap(0, &ip12_state::pbus_map);
 	m_hpc->set_gio(m_cpu, AS_PROGRAM);
 	m_hpc->set_enet(m_eth);
+	m_hpc->dsp_miscsr_w().set(FUNC(ip12_state::dsp_miscsr_w));
+	m_hpc->dsp_irq_w().set([this](int state) { m_dsp_hpc_irq = state; dsp_irqa_update(); });
+	m_hpc->cpu_dsp_irq_w().set(m_int, FUNC(sgi_int2_device::lio1_w<sgi_int2_device::LIO1_DSP>));
+	m_hpc->dsp_ram_r().set([this](offs_t offset) { return m_dsp_ram[offset & 0x7fff]; });
+	m_hpc->dsp_ram_w().set([this](offs_t offset, u32 data) { m_dsp_ram[offset & 0x7fff] = data & 0x00ff'ffffU; });
 	m_hpc->int_w().set(m_int, FUNC(sgi_int2_device::lio0_w<sgi_int2_device::LIO0_ETHERNET>));
 	m_hpc->dma_r_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_r));
 	m_hpc->dma_w_cb<0>().set(m_scsi, FUNC(wd33c93a_device::dma_w));
@@ -330,10 +646,27 @@ void ip12_state::ip12(machine_config &config)
 	m_scc[2]->configure_channels(3'686'400, 0, 3'686'400, 0);
 	m_scc[2]->out_int_callback().set(scc_irq, FUNC(input_merger_any_high_device::in_w<2>));
 
-	// not connected yet: held in reset, so it doesn't run
-	DSP56001(config, m_dsp, 20_MHz_XTAL).set_disable();
-	//m_dsp->moda_w(1);
-	//m_dsp->modb_w(0);
+	DSP56001(config, m_dsp, 20_MHz_XTAL);
+	m_dsp->set_mode(2); // reset at P:$E000
+	m_dsp->set_addrmap(AS_PROGRAM, &ip12_state::dsp_p_map);
+	m_dsp->set_addrmap(AS_DATA, &ip12_state::dsp_x_map);
+	m_dsp->set_addrmap(AS_IO, &ip12_state::dsp_y_map);
+	m_dsp->portb_r().set(FUNC(ip12_state::audio_portb_r));
+	m_dsp->portb_w().set(FUNC(ip12_state::audio_portb_w));
+	m_dsp->ssi_tx().set(FUNC(ip12_state::audio_ssi_tx));
+	m_dsp->ssi_rx().set(FUNC(ip12_state::audio_ssi_rx));
+
+	SPEAKER(config, "speaker", 2).front();
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[0], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
+	DAC_16BIT_R2R_TWOS_COMPLEMENT(config, m_dac[1], 0).add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
+
+	// the audio board's stereo input (microphone or line in)
+	SGI_AUDIO_INPUT(config, m_adc);
+	microphone_device &mic(MICROPHONE(config, "mic", 2));
+	mic.front();
+	mic.add_route(0, m_adc, 1.0, 0);
+	mic.add_route(1, m_adc, 1.0, 1);
+
 
 	SGI_LG1(config, m_gfx);
 	m_gfx->write_vblank().set(m_int, FUNC(sgi_int2_device::lio1_w<sgi_int2_device::LIO1_GIO2>));
