@@ -439,4 +439,4 @@ ROM_END
 //   YEAR  NAME     PARENT  COMPAT  MACHINE  INPUT  CLASS       INIT        COMPANY             FULLNAME               FLAGS
 COMP(1991, pi4d30,  0,      0,      pi4d30,  0,     ip12_state, empty_init, "Silicon Graphics", "Personal IRIS 4D/30", MACHINE_NO_SOUND | MACHINE_IMPERFECT_GRAPHICS)
 COMP(1991, pi4d35,  0,      0,      pi4d35,  0,     ip12_state, empty_init, "Silicon Graphics", "Personal IRIS 4D/35", MACHINE_NO_SOUND | MACHINE_IMPERFECT_GRAPHICS)
-COMP(1991, indigo,  0,      0,      indigo,  0,     ip12_state, empty_init, "Silicon Graphics", "IRIS Indigo",         MACHINE_NO_SOUND | MACHINE_IMPERFECT_GRAPHICS | MACHINE_SUPPORTS_SAVE)
+COMP(1991, indigo,  0,      0,      indigo,  0,     ip12_state, empty_init, "Silicon Graphics", "IRIS Indigo",         MACHINE_SUPPORTS_SAVE)
