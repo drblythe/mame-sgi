@@ -139,19 +139,27 @@ protected:
 	u32 m_idle_pc = 1;
 	u32 m_idle_op = 0;
 
-	// the last translation of each kind (read, write, fetch), reused while
-	// accesses stay on its page in the same mode and address space; cleared
-	// when the TLB is written, at reset and after a state load
+	// recent translations of each kind (read, write, fetch), direct-mapped
+	// by virtual page and reused while an access stays on that page in the
+	// same mode and address space; a TLB write drops the page the replaced
+	// entry mapped, and everything is dropped at reset and after a state load
 	struct translation
 	{
-		bool valid = false;
-		u32 vpage = 0;
+		u32 vpage = 1; // never a page address, so an unused slot never matches
 		u32 ppage = 0;
 		u32 ctx = 0;
 		translate_result result = ERROR;
 	};
-	translation m_last_translation[3];
-	void forget_translations() { for (translation &t : m_last_translation) t.valid = false; }
+	static constexpr unsigned TRANSLATIONS = 64;
+	translation m_translations[3][TRANSLATIONS];
+	static unsigned translation_slot(u32 vpage) { return (vpage >> 12) & (TRANSLATIONS - 1); }
+	void forget_translations() { for (auto &kind : m_translations) for (translation &t : kind) t.vpage = 1; }
+	void forget_translations(u32 vpage)
+	{
+		for (auto &kind : m_translations)
+			if (kind[translation_slot(vpage)].vpage == vpage)
+				kind[translation_slot(vpage)].vpage = 1;
+	}
 	translate_result translate_page(int intention, offs_t &address);
 
 	// cache memory
