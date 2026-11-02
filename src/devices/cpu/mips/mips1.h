@@ -27,6 +27,7 @@ protected:
 
 	// device_t implementation
 	virtual void device_start() override ATTR_COLD;
+	virtual void device_post_load() override { m_fetch_valid = false; }
 	virtual void device_reset() override ATTR_COLD;
 
 	// device_execute_interface implementation
@@ -137,6 +138,15 @@ protected:
 	// idle-loop skip (an unaligned pc never matches)
 	u32 m_idle_pc = 1;
 	u32 m_idle_op = 0;
+
+	// the last instruction fetch's translation, reused while fetches stay
+	// on its page in the same mode and address space; cleared when the TLB
+	// is written, at reset and after a state load
+	bool m_fetch_valid = false;
+	u32 m_fetch_vpage = 0;
+	u32 m_fetch_ppage = 0;
+	u32 m_fetch_ctx = 0;
+	translate_result m_fetch_result = ERROR;
 
 	// cache memory
 	struct cache m_icache;

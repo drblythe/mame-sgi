@@ -362,6 +362,7 @@ void mips1core_device_base::device_reset()
 	m_cop0[COP0_Status] = SR_BEV | SR_TS;
 
 	m_bus_error = false;
+	m_fetch_valid = false;
 }
 
 void r3041_device::device_reset()
@@ -1289,9 +1290,27 @@ bool mips1core_device_base::fetch(offs_t address, u32 &op)
 	if (address & 3)
 		address_error(TR_FETCH, address);
 
-	translate_result const t = translate(TR_FETCH, address, false);
-	if (t == ERROR)
-		return false;
+	// translate, reusing the previous fetch's page while possible
+	translate_result t;
+	u32 const ctx = (SR & SR_KUc) | (m_cop0[COP0_EntryHi] & EH_ASID);
+	if (m_fetch_valid && (address & ~0xfffU) == m_fetch_vpage && ctx == m_fetch_ctx)
+	{
+		address = m_fetch_ppage | (address & 0xfffU);
+		t = m_fetch_result;
+	}
+	else
+	{
+		u32 const vpage = address & ~0xfffU;
+		t = translate(TR_FETCH, address, false);
+		if (t == ERROR)
+			return false;
+
+		m_fetch_valid = true;
+		m_fetch_vpage = vpage;
+		m_fetch_ppage = address & ~0xfffU;
+		m_fetch_ctx = ctx;
+		m_fetch_result = t;
+	}
 
 	if (t == CACHED)
 	{
@@ -1395,6 +1414,7 @@ void mips1_device_base::handle_cop0(u32 const op)
 
 			m_tlb[index][0] = m_cop0[COP0_EntryHi];
 			m_tlb[index][1] = m_cop0[COP0_EntryLo];
+			m_fetch_valid = false;
 
 			LOGMASKED(LOG_TLB, "asid %2d tlb write index %2d vpn 0x%08x pfn 0x%08x %c%c%c%c (%s)\n",
 				(m_cop0[COP0_EntryHi] & EH_ASID) >> 6, index, m_cop0[COP0_EntryHi] & EH_VPN, m_cop0[COP0_EntryLo] & EL_PFN,
@@ -1412,6 +1432,7 @@ void mips1_device_base::handle_cop0(u32 const op)
 
 			m_tlb[random][0] = m_cop0[COP0_EntryHi];
 			m_tlb[random][1] = m_cop0[COP0_EntryLo];
+			m_fetch_valid = false;
 
 			LOGMASKED(LOG_TLB, "asid %2d tlb write random %2d vpn 0x%08x pfn 0x%08x %c%c%c%c (%s)\n",
 				(m_cop0[COP0_EntryHi] & EH_ASID) >> 6, random, m_cop0[COP0_EntryHi] & EH_VPN, m_cop0[COP0_EntryLo] & EL_PFN,
