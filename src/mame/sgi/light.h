@@ -44,10 +44,10 @@ protected:
 	void load_current_color() { std::copy(std::begin(m_color), std::end(m_color), std::begin(m_colorcur)); }
 	u8 logic_op(u8 src, u8 dst) const;
 	// pattern 0 bits draw the background: for the z pattern with command
-	// bit 23 or xstate bit 31, for the line stipple with bit 22 or 30 (the
-	// X server's opaque stipples, copy planes and double dashes)
-	bool zopaque(u32 cmd) const { return (cmd & 0x00800000U) || BIT(m_xstate, 31); }
-	bool lsopaque(u32 cmd) const { return (cmd & 0x00400000U) || BIT(m_xstate, 30); }
+	// bit 23, for the line stipple with bit 22 (the X server's opaque
+	// stipples, copy planes and double dashes; xstate sets both bits)
+	bool zopaque(u32 cmd) const { return cmd & 0x00800000U; }
+	bool lsopaque(u32 cmd) const { return cmd & 0x00400000U; }
 	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
 	// coordinate, and drawing is limited to the union of the enabled masks;
@@ -117,8 +117,19 @@ protected:
 	// logic operation (24-27), also set through colorredi, rwmask and the
 	// command
 	// the X server's packed state: colour index, background (pattern
-	// 0 bits), write mask, logic op, and in bits 30-31 opaque patterns
-	void xstate_w(u32 data) { m_xstate = data; m_color[0] = (data & 0xffU) << 11; m_colorback = (data >> 8) & 0xffU; m_wrmask = u8(data >> 16); m_logicop = (data >> 24) & 15; }
+	// 0 bits), write mask, logic op, and in bits 30-31 the command's
+	// opaque pattern bits 22-23; whichever register is written last sets
+	// them (the PROM's register test leaves xstate at a test pattern, then
+	// draws its text with transparent commands)
+	void xstate_w(u32 data)
+	{
+		m_xstate = data;
+		m_color[0] = (data & 0xffU) << 11;
+		m_colorback = (data >> 8) & 0xffU;
+		m_wrmask = u8(data >> 16);
+		m_logicop = (data >> 24) & 15;
+		m_command = (m_command & ~0x00c00000U) | ((data >> 8) & 0x00c00000U);
+	}
 	void xstarti_w(u32 data) { m_xstart = (data & 0x0fffU) << 15; }
 	void xstartf_w(u32 data) { m_xstart = (data & 0x007fffffU) << 4; }
 	void xstart_w(u32 data) { m_xstart = data & 0x07ffffffU; }
