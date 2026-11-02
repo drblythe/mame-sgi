@@ -182,9 +182,11 @@ void sgi_audio_input_device::device_start()
 	save_item(NAME(m_low));
 	save_item(NAME(m_running));
 
-#ifdef MAME_SGI_AUDIO_INPUT_TEST_TONE
+	// the test tone's defaults (used only by the test tone build)
 	m_tone_hz[0] = 1000.0;
 	m_tone_hz[1] = 500.0;
+	m_tone_phase[0] = m_tone_phase[1] = 0.0;
+#ifdef MAME_SGI_AUDIO_INPUT_TEST_TONE
 	if (char const *const env = std::getenv("MAMESGI_TEST_TONE_HZ"))
 		std::sscanf(env, "%lf,%lf", &m_tone_hz[0], &m_tone_hz[1]);
 	osd_printf_info("%s: test tone %.1f Hz left, %.1f Hz right\n", tag(), m_tone_hz[0], m_tone_hz[1]);
