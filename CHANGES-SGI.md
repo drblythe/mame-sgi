@@ -5,6 +5,15 @@ on, then a counter. Newest first. Items collect under "Not yet released"
 until the next tag. Each release on GitHub has the same notes and the
 built binaries.
 
+## Not yet released
+
+### Changed
+
+- **Idle Indigo2** host CPU 0.40 to 0.09 cores: the R4400 has no WAIT
+  instruction, so IRIX idles in a busy loop; as on the Indigo, the loop
+  is found in the kernel once it has loaded and gives up the rest of
+  each timeslice while no interrupt is pending.
+
 ## mame0289-sgi002 (2026-11-01)
 
 The Indigo2 and the IRIS Indigo (R4000/R4400) join the Indy, with Indigo

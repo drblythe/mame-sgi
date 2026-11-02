@@ -56,6 +56,7 @@
 #include "emu.h"
 
 #include "hpc3.h"
+#include "irix_idle.h"
 #include "ioc2.h"
 #include "mc.h"
 #include "vino.h"
@@ -230,8 +231,11 @@ public:
 
 protected:
 	virtual void machine_start() override ATTR_COLD;
+	virtual void machine_reset() override ATTR_COLD;
 
 private:
+	TIMER_CALLBACK_MEMBER(idle_scan);
+
 	uint32_t eisa_io_r();
 	uint16_t extio_r();
 
@@ -247,6 +251,8 @@ private:
 	// GIO interrupt 1 and the graphics board's VV_INT, which share it
 	int m_gio_int1 = 0;
 	int m_vv_int = 0;
+
+	emu_timer *m_idle_scan = nullptr;
 };
 
 template <uint32_t addr_base>
@@ -276,6 +282,29 @@ void ip22_state::machine_start()
 	ip24_state::machine_start();
 	save_item(NAME(m_gio_int1));
 	save_item(NAME(m_vv_int));
+	m_idle_scan = timer_alloc(FUNC(ip22_state::idle_scan), this);
+}
+
+void ip22_state::machine_reset()
+{
+	ip24_state::machine_reset();
+	// the R4400 has no WAIT: look for IRIX's idle loop once a second until
+	// the kernel is loaded
+	m_maincpu->set_idle_pc(0, 0);
+	m_idle_scan->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
+}
+
+// make IRIX's idle loop (irix_idle.h), in the kernel's text at kseg0
+// 0x8800'0000, the idle PC
+TIMER_CALLBACK_MEMBER(ip22_state::idle_scan)
+{
+	address_space &space = m_maincpu->space(AS_PROGRAM);
+	offs_t const a = irix_find_local_idle(space, 0x0800'0000, 0x0840'0000);
+	if (a != ~offs_t(0))
+	{
+		m_maincpu->set_idle_pc(0x8000'0000 | a, space.read_dword(a));
+		m_idle_scan->adjust(attotime::never);
+	}
 }
 
 // On the Indigo2 the Newport's VV_INT (REX3's latched vertical retrace and
