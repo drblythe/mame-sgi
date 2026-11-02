@@ -27,7 +27,7 @@ protected:
 
 	// device_t implementation
 	virtual void device_start() override ATTR_COLD;
-	virtual void device_post_load() override { m_fetch_valid = false; }
+	virtual void device_post_load() override { forget_translations(); }
 	virtual void device_reset() override ATTR_COLD;
 
 	// device_execute_interface implementation
@@ -139,14 +139,20 @@ protected:
 	u32 m_idle_pc = 1;
 	u32 m_idle_op = 0;
 
-	// the last instruction fetch's translation, reused while fetches stay
-	// on its page in the same mode and address space; cleared when the TLB
-	// is written, at reset and after a state load
-	bool m_fetch_valid = false;
-	u32 m_fetch_vpage = 0;
-	u32 m_fetch_ppage = 0;
-	u32 m_fetch_ctx = 0;
-	translate_result m_fetch_result = ERROR;
+	// the last translation of each kind (read, write, fetch), reused while
+	// accesses stay on its page in the same mode and address space; cleared
+	// when the TLB is written, at reset and after a state load
+	struct translation
+	{
+		bool valid = false;
+		u32 vpage = 0;
+		u32 ppage = 0;
+		u32 ctx = 0;
+		translate_result result = ERROR;
+	};
+	translation m_last_translation[3];
+	void forget_translations() { for (translation &t : m_last_translation) t.valid = false; }
+	translate_result translate_page(int intention, offs_t &address);
 
 	// cache memory
 	struct cache m_icache;

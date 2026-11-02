@@ -362,7 +362,7 @@ void mips1core_device_base::device_reset()
 	m_cop0[COP0_Status] = SR_BEV | SR_TS;
 
 	m_bus_error = false;
-	m_fetch_valid = false;
+	forget_translations();
 }
 
 void r3041_device::device_reset()
@@ -1098,6 +1098,26 @@ void mips1core_device_base::swr(u32 const op)
  *
  * TODO: multiple-word cache lines
  */
+// translate, reusing the last translation of the same kind while the
+// access is on its page in the same mode and address space (a write
+// translation is kept only once it succeeded, so its page is writable)
+ATTR_FORCE_INLINE mips1core_device_base::translate_result mips1core_device_base::translate_page(int intention, offs_t &address)
+{
+	translation &last = m_last_translation[intention];
+	u32 const ctx = (SR & SR_KUc) | (m_cop0[COP0_EntryHi] & EH_ASID);
+	if (last.valid && (address & ~0xfffU) == last.vpage && ctx == last.ctx)
+	{
+		address = last.ppage | (address & 0xfffU);
+		return last.result;
+	}
+
+	u32 const vpage = address & ~0xfffU;
+	translate_result const t = translate(intention, address, false);
+	if (t != ERROR)
+		last = translation{ true, vpage, address & ~0xfffU, ctx, t };
+	return t;
+}
+
 ATTR_FORCE_INLINE std::tuple<struct mips1core_device_base::cache::line &, bool> mips1core_device_base::cache_lookup(u32 address, bool invalidate, bool icache)
 {
 	// cache line data is word-addressed
@@ -1148,7 +1168,7 @@ std::enable_if_t<std::is_convertible<U, std::function<void(T)>>::value, void> mi
 	T data;
 	if (!(SR & SR_IsC))
 	{
-		translate_result const t = translate(TR_READ, address, false);
+		translate_result const t = translate_page(TR_READ, address);
 		if (t == ERROR)
 			return;
 
@@ -1225,7 +1245,7 @@ void mips1core_device_base::store(offs_t address, T data, T mem_mask)
 
 	if (!(SR & SR_IsC))
 	{
-		translate_result const t = translate(TR_WRITE, address, false);
+		translate_result const t = translate_page(TR_WRITE, address);
 		if (t == ERROR)
 			return;
 
@@ -1290,27 +1310,9 @@ ATTR_FORCE_INLINE bool mips1core_device_base::fetch(offs_t address, u32 &op)
 	if (address & 3)
 		address_error(TR_FETCH, address);
 
-	// translate, reusing the previous fetch's page while possible
-	translate_result t;
-	u32 const ctx = (SR & SR_KUc) | (m_cop0[COP0_EntryHi] & EH_ASID);
-	if (m_fetch_valid && (address & ~0xfffU) == m_fetch_vpage && ctx == m_fetch_ctx)
-	{
-		address = m_fetch_ppage | (address & 0xfffU);
-		t = m_fetch_result;
-	}
-	else
-	{
-		u32 const vpage = address & ~0xfffU;
-		t = translate(TR_FETCH, address, false);
-		if (t == ERROR)
-			return false;
-
-		m_fetch_valid = true;
-		m_fetch_vpage = vpage;
-		m_fetch_ppage = address & ~0xfffU;
-		m_fetch_ctx = ctx;
-		m_fetch_result = t;
-	}
+	translate_result const t = translate_page(TR_FETCH, address);
+	if (t == ERROR)
+		return false;
 
 	if (t == CACHED)
 	{
@@ -1414,7 +1416,7 @@ void mips1_device_base::handle_cop0(u32 const op)
 
 			m_tlb[index][0] = m_cop0[COP0_EntryHi];
 			m_tlb[index][1] = m_cop0[COP0_EntryLo];
-			m_fetch_valid = false;
+			forget_translations();
 
 			LOGMASKED(LOG_TLB, "asid %2d tlb write index %2d vpn 0x%08x pfn 0x%08x %c%c%c%c (%s)\n",
 				(m_cop0[COP0_EntryHi] & EH_ASID) >> 6, index, m_cop0[COP0_EntryHi] & EH_VPN, m_cop0[COP0_EntryLo] & EL_PFN,
@@ -1432,7 +1434,7 @@ void mips1_device_base::handle_cop0(u32 const op)
 
 			m_tlb[random][0] = m_cop0[COP0_EntryHi];
 			m_tlb[random][1] = m_cop0[COP0_EntryLo];
-			m_fetch_valid = false;
+			forget_translations();
 
 			LOGMASKED(LOG_TLB, "asid %2d tlb write random %2d vpn 0x%08x pfn 0x%08x %c%c%c%c (%s)\n",
 				(m_cop0[COP0_EntryHi] & EH_ASID) >> 6, random, m_cop0[COP0_EntryHi] & EH_VPN, m_cop0[COP0_EntryLo] & EL_PFN,
