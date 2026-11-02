@@ -1098,7 +1098,7 @@ void mips1core_device_base::swr(u32 const op)
  *
  * TODO: multiple-word cache lines
  */
-std::tuple<struct mips1core_device_base::cache::line &, bool> mips1core_device_base::cache_lookup(u32 address, bool invalidate, bool icache)
+ATTR_FORCE_INLINE std::tuple<struct mips1core_device_base::cache::line &, bool> mips1core_device_base::cache_lookup(u32 address, bool invalidate, bool icache)
 {
 	// cache line data is word-addressed
 	address &= ~3;
@@ -1284,7 +1284,7 @@ void mips1core_device_base::store(offs_t address, T data, T mem_mask)
 	}
 }
 
-bool mips1core_device_base::fetch(offs_t address, u32 &op)
+ATTR_FORCE_INLINE bool mips1core_device_base::fetch(offs_t address, u32 &op)
 {
 	// alignment error
 	if (address & 3)
