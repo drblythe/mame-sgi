@@ -2,7 +2,7 @@
 
 This is a fork of [MAME](https://github.com/mamedev/mame) 0.289 that makes
 the SGI Indy and Challenge S (IP24), the Indigo2 (IP22) and the Indigo
-(IP20) run IRIX 6.5
+(IP20) run IRIX 6.5, and the R3000 Indigo (IP12) IRIX 5.3,
 well enough for regular use:
 boot to the desktop, run the window system, OpenGL and IRIS GL programs,
 networking, audio, SCSI disks, CD-ROMs and DAT tape, and save and restore
@@ -40,6 +40,7 @@ The tree builds two ways:
 | `indigo2_4415` | Indigo2, R4400 150 MHz, XL graphics (see [Indigo2](#indigo2)) |
 | `indigo_r4000` | IRIS Indigo, R4000 100 MHz, LG1 graphics (see [Indigo](#indigo)) |
 | `indigo_r4400` | IRIS Indigo, R4400 150 MHz, LG1 graphics |
+| `indigo` | IRIS Indigo, R3000A 33 MHz, LG1 graphics, IRIX 5.3 (see [Indigo R3000](#indigo-r3000)) |
 
 The Indy with IRIX 6.5 is what is tested most.
 
@@ -207,6 +208,40 @@ and output, runs SGI's own DSP56001 microcode, as IRIX loads it. The AES
 digital audio input and output are not emulated. It has 128 MB of RAM by
 default and takes up to 384 MB (three banks of 4x32M) in Machine
 Configuration.
+
+### Indigo R3000
+
+`indigo` is the first IRIS Indigo, the IP12 board: a 33 MHz R3000A with the
+same LG1 graphics, audio, SCSI and Ethernet as the R4000/R4400 models and its
+own memory controller. It runs IRIX 5.3, installed from the IRIX 5.3 CD
+image; the R4x00 Indigos' IRIX 6.5 doesn't run on it. The ROM set is
+`indigo.zip` (`ip12prom.070-8088-xxx.u56`, PROM 4.0.1 Rev C, the default,
+and `ip12prom.070-8088-002.u56`, Rev D); `sgi_kbd.zip` is needed only for
+the keyboard that runs its 8031 firmware.
+
+To install, attach the CD image (`-cdrom`, SCSI ID 4) and from the PROM's
+Command Monitor start the CD's standalone shell and its disk utility to
+label the disk:
+
+    boot -f dksc(0,4,8)sashIP12
+    boot -f dksc(0,4,7)stand/fx.IP12 --x
+
+then choose "Install System Software" in the System Maintenance Menu and
+install from `/CDROM/dist` in inst.
+
+The CPU runs on MAME's R3000 interpreter (there is no recompiler for it) at
+the real machine's speed; the idle desktop costs about 0.2 host cores, 0.4
+once IRIX has loaded the audio microcode. Disk transfers run at about a
+third of real speed. It has 96 MB, its maximum, in three banks of 4x8M
+(Machine Configuration). Audio works as on the R4x00 Indigo. On the first
+boot after installation IRIX may not find the audio device yet; it does
+from the next boot.
+
+Its PROM keeps its settings in a serial EEPROM, including the Ethernet
+address, which a real board has from the factory and which this PROM has
+no command to set. A new NVRAM starts with 08:00:69:12:34:58 (the PROM's
+other defaults: autoboot, console on the screen). For a serial console,
+`setenv console d` in the Command Monitor.
 
 ### Save states
 

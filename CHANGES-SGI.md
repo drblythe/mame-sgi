@@ -7,7 +7,29 @@ built binaries.
 
 ## Not yet released
 
+### Added
+
+- **IRIS Indigo R3000** (`indigo`, IP12, R3000A 33 MHz, LG1 graphics) runs
+  IRIX 5.3: it boots to the desktop and passes the same LG1 graphics tests
+  as the R4000/R4400 Indigo (IRIS GL and OpenGL; the differences are 5.3's
+  own libraries), and its audio, SCSI disks and CD-ROM, Ethernet,
+  keyboard, mouse and save states work. 96 MB, its maximum, by default. A
+  new NVRAM starts with an Ethernet address (08:00:69:12:34:58), which the
+  PROM can't set. MAME's R3000 interpreter now spends about 45% less host
+  time per instruction, and IRIX 5.3's idle loop is skipped. IRIX reports
+  the CPU at 33 MHz: reads of the memory controller's registers now take
+  the time they take on the real board. No longer marked as having
+  imperfect graphics and no sound, so MAME no longer shows its warning
+  screen. See [README-SGI.md](README-SGI.md).
+
 ### Fixed
+
+- **R3000 misaligned instruction fetch** (shared MAME code): a jump to a
+  misaligned address raised the address error and then fetched from that
+  address anyway, which raised a second exception from inside the
+  exception handler; IRIX 5.3 took it for a kernel fault and panicked, so
+  any program making such a jump brought the system down. The fetch now
+  stops at the address error.
 
 - **Indigo2 reboot** (shared MAME code, recompiler): a reboot from IRIX
   hung after "Starting up the system...". The firmware loads its boot
