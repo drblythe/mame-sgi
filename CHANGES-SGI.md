@@ -23,6 +23,12 @@ built binaries.
   leftover cursor memory on its screen. The cursor now shows only when
   enabled.
 
+- **8254 timer** (shared MAME code) loaded a newly written count one
+  clock late when the write fell in the first half of a clock period:
+  the counter loads on the next clock pulse, which only a write after
+  the pulse's rising edge has to wait for. Firmware that times a loop
+  against the timer measured a few percent short.
+
 ### Changed
 
 - **Idle Indigo2** host CPU 0.40 to 0.09 cores: the R4400 has no WAIT

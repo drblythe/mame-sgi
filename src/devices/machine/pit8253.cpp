@@ -1150,7 +1150,11 @@ TIMER_CALLBACK_MEMBER(pit_counter_device::count_w_deferred)
 {
 	update();
 	uint8_t data = (uint8_t)param;
-	bool middle_of_a_cycle = (machine().time() > m_last_updated && m_clockin != 0);
+	// the counter decrements on CLK's falling edges, at m_last_updated's
+	// period boundaries, and loads a new count on the next CLK pulse: a
+	// write after the rising edge halfway through a period waits for the
+	// following pulse, one before it is loaded at the end of this one
+	bool const middle_of_a_cycle = (m_clockin != 0 && machine().time() > m_last_updated && (machine().time() - m_last_updated) >= m_clock_period / 2);
 
 	switch (CTRL_ACCESS(m_control))
 	{
