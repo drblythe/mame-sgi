@@ -5,7 +5,10 @@ on, then a counter. Newest first. Items collect under "Not yet released"
 until the next tag. Each release on GitHub has the same notes and the
 built binaries.
 
-## Not yet released
+## mame0289-sgi003 (2026-11-03)
+
+The R3000 IRIS Indigo (IP12) joins with IRIX 5.3; Indigo2 reboot, LG1
+cursor and 8254 timer fixes, a quieter idle Indigo2.
 
 ### Added
 

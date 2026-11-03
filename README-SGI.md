@@ -116,7 +116,9 @@ LLVM 23 fails on a few upstream 0.289 files. MSVC builds are untested.
   Indigo's LG1 graphics are built into the machine, so it has no such
   option, and the Challenge S has no graphics board.
 - On a monitor the same size as the emulated screen, `-nowindow` (full
-  screen) is more practical than a window.
+  screen) is more practical than a window. Add `-nounevenstretch` so MAME
+  scales only by whole numbers: the screen is then shown 1:1, unblurred,
+  instead of stretched to fill the monitor.
 - On Windows, MAME uses the bgfx renderer by default (Direct3D 11 where
   available; it needs the `bgfx` directory next to the binary, and
   without it MAME falls back to OpenGL). Both renderers upload only the
