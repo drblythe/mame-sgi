@@ -1306,9 +1306,14 @@ void mips1core_device_base::store(offs_t address, T data, T mem_mask)
 
 ATTR_FORCE_INLINE bool mips1core_device_base::fetch(offs_t address, u32 &op)
 {
-	// alignment error
+	// alignment error: the exception is taken, the fetch goes no further
+	// (translating the address could raise a second exception, from the
+	// exception vector in kernel mode)
 	if (address & 3)
+	{
 		address_error(TR_FETCH, address);
+		return false;
+	}
 
 	translate_result const t = translate_page(TR_FETCH, address);
 	if (t == ERROR)
