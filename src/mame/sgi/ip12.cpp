@@ -163,10 +163,24 @@ protected:
 	 *   0xe000-0xf000 -> IP12 HPLC
 	 */
 	u32 m_brdrev;
+
+	static constexpr int PIC1_READ_WAIT = 33; // CPU cycles
 };
 
 void ip12_state::machine_start()
 {
+	// An uncached read of a PIC1 register stalls the R3000 while it goes
+	// out over the memory controller (about 1us here, an estimate). The
+	// PROM and IRIX time a 1024-instruction loop against the 8254 with
+	// such a read (their write buffer flush) in the measured interval, and
+	// report 36 MHz for the Indigo's 33 MHz without it.
+	m_cpu->space(AS_PROGRAM).install_read_tap(0x1fa0'0000, 0x1faf'ffff, "pic1_wait",
+		[this](offs_t offset, u32 &data, u32 mem_mask)
+		{
+			if (!machine().side_effects_disabled())
+				m_cpu->adjust_icount(-PIC1_READ_WAIT);
+		});
+
 	save_item(NAME(m_dsp_miscsr));
 	save_item(NAME(m_dsp_hpc_irq));
 	save_item(NAME(m_dsp_probe));
