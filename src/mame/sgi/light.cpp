@@ -511,20 +511,33 @@ bool sgi_lg1_device::clip_pass(int x, int y) const
 			return false;
 	}
 
-	unsigned const enables = BIT(m_aux2, 4, 4);
-	if (!enables)
-		return true;
+	auto const inside = [this, x, y] (unsigned n)
+	{
+		u32 const mx = m_smask[n * 2];
+		u32 const my = m_smask[n * 2 + 1];
+		return x >= int(BIT(mx, 0, 10)) && x <= int(BIT(mx, 16, 10)) && y >= int(BIT(my, 0, 10)) && y <= int(BIT(my, 16, 10));
+	};
 
-	for (unsigned n = 0; n < 4; n++)
+	// an inside mask (bit 4 + n set) admits pixels within it, an outside
+	// one pixels beyond it
+	unsigned const enables = BIT(m_aux2, 0, 4);
+	unsigned const insides = BIT(m_aux2, 4, 4);
+	if (BIT(enables, 0) && inside(0) != BIT(insides, 0))
+		return false;
+	bool any_inside = false, in_one = false;
+	for (unsigned n = 1; n < 4; n++)
 	{
 		if (!BIT(enables, n))
 			continue;
-		u32 const mx = m_smask[n * 2];
-		u32 const my = m_smask[n * 2 + 1];
-		if (x >= int(BIT(mx, 0, 10)) && x <= int(BIT(mx, 16, 10)) && y >= int(BIT(my, 0, 10)) && y <= int(BIT(my, 16, 10)))
-			return true;
+		if (BIT(insides, n))
+		{
+			any_inside = true;
+			in_one = in_one || inside(n);
+		}
+		else if (inside(n))
+			return false;
 	}
-	return false;
+	return !any_inside || in_one;
 }
 
 // write one pixel through the logic operation and the write mask

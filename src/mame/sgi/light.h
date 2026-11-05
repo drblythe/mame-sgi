@@ -48,12 +48,14 @@ protected:
 	// stipples, copy planes and double dashes; xstate sets both bits)
 	bool zopaque(u32 cmd) const { return cmd & 0x00800000U; }
 	bool lsopaque(u32 cmd) const { return cmd & 0x00400000U; }
-	// clipping: aux2 bits 4-7 enable screen masks 1-4, each an x and a y
+	// clipping: aux2 bits 0-3 enable screen masks 1-4, each an x and a y
 	// register holding the first (bits 0-9) and last (bits 16-25) screen
-	// coordinate, and drawing is limited to the union of the enabled masks;
-	// aux2 bits 8-11 are a clip id match mask, bit n allowing drawing where
-	// the clip id planes hold n (checked unless drawing into the clip id
-	// planes themselves)
+	// coordinate, and bits 4-7 make each an inside (1) or outside (0) mask.
+	// Mask 1 bounds the window; masks 2-4 are pieces of its visible region
+	// (inside masks: drawing is limited to their union) or holes in it
+	// (outside masks: nothing is drawn within them). aux2 bits 8-11 are a
+	// clip id match mask, bit n allowing drawing where the clip id planes
+	// hold n (checked unless drawing into the clip id planes themselves)
 	bool clip_pass(int x, int y) const;
 	u8 vram_r(int x, int y) const;
 	// aux2 bits 29-30 select the planes drawing and pixel reads use: the 8
