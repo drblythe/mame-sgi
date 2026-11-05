@@ -5,10 +5,10 @@ on, then a counter. Newest first. Items collect under "Not yet released"
 until the next tag. Each release on GitHub has the same notes and the
 built binaries.
 
-## mame0289-sgi003 (2026-11-03)
+## mame0289-sgi003 (2026-11-05)
 
 The R3000 IRIS Indigo (IP12) joins with IRIX 5.3; Indigo2 reboot, LG1
-cursor and 8254 timer fixes, a quieter idle Indigo2.
+clipping and cursor, and 8254 timer fixes, a quieter idle Indigo2.
 
 ### Added
 
@@ -26,6 +26,16 @@ cursor and 8254 timer fixes, a quieter idle Indigo2.
   screen. See [README-SGI.md](README-SGI.md).
 
 ### Fixed
+
+- **Indigo LG1 window clipping**: a window partly covered by others drew
+  through them, e.g. gr_osview over an xwsh in front of it. The board has
+  four screen masks: the first bounds the window, the other three are the
+  window's visible pieces or, as outside masks, the holes cut by windows
+  on top. All four were treated as visible pieces, so a covering window's
+  area was drawn into. Both Indigos.
+
+- **R3000 Indigo date**: IRIX showed 2026 as 1996. IRIX keeps years since
+  1970 in the clock chip, which held the last two digits of the year.
 
 - **R3000 misaligned instruction fetch** (shared MAME code): a jump to a
   misaligned address raised the address error and then fetched from that
